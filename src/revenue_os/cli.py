@@ -42,8 +42,15 @@ from pathlib import Path
 from .approval import record_decision
 from .dashboard import render_html
 from .discovery_log import DiscoveryLog
-from .llm_budget import LlmBudget
-from .llm_spend import LlmSpendLog, entry_from
+from .llm_spend import LlmSpendLog
+from .llm_workers import (
+    build_evaluator,
+    build_planner,
+    build_proposer,
+    llm_budget as _llm_budget,
+    llm_spend_log as _llm_spend_log,
+    record_llm_spend as _record_llm_spend,
+)
 from .filtering import is_relevant
 from .report import digest_line, pipeline_report, render_candidate, render_text
 from .revenue import RevenueLedger, mark_launched, record_payment
@@ -91,72 +98,6 @@ def _discovery_log(data_dir: Path) -> DiscoveryLog:
     return DiscoveryLog.load(data_dir / "discovery_runs.json")
 
 
-def _llm_spend_log(data_dir: Path) -> LlmSpendLog:
-    return LlmSpendLog.load(data_dir / "llm_spend.json")
-
-
-def _record_llm_spend(data_dir: Path, activity: str, worker) -> None:
-    log = _llm_spend_log(data_dir)
-    log.add(entry_from(activity, worker))
-    log.save()
-
-
-def _llm_budget(data_dir: Path) -> LlmBudget:
-    return LlmBudget.load(data_dir / "llm_budget.json")
-
-
-def _budget_gate(data_dir: Path, est: float, per_run_ceiling: float) -> float:
-    """Refuse if recorded LLM spend + this run's estimate exceeds the
-    cumulative cap; otherwise return the effective per-run ceiling
-    (never more than what is left under the cap)."""
-    cap = _llm_budget(data_dir).cap
-    spent = _llm_spend_log(data_dir).summary()["total_cost_usd"]
-    remaining = round(cap - spent, 4)
-    if remaining <= 0 or est > remaining:
-        raise ValueError(
-            f"recorded LLM spend ${spent} + estimated ${est} exceeds the "
-            f"cumulative cap ${cap}; raise it with `llm-budget <amount>`"
-        )
-    return min(per_run_ceiling, remaining)
-
-
-def _build_normalizer(args, source, data_dir: Path):
-    """Return (normalizer, evaluator_name, est_cost_usd, cache).
-
-    Keyword path: the deterministic default. LLM path (opt-in): fetch the
-    signals once, estimate spend for the ones not already cached, refuse
-    if that exceeds the ceiling, then hand back a metered, cache-backed,
-    ceiling-bounded normalizer.
-    """
-    from .normalize import to_opportunity
-
-    if args.evaluator == "keyword":
-        return to_opportunity, "keyword", 0.0, None
-
-    from .llm_cache import LlmCache
-    from .llm_normalize import LlmNormalizer, build_client, estimate_cost_usd
-
-    cache = LlmCache.load(data_dir / "llm_cache.json")
-    signals = source.fetch(args.limit)
-    est = estimate_cost_usd(
-        signals, args.model, cache=None if args.refresh_eval else cache
-    )
-    if est > args.max_eval_cost:
-        raise ValueError(
-            f"estimated eval cost ${est} exceeds --max-eval-cost "
-            f"${args.max_eval_cost}; nothing was evaluated"
-        )
-    ceiling = _budget_gate(data_dir, est, args.max_eval_cost)
-    normalizer = LlmNormalizer(
-        client=build_client(),
-        model=args.model,
-        max_cost_usd=ceiling,
-        cache=cache,
-        refresh=args.refresh_eval,
-    )
-    return normalizer, "llm", est, cache
-
-
 def _cmd_run(args) -> int:
     data_dir = _data_dir(args)
     store, revenue_ledger, spend_ledger = _load(data_dir)
@@ -164,7 +105,10 @@ def _cmd_run(args) -> int:
     source = build_source(args.source, args.source_path)
     if args.filter:
         source = FilteredSource(source, is_relevant)
-    normalizer, evaluator, est_cost, cache = _build_normalizer(args, source, data_dir)
+    normalizer, evaluator, est_cost, cache = build_evaluator(
+        mode=args.evaluator, source=source, limit=args.limit, model=args.model,
+        max_cost_usd=args.max_eval_cost, refresh=args.refresh_eval, data_dir=data_dir,
+    )
     run_discovery_cycle(
         source,
         store,
@@ -255,6 +199,16 @@ def _cmd_agent_goal(args) -> int:
         updates["target_validated"] = (
             None if args.target_validated < 0 else args.target_validated
         )
+    if args.evaluator is not None:
+        updates["evaluator"] = args.evaluator
+    if args.planner is not None:
+        updates["planner"] = args.planner
+    if args.proposer is not None:
+        updates["proposer"] = args.proposer
+    if args.model is not None:
+        updates["model"] = args.model
+    if args.max_llm_cost_per_action is not None:
+        updates["max_llm_cost_per_action"] = args.max_llm_cost_per_action
     if updates:
         goal = replace(goal, **updates)
         save_goal(data_dir, goal)
@@ -436,41 +390,13 @@ def _cmd_reject(args) -> int:
     return 0
 
 
-def _build_planner(args, store, data_dir: Path):
-    """Return (planner, cache). Template path: the deterministic default.
-    LLM path (opt-in): estimate spend over the approved candidates,
-    refuse if it exceeds the ceiling, then a metered, cached planner."""
-    from .validation import plan_validation
-
-    if args.planner == "template":
-        return plan_validation, None
-
-    from .llm_cache import LlmCache
-    from .llm_normalize import build_client
-    from .llm_plan import LlmPlanner, estimate_plan_cost_usd
-
-    approved = [c for c in store.all() if c.status == "approved"]
-    cache = LlmCache.load(data_dir / "llm_plan_cache.json")
-    est = estimate_plan_cost_usd(
-        approved, args.model, cache=None if args.refresh_plan else cache
-    )
-    if est > args.max_plan_cost:
-        raise ValueError(
-            f"estimated plan cost ${est} exceeds --max-plan-cost "
-            f"${args.max_plan_cost}; nothing was planned"
-        )
-    ceiling = _budget_gate(data_dir, est, args.max_plan_cost)
-    planner = LlmPlanner(
-        client=build_client(), model=args.model,
-        max_cost_usd=ceiling, cache=cache, refresh=args.refresh_plan,
-    )
-    return planner, cache
-
-
 def _cmd_investigate(args) -> int:
     data_dir = _data_dir(args)
     store, _, _ = _load(data_dir)
-    planner, cache = _build_planner(args, store, data_dir)
+    planner, cache = build_planner(
+        mode=args.planner, store=store, model=args.model,
+        max_cost_usd=args.max_plan_cost, refresh=args.refresh_plan, data_dir=data_dir,
+    )
     investigating = investigate_approved(store, planner=planner)
     if cache is not None:
         cache.save()
@@ -497,41 +423,13 @@ def _cmd_outcome(args) -> int:
     return 0
 
 
-def _build_proposer(args, store, data_dir: Path):
-    """Return (proposer, cache). Template path: the deterministic default.
-    LLM path (opt-in): estimate spend over the validated candidates,
-    refuse if it exceeds the ceiling, then a metered, cached proposer."""
-    from .offer import propose_offer
-
-    if args.proposer == "template":
-        return propose_offer, None
-
-    from .llm_cache import LlmCache
-    from .llm_normalize import build_client
-    from .llm_offer import LlmOfferProposer, estimate_offer_cost_usd
-
-    pending = [c for c in store.all() if c.status == "validated" and not c.offer]
-    cache = LlmCache.load(data_dir / "llm_offer_cache.json")
-    est = estimate_offer_cost_usd(
-        pending, args.model, cache=None if args.refresh_offer else cache
-    )
-    if est > args.max_offer_cost:
-        raise ValueError(
-            f"estimated offer cost ${est} exceeds --max-offer-cost "
-            f"${args.max_offer_cost}; nothing was proposed"
-        )
-    ceiling = _budget_gate(data_dir, est, args.max_offer_cost)
-    proposer = LlmOfferProposer(
-        client=build_client(), model=args.model,
-        max_cost_usd=ceiling, cache=cache, refresh=args.refresh_offer,
-    )
-    return proposer, cache
-
-
 def _cmd_prepare_launch(args) -> int:
     data_dir = _data_dir(args)
     store, _, _ = _load(data_dir)
-    proposer, cache = _build_proposer(args, store, data_dir)
+    proposer, cache = build_proposer(
+        mode=args.proposer, store=store, model=args.model,
+        max_cost_usd=args.max_offer_cost, refresh=args.refresh_offer, data_dir=data_dir,
+    )
     validated = prepare_launch(store, proposer=proposer)
     if cache is not None:
         cache.save()
@@ -726,6 +624,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--target-validated", type=int, default=None,
         help="stop once this many are validated (negative clears)",
     )
+    ag_goal.add_argument("--evaluator", choices=("keyword", "llm"), default=None)
+    ag_goal.add_argument("--planner", choices=("template", "llm"), default=None)
+    ag_goal.add_argument("--proposer", choices=("template", "llm"), default=None)
+    ag_goal.add_argument("--model", default=None, help="model for the llm workers")
+    ag_goal.add_argument("--max-llm-cost-per-action", type=float, default=None)
     ag_goal.set_defaults(func=_cmd_agent_goal)
 
     llm_budget = sub.add_parser(

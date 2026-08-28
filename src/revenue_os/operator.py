@@ -29,11 +29,20 @@ from .agent_log import AgentLog
 from .discovery_log import DiscoveryLog
 from .filtering import is_relevant
 from .llm_spend import LlmSpendLog
+from .llm_workers import (
+    build_evaluator,
+    build_planner,
+    build_proposer,
+    record_llm_spend,
+)
+from .normalize import to_opportunity
+from .offer import propose_offer
 from .report import STALE_AFTER_DAYS, _age_days, digest_line, pipeline_report
 from .revenue import RevenueLedger
 from .sources import FilteredSource, build_source
 from .spend import SpendLedger
 from .store import CandidateStore
+from .validation import plan_validation
 from .workflow import investigate_approved, prepare_launch, run_discovery_cycle
 
 _ACTIONS = ("discover", "investigate", "prepare_launch", "stop")
@@ -49,6 +58,12 @@ class Goal:
     calibrated: bool = False
     target_validated: int | None = None
     discovery_stale_days: int = STALE_AFTER_DAYS
+    # opt-in LLM leaf workers (deterministic by default)
+    evaluator: str = "keyword"          # keyword | llm
+    planner: str = "template"           # template | llm
+    proposer: str = "template"          # template | llm
+    model: str = "claude-sonnet-5"
+    max_llm_cost_per_action: float = 0.5
 
     def to_dict(self) -> dict:
         return {
@@ -60,6 +75,11 @@ class Goal:
             "calibrated": self.calibrated,
             "target_validated": self.target_validated,
             "discovery_stale_days": self.discovery_stale_days,
+            "evaluator": self.evaluator,
+            "planner": self.planner,
+            "proposer": self.proposer,
+            "model": self.model,
+            "max_llm_cost_per_action": self.max_llm_cost_per_action,
         }
 
     @classmethod
@@ -73,7 +93,16 @@ class Goal:
             calibrated=bool(d.get("calibrated", False)),
             target_validated=d.get("target_validated"),
             discovery_stale_days=int(d.get("discovery_stale_days", STALE_AFTER_DAYS)),
+            evaluator=d.get("evaluator", "keyword"),
+            planner=d.get("planner", "template"),
+            proposer=d.get("proposer", "template"),
+            model=d.get("model", "claude-sonnet-5"),
+            max_llm_cost_per_action=float(d.get("max_llm_cost_per_action", 0.5)),
         )
+
+    @property
+    def uses_llm(self) -> bool:
+        return "llm" in (self.evaluator, self.planner, self.proposer)
 
 
 def load_goal(data_dir: str | Path) -> Goal:
@@ -162,12 +191,22 @@ def _validated_without_offer(report: dict) -> int:
     )
 
 
-def decide(obs: dict, goal: Goal, *, discovery_exhausted: bool = False) -> Decision:
+def decide(
+    obs: dict, goal: Goal, *,
+    discovery_exhausted: bool = False, llm_capped: bool = False,
+) -> Decision:
     """Pure: pick the next non-human action from the observed state."""
     report = obs["report"]
     counts = report["status_counts"]
     queue = report["action_queue"]
     age = obs["last_discovery_age_days"]
+
+    if llm_capped:
+        return Decision(
+            "stop",
+            "llm budget exhausted - raise it with `llm-budget` or set the "
+            "goal's worker to keyword/template",
+        )
 
     beyond = counts["validated"] + counts["launched"] + counts["earning"]
     if goal.target_validated is not None and beyond >= goal.target_validated:
@@ -215,6 +254,7 @@ class OperatorAgent:
         self.data_dir = Path(data_dir)
         self.goal = goal or Goal()
         self._discovery_exhausted = False
+        self._llm_capped = False
 
     # --- state -----------------------------------------------------------
 
@@ -238,34 +278,90 @@ class OperatorAgent:
     # --- actions -------------------------------------------------------
 
     def act(self, decision: Decision) -> dict:
+        g = self.goal
+
         if decision.action == "discover":
             store, _, _ = self._load()
             dlog = DiscoveryLog.load(self.data_dir / "discovery_runs.json")
             before = len(store.all())
-            for spec in self.goal.sources:
+            spent = 0.0
+            for spec in g.sources:
                 src = _source_for(spec)
-                if self.goal.filter:
+                if g.filter:
                     src = FilteredSource(src, is_relevant)
+                normalizer, ev_name, est, cache = to_opportunity, "keyword", 0.0, None
+                if g.evaluator == "llm":
+                    try:
+                        normalizer, ev_name, est, cache = build_evaluator(
+                            mode="llm", source=src, limit=g.limit, model=g.model,
+                            max_cost_usd=g.max_llm_cost_per_action, refresh=False,
+                            data_dir=self.data_dir,
+                        )
+                    except ValueError as exc:
+                        self._llm_capped = True
+                        return {"skipped": str(exc),
+                                "new_candidates": len(store.all()) - before}
                 run_discovery_cycle(
-                    src, store,
-                    limit=self.goal.limit,
-                    shortlist_n=self.goal.shortlist_n,
-                    min_score=self.goal.min_score,
-                    log=dlog,
-                    calibrated=self.goal.calibrated,
+                    src, store, limit=g.limit, shortlist_n=g.shortlist_n,
+                    min_score=g.min_score, log=dlog, normalizer=normalizer,
+                    evaluator=ev_name, est_cost_usd=est, calibrated=g.calibrated,
                 )
-            new = len(store.all()) - before
-            return {"new_candidates": new, "total_candidates": len(store.all())}
+                if cache is not None:
+                    cache.save()
+                if ev_name == "llm":
+                    record_llm_spend(self.data_dir, "evaluate", normalizer)
+                    spent = round(spent + normalizer.meter.cost_usd, 4)
+            out = {
+                "new_candidates": len(store.all()) - before,
+                "total_candidates": len(store.all()),
+            }
+            if spent:
+                out["llm_cost"] = spent
+            return out
 
         if decision.action == "investigate":
             store, _, _ = self._load()
-            out = investigate_approved(store)
-            return {"now_investigating": len(out)}
+            planner, cache = plan_validation, None
+            if g.planner == "llm":
+                try:
+                    planner, cache = build_planner(
+                        mode="llm", store=store, model=g.model,
+                        max_cost_usd=g.max_llm_cost_per_action, refresh=False,
+                        data_dir=self.data_dir,
+                    )
+                except ValueError as exc:
+                    self._llm_capped = True
+                    return {"skipped": str(exc)}
+            out = investigate_approved(store, planner=planner)
+            res = {"now_investigating": len(out)}
+            if cache is not None:
+                cache.save()
+            if g.planner == "llm":
+                record_llm_spend(self.data_dir, "plan", planner)
+                res["llm_cost"] = round(planner.meter.cost_usd, 4)
+            return res
 
         if decision.action == "prepare_launch":
             store, _, _ = self._load()
-            out = prepare_launch(store)
-            return {"offers_attached": sum(1 for c in out if c.offer)}
+            proposer, cache = propose_offer, None
+            if g.proposer == "llm":
+                try:
+                    proposer, cache = build_proposer(
+                        mode="llm", store=store, model=g.model,
+                        max_cost_usd=g.max_llm_cost_per_action, refresh=False,
+                        data_dir=self.data_dir,
+                    )
+                except ValueError as exc:
+                    self._llm_capped = True
+                    return {"skipped": str(exc)}
+            out = prepare_launch(store, proposer=proposer)
+            res = {"offers_attached": sum(1 for c in out if c.offer)}
+            if cache is not None:
+                cache.save()
+            if g.proposer == "llm":
+                record_llm_spend(self.data_dir, "offer", proposer)
+                res["llm_cost"] = round(proposer.meter.cost_usd, 4)
+            return res
 
         return {}
 
@@ -279,6 +375,7 @@ class OperatorAgent:
         decision = decide(
             self.observe(now), self.goal,
             discovery_exhausted=self._discovery_exhausted,
+            llm_capped=self._llm_capped,
         )
         result: dict = {}
         if decision.action != "stop":
@@ -312,6 +409,7 @@ class OperatorAgent:
         *, log_noop_stop: bool = True,
     ) -> list[AgentStep]:
         self._discovery_exhausted = False
+        self._llm_capped = False
         steps: list[AgentStep] = []
         for _ in range(max(1, max_cycles)):
             step = self.step(now=now, log_noop_stop=log_noop_stop)
