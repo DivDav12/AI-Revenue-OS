@@ -147,41 +147,102 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertNotIn("<script", html)
 
     def test_command_center_shell(self):
-        html = render_html(_report(self.store, self.d), _FIXED_TS)
-        self.assertIn("command center", html)
-        self.assertIn("class='grid'", html)
-        self.assertIn("class='panel c12'", html)
-        self.assertIn("--bg:#0d1117", html)                     # dark theme
-        self.assertIn("prefers-color-scheme: light", html)      # light fallback
-        self.assertIn("<span class='k'>model</span>", html)
-        self.assertIn("<span class='k'>llm spend</span>", html)
-
-    def test_roster_reflects_goal_modes(self):
-        base = _report(self.store, self.d)
-        # default deterministic goal -> workers "off" with their template modes
-        off = render_html(base, _FIXED_TS, goal={
-            "evaluator": "keyword", "research": "off", "planner": "template",
-            "proposer": "template", "decision_policy": "rules", "sources": ["static"],
-        }, agent_log=[{"ts": "t", "action": "discover", "reason": "x"}])
-        self.assertIn("mode: keyword", off)
-        self.assertIn("mode: off", off)
-        # enable research in the goal but no calls yet -> "idle", not "on"
-        idle = render_html(base, _FIXED_TS, goal={"research": "llm", "sources": ["hn"]},
-                           agent_log=[{"ts": "t", "action": "discover", "reason": "x"}])
-        self.assertRegex(idle, r"researcher</td>\s*<td class='muted'>due diligence</td>\s*<td>idle</td>")
-        self.assertIn("sources: hn", idle)
-
-    def test_roster_worker_on_when_it_has_spend(self):
-        spend = [{"ts": "t", "activity": "research", "model": "m", "api_calls": 2,
-                  "cost_usd": 0.02, "cache_hits": 1, "cache_misses": 1}]
         html = render_html(
             _report(self.store, self.d), _FIXED_TS,
-            agent_log=[{"ts": "t", "action": "research", "reason": "r"}],
-            spend_entries=spend, goal={"research": "off"},
+            agent_log=[{"ts": "t", "action": "discover", "reason": "x"}],
         )
-        self.assertRegex(html, r"researcher</td>\s*<td class='muted'>due diligence</td>\s*<td>on</td>")
-        self.assertIn("$0.02", html)
-        self.assertIn("cache 1/2", html)
+        self.assertIn("command center", html)
+        self.assertIn("class='shell'", html)          # sidebar + main grid
+        self.assertIn("class='rail'", html)           # left nav rail
+        self.assertIn("class='topbar'", html)         # top metric cards
+        self.assertIn("class='agrid'", html)          # agent workstation grid
+        self.assertIn("--bg:#070b14", html)           # dark navy theme
+        self.assertIn("prefers-color-scheme: light", html)
+        self.assertIn("<svg viewBox", html)           # inline SVG avatars/icons
+        # sidebar nav items
+        for label in ("Dashboard", "Agents", "Tasks", "Opportunities",
+                      "Finances", "Automations", "Logs", "Settings"):
+            self.assertIn(label, html)
+        # top-bar metrics
+        for k in ("Main goal", "Session", "Active agents", "Awaiting you",
+                  "LLM spend", "Revenue"):
+            self.assertIn(k, html)
+
+    def test_agent_cards_reflect_goal_modes(self):
+        base = _report(self.store, self.d)
+        log = [{"ts": "t", "action": "discover", "reason": "cold start"}]
+        # deterministic goal -> planner/offer/decision show "deterministic",
+        # research "disabled"
+        html = render_html(base, _FIXED_TS, agent_log=log, goal={
+            "evaluator": "keyword", "research": "off", "planner": "template",
+            "proposer": "template", "decision_policy": "rules", "sources": ["static"],
+        })
+        self.assertIn("class='acard'", html)
+        self.assertIn("operator (CEO)", html)
+        self.assertIn("Research Agent", html)
+        self.assertIn("mode: keyword", html)
+        self.assertIn("st-disabled", html)       # research off
+        self.assertIn("st-deterministic", html)  # template planner / rules
+        self.assertIn("sources: static", html)
+
+    def test_agent_card_working_and_active_states(self):
+        base = _report(self.store, self.d)
+        spend = [{"ts": "t", "activity": "research", "model": "m", "api_calls": 2,
+                  "cost_usd": 0.02, "cache_hits": 1, "cache_misses": 1}]
+        log = [{"ts": "t", "action": "research", "reason": "3 not researched"}]
+        # session running -> "working"
+        running = render_html(base, _FIXED_TS, agent_log=log, spend_entries=spend,
+                              session={"ticks": 1, "cycles": 2, "ended_at": None},
+                              goal={"research": "llm"})
+        self.assertIn("st-working", running)
+        self.assertIn("WORKING", running)
+        # session ended -> the worker that ran shows "active", not "working"
+        ended = render_html(base, _FIXED_TS, agent_log=log, spend_entries=spend,
+                            session={"ticks": 1, "cycles": 2, "ended_at": "x",
+                                     "end_reason": "max-ticks"},
+                            goal={"research": "llm"})
+        self.assertIn("st-active", ended)
+        self.assertIn("$0.02", ended)
+        self.assertIn("cache <b>1/2</b>", ended)  # hits / (hits+misses)
+
+    def test_agent_card_cost_ceiling_is_error_state(self):
+        spend = [{"ts": "t", "activity": "evaluate", "model": "m", "api_calls": 1,
+                  "cost_usd": 0.5, "cache_hits": 0, "cache_misses": 1,
+                  "ceiling_hit": True}]
+        html = render_html(
+            _report(self.store, self.d), _FIXED_TS,
+            agent_log=[{"ts": "t", "action": "discover", "reason": "x"}],
+            spend_entries=spend, goal={"evaluator": "llm"},
+        )
+        self.assertIn("st-error", html)
+        self.assertIn("BLOCKED", html)
+
+    def test_no_fake_progress_bar_on_agent_cards(self):
+        # an agent card must not contain a progress bar (no real per-agent metric)
+        html = render_html(
+            _report(self.store, self.d), _FIXED_TS,
+            agent_log=[{"ts": "t", "action": "discover", "reason": "x"}],
+            spend_entries=[{"ts": "t", "activity": "research", "api_calls": 1,
+                            "cost_usd": 0.01}],
+            goal={"research": "llm"},
+        )
+        # progress bars only appear in the goal/budget contexts, never inside .acard
+        card = html.split("class='acard'")[1].split("</div></div>")[0]
+        self.assertNotIn("class='progress'", card)
+
+    def test_goal_target_progress_is_real(self):
+        for i in range(2):
+            self.store.put(Candidate(name=f"v{i}", status="validated"))
+        html = render_html(_report(self.store, self.d), _FIXED_TS,
+                           goal={"target_validated": 5})
+        self.assertIn("2 / 5 validated", html)          # top bar
+        self.assertIn("Validated toward goal", html)    # ROI panel progress bar
+
+    def test_human_action_required_strip(self):
+        self.store.put(Candidate(name="alpha", status="shortlisted"))
+        html = render_html(_report(self.store, self.d), _FIXED_TS)
+        self.assertIn("Human action required", html)
+        self.assertIn("approve or reject", html)
 
     def test_roi_table_appears_after_payment(self):
         self.store.put(Candidate(name="alpha", status="validated"))
