@@ -7,6 +7,7 @@ results so the runtime plumbing can be tested.
 from __future__ import annotations
 
 from .messages import Result, Task
+from .opportunity import Opportunity, score_opportunity
 
 
 class Agent:
@@ -59,6 +60,44 @@ class WorkerAgent(Agent):
                 status="error",
                 error=str(exc),
             )
+
+
+class EvaluatorAgent(Agent):
+    """Scores a revenue Opportunity carried in task.payload['opportunity']."""
+
+    role = "evaluator"
+    objective = "Score a structured revenue opportunity deterministically."
+    capabilities = ("evaluate",)
+
+    def run(self, task: Task) -> Result:
+        opp = task.payload.get("opportunity")
+        if not isinstance(opp, Opportunity):
+            return Result(
+                task_id=task.id,
+                agent=self.name,
+                status="error",
+                error="payload['opportunity'] must be an Opportunity",
+            )
+        try:
+            score = score_opportunity(opp)
+        except ValueError as exc:
+            return Result(
+                task_id=task.id,
+                agent=self.name,
+                status="error",
+                error=str(exc),
+            )
+        return Result(
+            task_id=task.id,
+            agent=self.name,
+            status="ok",
+            output={
+                "opportunity_name": score.opportunity_name,
+                "total": score.total,
+                "verdict": score.verdict,
+                "breakdown": score.breakdown,
+            },
+        )
 
 
 class ReverseAgent(Agent):
