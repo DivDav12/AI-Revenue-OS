@@ -65,13 +65,18 @@ class FilteredSource:
 
 
 class LocalFileSource:
-    """Reads a JSON list of signal dicts from disk. Offline, deterministic."""
+    """Reads a JSON list of signal dicts from disk. Offline, deterministic.
+
+    The file is read and validated eagerly on construction so a bad file
+    fails before any discovery work begins; fetch() slices the cache.
+    """
 
     def __init__(self, path: str | Path, name: str = "local-file") -> None:
         self.path = Path(path)
         self.name = name
+        self._signals = self._read()
 
-    def fetch(self, limit: int) -> list[RawSignal]:
+    def _read(self) -> list[RawSignal]:
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
         except FileNotFoundError as exc:
@@ -80,7 +85,21 @@ class LocalFileSource:
             raise ValueError(f"malformed signal file {self.path}: {exc}") from exc
         if not isinstance(raw, list):
             raise ValueError(f"signal file {self.path} must contain a JSON list")
-        return [_signal_from_dict(d, self.name) for d in raw[: max(0, limit)]]
+        signals: list[RawSignal] = []
+        for index, entry in enumerate(raw):
+            if not isinstance(entry, dict):
+                raise ValueError(
+                    f"signal file {self.path}: entry {index} is not an object"
+                )
+            if not str(entry.get("title", "")).strip():
+                raise ValueError(
+                    f"signal file {self.path}: entry {index} has no title"
+                )
+            signals.append(_signal_from_dict(entry, self.name))
+        return signals
+
+    def fetch(self, limit: int) -> list[RawSignal]:
+        return self._signals[: max(0, limit)]
 
 
 HN_TOP_URL = "https://hacker-news.firebaseio.com/v0/showstories.json"
@@ -171,10 +190,20 @@ _SAMPLE_SIGNALS = [
 ]
 
 
-def build_source(name: str) -> Source:
-    """Factory: 'static' (offline default) or 'hn' (real Hacker News API)."""
+def build_source(name: str, path: str | Path | None = None) -> Source:
+    """Factory: 'static' (offline default), 'hn' (real HN API), or
+    'file' (a curated JSON list of signals, requires `path`)."""
     if name == "static":
         return StaticSource(_SAMPLE_SIGNALS)
     if name == "hn":
         return HackerNewsSource()
-    raise ValueError(f"unknown source: {name!r} (expected 'static' or 'hn')")
+    if name == "file":
+        if not path:
+            raise ValueError("source 'file' requires a signal file path")
+        resolved = Path(path)
+        if not resolved.is_file():
+            raise ValueError(f"signal file not found: {resolved}")
+        return LocalFileSource(resolved)
+    raise ValueError(
+        f"unknown source: {name!r} (expected 'static', 'hn', or 'file')"
+    )

@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -6,7 +7,13 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from revenue_os import cli
-from revenue_os.sources import HackerNewsSource, RawSignal, StaticSource, build_source
+from revenue_os.sources import (
+    HackerNewsSource,
+    LocalFileSource,
+    RawSignal,
+    StaticSource,
+    build_source,
+)
 from revenue_os.store import CandidateStore
 from revenue_os.workflow import run_discovery_cycle
 
@@ -30,6 +37,16 @@ class BuildSourceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_source("reddit")
 
+    def test_file_source_requires_existing_path(self):
+        with self.assertRaises(ValueError):
+            build_source("file")
+        with self.assertRaises(ValueError):
+            build_source("file", "no-such-file.json")
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "leads.json"
+            path.write_text(json.dumps([{"title": "A lead"}]), encoding="utf-8")
+            self.assertIsInstance(build_source("file", str(path)), LocalFileSource)
+
 
 class CliTests(unittest.TestCase):
     def setUp(self):
@@ -45,6 +62,69 @@ class CliTests(unittest.TestCase):
         self.assertIn("PIPELINE STATUS", out)
         self.assertIn("ACTION QUEUE", out)
         self.assertTrue((Path(self.data) / "candidates.json").exists())
+
+    def test_run_file_source_executes_cycle(self):
+        leads = Path(self.data) / "leads.json"
+        leads.write_text(
+            json.dumps(
+                [
+                    {"title": "Paid API for invoice automation", "text": "SaaS pricing"},
+                    {"title": "Marketplace for freelance consulting", "text": "b2b"},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        code, out = _run(
+            ["run", "--source", "file", "--source-path", str(leads),
+             "--data-dir", self.data]
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("PIPELINE STATUS", out)
+        self.assertTrue((Path(self.data) / "candidates.json").exists())
+
+    def test_run_file_source_with_filter_and_min_score(self):
+        leads = Path(self.data) / "leads.json"
+        leads.write_text(
+            json.dumps(
+                [
+                    {"title": "Paid SaaS platform for customer invoicing"},
+                    {"title": "a weekend toy with no business model"},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        code, _ = _run(
+            ["run", "--source", "file", "--source-path", str(leads),
+             "--filter", "--min-score", "0.1", "--data-dir", self.data]
+        )
+        self.assertEqual(code, 0)
+        store = CandidateStore.load(Path(self.data) / "candidates.json")
+        names = [c.name for c in store.all()]
+        self.assertTrue(any("invoic" in n for n in names))
+        self.assertFalse(any("weekend-toy" in n for n in names))
+
+    def test_run_file_source_missing_path_exits_1(self):
+        code, _ = _run(["run", "--source", "file", "--data-dir", self.data])
+        self.assertEqual(code, 1)
+
+    def test_run_file_source_absent_file_exits_1(self):
+        code, _ = _run(
+            ["run", "--source", "file", "--source-path", "nope.json",
+             "--data-dir", self.data]
+        )
+        self.assertEqual(code, 1)
+        self.assertFalse((Path(self.data) / "candidates.json").exists())
+
+    def test_run_file_source_untitled_entry_exits_1(self):
+        leads = Path(self.data) / "leads.json"
+        leads.write_text(
+            json.dumps([{"title": "ok"}, {"url": "http://x"}]), encoding="utf-8"
+        )
+        code, _ = _run(
+            ["run", "--source", "file", "--source-path", str(leads),
+             "--data-dir", self.data]
+        )
+        self.assertEqual(code, 1)
 
     def test_report_only_does_not_change_store(self):
         _run(["run", "--source", "static", "--data-dir", self.data])

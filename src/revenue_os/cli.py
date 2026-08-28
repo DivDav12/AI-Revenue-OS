@@ -77,7 +77,7 @@ def _require(store: CandidateStore, name: str):
 
 def _cmd_run(args) -> int:
     store, revenue_ledger, spend_ledger = _load(_data_dir(args))
-    source = build_source(args.source)
+    source = build_source(args.source, args.source_path)
     if args.filter:
         source = FilteredSource(source, is_relevant)
     run_discovery_cycle(
@@ -242,7 +242,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
 
     run = sub.add_parser("run", parents=[common], help="discovery cycle then report")
-    run.add_argument("--source", choices=("static", "hn"), default="static")
+    run.add_argument("--source", choices=("static", "hn", "file"), default="static")
+    run.add_argument(
+        "--source-path", default=None, help="signal JSON file (required for --source file)"
+    )
     run.add_argument("--limit", type=int, default=10)
     run.add_argument("--shortlist", type=int, default=3)
     run.add_argument(
@@ -356,7 +359,7 @@ def main(argv: list[str] | None = None) -> int:
         func = _cmd_report
     try:
         return func(args)
-    except ValueError as exc:
+    except (ValueError, FileNotFoundError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from revenue_os.agent import DiscoveryAgent, WorkerAgent
 from revenue_os.messages import Task
@@ -47,6 +48,37 @@ class LocalFileSourceTests(unittest.TestCase):
             path.write_text("{not json", encoding="utf-8")
             with self.assertRaises(ValueError):
                 LocalFileSource(path).fetch(10)
+
+    def test_non_list_json_raises_value_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "obj.json"
+            path.write_text(json.dumps({"title": "A"}), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                LocalFileSource(path).fetch(10)
+
+    def test_entry_without_title_raises_value_error_with_index(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "s.json"
+            path.write_text(
+                json.dumps([{"title": "ok"}, {"url": "http://x"}]), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, r"entry 1 has no title"):
+                LocalFileSource(path).fetch(10)
+
+    def test_non_object_entry_raises_value_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "s.json"
+            path.write_text(json.dumps(["just a string"]), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                LocalFileSource(path).fetch(10)
+
+    def test_fetch_performs_no_network_io(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "s.json"
+            path.write_text(json.dumps([{"title": "A"}]), encoding="utf-8")
+            with mock.patch("urllib.request.urlopen", side_effect=AssertionError):
+                signals = LocalFileSource(path).fetch(10)
+        self.assertEqual([s.title for s in signals], ["A"])
 
 
 class HackerNewsMappingTests(unittest.TestCase):
