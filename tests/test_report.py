@@ -109,15 +109,45 @@ class PipelineReportTests(unittest.TestCase):
         self.assertEqual(report["totals"]["grand_net"], 40.0)
 
     def test_render_text_is_deterministic_with_sections(self):
+        from datetime import datetime, timezone
+
+        now = datetime(2026, 8, 28, tzinfo=timezone.utc)
         self.store.put(Candidate(name="b", status="shortlisted"))
-        report = pipeline_report(self.store, self.rev, self.spend)
-        text1 = render_text(report)
-        text2 = render_text(pipeline_report(self.store, self.rev, self.spend))
+        text1 = render_text(pipeline_report(self.store, self.rev, self.spend, now=now))
+        text2 = render_text(pipeline_report(self.store, self.rev, self.spend, now=now))
         self.assertEqual(text1, text2)
         self.assertIn("PIPELINE STATUS", text1)
         self.assertIn("ACTION QUEUE", text1)
         self.assertIn("ROI", text1)
-        self.assertIn("b [shortlisted] -> approve or reject", text1)
+        self.assertIn("b [shortlisted] (0d) -> approve or reject", text1)
+
+    def test_action_queue_age_and_stale(self):
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime(2026, 8, 28, tzinfo=timezone.utc)
+        fresh = (now - timedelta(days=3)).isoformat()
+        old = (now - timedelta(days=9)).isoformat()
+        self.store.put(Candidate(
+            name="fresh", status="shortlisted",
+            history=({"ts": fresh, "from": "discovered", "to": "shortlisted"},),
+        ))
+        self.store.put(Candidate(
+            name="old", status="shortlisted",
+            history=({"ts": old, "from": "discovered", "to": "shortlisted"},),
+        ))
+        self.store.put(Candidate(name="nohist", status="shortlisted", first_seen=fresh))
+
+        q = {i["name"]: i for i in
+             pipeline_report(self.store, self.rev, self.spend, now=now)["action_queue"]}
+        self.assertEqual(q["fresh"]["age_days"], 3)
+        self.assertFalse(q["fresh"]["stale"])
+        self.assertEqual(q["old"]["age_days"], 9)
+        self.assertTrue(q["old"]["stale"])
+        self.assertEqual(q["nohist"]["age_days"], 3)
+
+        text = render_text(pipeline_report(self.store, self.rev, self.spend, now=now))
+        self.assertIn("3 awaiting a human, 1 stale", text)
+        self.assertIn("! old [shortlisted] (9d) -> approve or reject", text)
 
     def test_outcomes_section_not_ready_then_ready(self):
         text = render_text(pipeline_report(self.store, self.rev, self.spend))

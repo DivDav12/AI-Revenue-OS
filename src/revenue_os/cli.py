@@ -4,6 +4,7 @@ Read commands:
   run              discovery cycle against a source, then print the report
                    (--evaluator llm opt-in; keyword heuristic by default)
   report           print the report only (no discovery)
+  digest [-q]      one-line summary of what needs the human
   llm-costs        print recorded AI operating spend
   outcomes         retrospective on validated vs rejected candidates
   dashboard        write a static HTML pipeline snapshot (no discovery)
@@ -213,6 +214,30 @@ def _cmd_llm_budget(args) -> int:
         return 0
     new_cap = budget.set_cap(args.amount, actor=args.actor)
     print(f"llm budget cap -> ${new_cap}")
+    return 0
+
+
+def _cmd_digest(args) -> int:
+    data_dir = _data_dir(args)
+    store, revenue_ledger, spend_ledger = _load(data_dir)
+    queue = pipeline_report(store, revenue_ledger, spend_ledger)["action_queue"]
+
+    if args.quiet:
+        return 1 if queue else 0
+
+    if not queue:
+        print("nothing awaiting a human")
+        return 0
+
+    groups: dict[str, int] = {}
+    for item in queue:
+        groups[item["next_action"]] = groups.get(item["next_action"], 0) + 1
+    parts = [f"{n} {action}" for action, n in groups.items()]
+    line = " | ".join(parts)
+    n_stale = sum(1 for i in queue if i["stale"])
+    if n_stale:
+        line += f"  ({n_stale} stale)"
+    print(line)
     return 0
 
 
@@ -555,6 +580,16 @@ def build_parser() -> argparse.ArgumentParser:
         "outcomes", parents=[common],
         help="retrospective: how validated vs rejected candidates scored",
     ).set_defaults(func=_cmd_outcomes)
+
+    digest = sub.add_parser(
+        "digest", parents=[common],
+        help="one-line summary of what needs the human",
+    )
+    digest.add_argument(
+        "-q", "--quiet", action="store_true",
+        help="no output; exit 1 if anything awaits a human",
+    )
+    digest.set_defaults(func=_cmd_digest)
 
     llm_budget = sub.add_parser(
         "llm-budget", parents=[common, actor_only],

@@ -5,6 +5,8 @@ Pure computation over persisted state. No writes, no I/O of its own.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from . import lifecycle
 from .analytics import roi_summary
 from .calibration import calibration_weights
@@ -16,6 +18,27 @@ from .store import Candidate, CandidateStore
 
 # midpoint of the 0-5 criterion scale; values below this are "weak"
 NEUTRAL_SCORE = 2.5
+
+# an action-queue item older than this (days in its current status) is stale
+STALE_AFTER_DAYS = 7
+
+
+def _status_since(candidate: Candidate) -> str:
+    if candidate.history:
+        return candidate.history[-1].get("ts", "") or candidate.first_seen
+    return candidate.first_seen
+
+
+def _age_days(iso_ts: str, now: datetime) -> int:
+    if not iso_ts:
+        return 0
+    try:
+        entered = datetime.fromisoformat(iso_ts)
+    except ValueError:
+        return 0
+    if entered.tzinfo is None:
+        entered = entered.replace(tzinfo=timezone.utc)
+    return max(0, (now - entered).days)
 
 # lifecycle status -> the single next step a human must take (None = nothing)
 _NEXT_ACTION = {
@@ -48,18 +71,28 @@ def pipeline_report(
     discovery_log=None,
     llm_spend_log=None,
     llm_budget=None,
+    now: datetime | None = None,
 ) -> dict:
+    now = now or datetime.now(timezone.utc)
     candidates = store.all()
 
     status_counts = {status: 0 for status in lifecycle.STATUSES}
     for cand in candidates:
         status_counts[cand.status] = status_counts.get(cand.status, 0) + 1
 
-    action_queue = [
-        {"name": cand.name, "status": cand.status, "next_action": action}
-        for cand in candidates
-        if (action := next_action(cand, spend_ledger)) is not None
-    ]
+    action_queue = []
+    for cand in candidates:
+        action = next_action(cand, spend_ledger)
+        if action is None:
+            continue
+        age = _age_days(_status_since(cand), now)
+        action_queue.append({
+            "name": cand.name,
+            "status": cand.status,
+            "next_action": action,
+            "age_days": age,
+            "stale": age >= STALE_AFTER_DAYS,
+        })
 
     candidate_rows = [
         {
@@ -111,13 +144,19 @@ def render_text(report: dict) -> str:
         lines.append(f"  {status:<14} {report['status_counts'].get(status, 0)}")
 
     lines.append("")
-    lines.append("ACTION QUEUE")
-    if not report["action_queue"]:
+    queue = report["action_queue"]
+    n_stale = sum(1 for i in queue if i["stale"])
+    header = f"ACTION QUEUE ({len(queue)} awaiting a human"
+    header += f", {n_stale} stale)" if n_stale else ")"
+    lines.append(header)
+    if not queue:
         lines.append("  (nothing awaiting a human)")
     else:
-        for item in report["action_queue"]:
+        for item in queue:
+            mark = "! " if item["stale"] else "  "
             lines.append(
-                f"  {item['name']} [{item['status']}] -> {item['next_action']}"
+                f"{mark}{item['name']} [{item['status']}] ({item['age_days']}d) "
+                f"-> {item['next_action']}"
             )
 
     lines.append("")

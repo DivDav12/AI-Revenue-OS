@@ -54,12 +54,20 @@ def _action_queue(queue: list[dict]) -> str:
     rows = "".join(
         f"<tr><td>{_esc(item['name'])}</td>"
         f"<td>{_esc(item['status'])}</td>"
-        f"<td>{_esc(item['next_action'])}</td></tr>"
+        f"<td class='num'>{_num(item.get('age_days', 0))}d</td>"
+        + (
+            "<td class='low'>stale</td>" if item.get("stale")
+            else "<td></td>"
+        )
+        + f"<td>{_esc(item['next_action'])}</td></tr>"
         for item in queue
     )
-    return (
-        "<table><tr><th>candidate</th><th>status</th>"
-        f"<th>next action</th></tr>{rows}</table>"
+    n_stale = sum(1 for i in queue if i.get("stale"))
+    caption = f"<p>{len(queue)} awaiting a human"
+    caption += f", {n_stale} stale</p>" if n_stale else "</p>"
+    return caption + (
+        "<table><tr><th>candidate</th><th>status</th><th>age</th>"
+        f"<th></th><th>next action</th></tr>{rows}</table>"
     )
 
 
