@@ -241,6 +241,20 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertIn("class='taskchip'", html)
         self.assertIn(">research</div>", html)
 
+    def test_roster_panel_shows_all_21_with_planned_marked(self):
+        from revenue_os import roster
+        html = render_html(_report(self.store, self.d), _FIXED_TS)
+        self.assertIn("Target roster", html)
+        for spec in roster.AGENTS:
+            self.assertIn(spec.name, html)
+        self.assertIn("class='ragent rlive'", html)      # live agents
+        self.assertIn("class='ragent rplanned'", html)   # planned agents
+        # a planned agent carries no status pill / metrics
+        panel = html.split("Target roster")[1]
+        self.assertNotIn("cs-working", panel)
+        self.assertNotIn("class='meta'", panel)
+        self.assertIn("Planned agents are not running", html)
+
     def test_agent_map_empty_links_shows_standby_not_fake_edges(self):
         html = render_html(
             _report(self.store, self.d), _FIXED_TS,
@@ -250,9 +264,10 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertIn("Agents are standing by.", html)
         self.assertNotIn("<line", html)
         self.assertNotIn("class='taskchip'", html)
-        # nodes still rendered
+        # map nodes still rendered
+        self.assertIn("class='node'", html)
         self.assertIn("operator (CEO)", html)
-        self.assertIn("Research Agent", html)
+        self.assertIn("Product Researcher", html)
 
     def test_agent_map_decision_link_needs_llm_policy_and_real_call(self):
         base = _report(self.store, self.d)
@@ -281,7 +296,7 @@ class RenderHtmlTests(unittest.TestCase):
         })
         self.assertIn("class='acard cs-", html)
         self.assertIn("operator (CEO)", html)
-        self.assertIn("Research Agent", html)
+        self.assertIn("Product Researcher", html)
         self.assertIn("mode: keyword", html)
         self.assertIn("st-disabled", html)       # research off
         self.assertIn("st-deterministic", html)  # template planner / rules

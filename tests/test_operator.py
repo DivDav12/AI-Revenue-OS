@@ -143,6 +143,12 @@ class OperatorAgentTests(unittest.TestCase):
         self.assertEqual(actions.count("discover"), 1)
         self.assertEqual(actions[-1], "stop")
 
+    def test_human_gated_capability_is_never_auto_executed(self):
+        from revenue_os.operator import Decision
+        agent = OperatorAgent(self.d, Goal())
+        out = agent.act(Decision("run_ads", "hypothetical"))  # roster gate=human
+        self.assertIn("human-gated", out["skipped"])
+
     def test_max_cycles_is_a_hard_cap(self):
         # a goal that would keep wanting discovery: stale threshold 0, shortlist huge
         agent = OperatorAgent(self.d, Goal(shortlist_n=999, discovery_stale_days=0))

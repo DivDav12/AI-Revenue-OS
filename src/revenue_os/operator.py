@@ -40,6 +40,7 @@ from .llm_workers import (
 )
 from .normalize import to_opportunity
 from .offer import propose_offer
+from . import roster
 from .report import STALE_AFTER_DAYS, _age_days, digest_line, pipeline_report
 from .revenue import RevenueLedger
 from .sources import FilteredSource, build_source
@@ -332,6 +333,11 @@ class OperatorAgent:
 
     def act(self, decision: Decision) -> dict:
         g = self.goal
+
+        # roster invariant: a human-gated capability is never auto-executed.
+        spec = roster.by_capability(decision.action)
+        if spec is not None and spec.gate == "human":
+            return {"skipped": f"{spec.name} is human-gated"}
 
         if decision.action == "discover":
             store, _, _ = self._load()

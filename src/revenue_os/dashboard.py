@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from html import escape
 
-from . import lifecycle
+from . import lifecycle, roster
 from .opportunity import CRITERIA
 from .report import NEUTRAL_SCORE
 
@@ -192,6 +192,20 @@ td.low{color:var(--bad);text-align:right;font-weight:600}
 details{margin:.3rem 0}
 summary{cursor:pointer;padding:.28rem 0}
 details table{margin:.4rem 0 .7rem;max-width:460px}
+h3{font-size:.58rem;letter-spacing:.15em;text-transform:uppercase;color:var(--dim);
+  font-weight:600;margin:1.1rem 0 .5rem}
+.rgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:.5rem}
+.ragent{display:flex;align-items:center;gap:.5rem;padding:.45rem .55rem;border-radius:9px;
+  border:1px solid var(--edge);background:var(--surface2)}
+.ragent .avatar{width:28px;height:28px;border-radius:8px;box-shadow:none}
+.ragent .avatar svg{width:15px;height:15px}
+.ragent.rplanned{opacity:.5}
+.ragent.rlive{border-color:color-mix(in srgb,var(--good) 40%,var(--edge))}
+.rname{font-size:.76rem;font-weight:600}
+.rrole{font-size:.62rem;color:var(--dim);text-transform:uppercase;letter-spacing:.04em}
+.rtag{margin-left:auto;font-size:.54rem;font-weight:700;letter-spacing:.06em;
+  padding:.12rem .35rem;border-radius:12px;border:1px solid var(--edge-hi);color:var(--dim)}
+.ragent.rlive .rtag{color:var(--good);border-color:color-mix(in srgb,var(--good) 45%,var(--edge))}
 """.strip()
 
 # ---------------------------------------------------------------------------
@@ -245,12 +259,14 @@ _ACCENT = {
     "decision": "#f87171", "generic": "#94a3b8",
 }
 
-# llm_spend activity  ->  (agent key, display name, role, Goal field, llm-mode value)
+# llm_spend activity  ->  (node key, display name, role, Goal field, llm-mode value)
+# The first two are live roster agents (see roster.py); planner / offer /
+# decision are internal steps not yet promoted to named roster agents.
 _WORKERS = (
-    ("evaluate", "evaluator", "Evaluator", "Scoring",        "evaluator",       "llm"),
-    ("research", "researcher", "Research Agent", "Due diligence", "research",   "llm"),
-    ("plan",     "planner",    "Planner",   "Validation plan", "planner",       "llm"),
-    ("offer",    "offer",      "Offer Agent", "First offer",  "proposer",       "llm"),
+    ("evaluate", "evaluator", "Opportunity Finder", "Scoring",    "evaluator",       "llm"),
+    ("research", "researcher", "Product Researcher", "Due diligence", "research",     "llm"),
+    ("plan",     "planner",    "Validation Planner", "Validation plan", "planner",    "llm"),
+    ("offer",    "offer",      "Offer Builder", "First offer",    "proposer",         "llm"),
     ("decide",   "decision",   "Decision Policy", "Orchestration", "decision_policy", "llm"),
 )
 
@@ -377,7 +393,7 @@ def _agent_map(agent_log, spend_entries, goal, session, report,
     disc = [e for e in decisions if e.get("action") == "discover"]
     src = ", ".join(goal.get("sources", ["static"]))
     nodes["discovery"] = dict(
-        key="discovery", name="Discovery", role="Signal intake",
+        key="discovery", name="Market Scanner", role="Signal intake",
         status="active" if (running and disc) else "idle",
         task=f"sources: {_esc(src)}",
         meta=[("runs", len(disc)),
@@ -444,6 +460,32 @@ def _agent_map(agent_log, spend_entries, goal, session, report,
         for r in _MAP_POS if r in nodes
     )
     return f"<div class='amap'>{_wires(edges, last_edge)}{positioned}</div>"
+
+
+def _roster_panel() -> str:
+    """The full target roster from roster.py. Planned agents are shown but
+    carry no status or metrics - they are not running."""
+    n_live = len(roster.live())
+    blocks = ""
+    for cluster in roster.CLUSTERS:
+        rows = ""
+        for a in (s for s in roster.AGENTS if s.cluster == cluster):
+            live = a.status == "live"
+            cls = "rlive" if live else "rplanned"
+            tag = "live" if live else ("human-gated" if a.gate == "human" else "planned")
+            rows += (
+                f"<div class='ragent {cls}'>{_avatar(a.node)}"
+                f"<div><div class='rname'>{_esc(a.name)}</div>"
+                f"<div class='rrole'>{_esc(a.role)}</div></div>"
+                f"<span class='rtag'>{tag}</span></div>"
+            )
+        blocks += (f"<h3>{_esc(cluster)}</h3><div class='rgrid'>{rows}</div>")
+    return (
+        f"<p class='muted'>Target roster: {len(roster.AGENTS)} agents &middot; "
+        f"{n_live} live &middot; {len(roster.AGENTS) - n_live} planned. "
+        "Planned agents are not running and report no activity.</p>"
+        f"{blocks}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -818,6 +860,8 @@ def render_html(report: dict, generated_at: str, *,
         + _attention(queue)
         + "<section id='agents'><h2>Agents</h2>"
         + _agent_map(agent_log or [], spend_entries, goal, session, report, bool(queue))
+        + "<h3>Target roster</h3>"
+        + _roster_panel()
         + "</section>"
         + "<div class='cols'>"
         + "<section id='tasks'><h2>Task queue</h2>"
