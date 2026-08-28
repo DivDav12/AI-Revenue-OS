@@ -13,7 +13,8 @@ from .orchestrator import Orchestrator
 from .registry import AgentRegistry
 from .sources import RawSignal, StaticSource
 from .store import CandidateStore
-from .workflow import run_discovery_cycle
+from .validation import record_validation_outcome
+from .workflow import investigate_approved, run_discovery_cycle
 
 _SAMPLE_SIGNALS = [
     RawSignal(
@@ -76,14 +77,36 @@ def main() -> None:
         print(f"  {rank}. {cand.name}: {cand.total} ({cand.verdict}) [{cand.status}]")
 
     shortlisted = [c for c in candidates if c.status == "shortlisted"]
-    if shortlisted:
-        decided = record_decision(
+    if not shortlisted:
+        print(f"\nStore file: {store.path}")
+        return
+
+    decided = record_decision(
+        store,
+        shortlisted[0].name,
+        "approve",
+        approver="human-owner",
+        note="demo approval",
+    )
+    print(f"\nHuman decision recorded: {decided.name} -> {decided.status}")
+
+    investigating = investigate_approved(store)
+    for cand in investigating:
+        print(f"\nValidation plan for {cand.name}:")
+        print(f"  hypothesis: {cand.plan['hypothesis']}")
+        print(f"  cheapest test: {cand.plan['cheapest_test']}")
+        print(f"  success metric: {cand.plan['success_metric']}")
+        print(f"  max cost: {cand.plan['max_cost']}")
+
+    if investigating:
+        final = record_validation_outcome(
             store,
-            shortlisted[0].name,
-            "approve",
-            approver="human-owner",
-            note="demo approval",
+            investigating[0].name,
+            "validated",
+            metric_value="27 waitlist signups",
+            actor="human-owner",
+            note="demo outcome",
         )
-        print(f"\nHuman decision recorded: {decided.name} -> {decided.status}")
+        print(f"\nValidation outcome recorded: {final.name} -> {final.status}")
 
     print(f"\nStore file: {store.path}")

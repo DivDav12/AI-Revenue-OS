@@ -32,6 +32,8 @@ class Candidate:
     first_seen: str = ""
     last_scored: str = ""
     history: tuple = ()
+    plan: dict = field(default_factory=dict)
+    outcome: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -46,6 +48,8 @@ class Candidate:
             "first_seen": self.first_seen,
             "last_scored": self.last_scored,
             "history": [dict(h) for h in self.history],
+            "plan": dict(self.plan),
+            "outcome": dict(self.outcome),
         }
 
     @classmethod
@@ -62,6 +66,8 @@ class Candidate:
             first_seen=data.get("first_seen", ""),
             last_scored=data.get("last_scored", ""),
             history=tuple(data.get("history", ())),
+            plan=dict(data.get("plan", {})),
+            outcome=dict(data.get("outcome", {})),
         )
 
 

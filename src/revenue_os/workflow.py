@@ -7,6 +7,8 @@ collects the Results, and returns the successful scores ranked by total
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from . import lifecycle
 from .agent import DiscoveryAgent, EvaluatorAgent
 from .messages import Task
@@ -14,6 +16,7 @@ from .opportunity import Opportunity, OpportunityScore
 from .orchestrator import Orchestrator
 from .registry import AgentRegistry
 from .store import Candidate, CandidateStore
+from .validation import plan_validation
 
 
 def _default_orchestrator() -> Orchestrator:
@@ -128,3 +131,21 @@ def run_discovery_cycle(
 
     store.save()
     return store.all()
+
+
+def investigate_approved(store: CandidateStore) -> list[Candidate]:
+    """Attach a validation plan to each approved candidate and start investigation.
+
+    Idempotent: only 'approved' candidates are touched. Returns the
+    candidates now in 'investigating'.
+    """
+    for cand in list(store.all()):
+        if cand.status != "approved":
+            continue
+        plan = plan_validation(cand)
+        advanced = lifecycle.advance(
+            cand, "investigating", note="auto-investigate", actor="system"
+        )
+        store.put(replace(advanced, plan=plan.to_dict()))
+    store.save()
+    return [c for c in store.all() if c.status == "investigating"]
