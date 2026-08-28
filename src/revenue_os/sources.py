@@ -53,15 +53,23 @@ class StaticSource:
 
 
 class FilteredSource:
-    """Wraps another Source, keeping only signals that satisfy a predicate."""
+    """Wraps another Source, keeping only signals that satisfy a predicate.
 
-    def __init__(self, inner, predicate, name: str = "filtered") -> None:
+    Carries the inner source's name and records how many signals the
+    last fetch() dropped, so a discovery cycle can log the filter effect.
+    """
+
+    def __init__(self, inner, predicate, name: str | None = None) -> None:
         self._inner = inner
         self._predicate = predicate
-        self.name = name
+        self.name = name or getattr(inner, "name", "filtered")
+        self.dropped = 0
 
     def fetch(self, limit: int) -> list[RawSignal]:
-        return [s for s in self._inner.fetch(limit) if self._predicate(s)]
+        signals = self._inner.fetch(limit)
+        kept = [s for s in signals if self._predicate(s)]
+        self.dropped = len(signals) - len(kept)
+        return kept
 
 
 class LocalFileSource:

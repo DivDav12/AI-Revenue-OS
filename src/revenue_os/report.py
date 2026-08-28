@@ -36,6 +36,7 @@ def pipeline_report(
     store: CandidateStore,
     revenue_ledger: RevenueLedger,
     spend_ledger: SpendLedger,
+    discovery_log=None,
 ) -> dict:
     candidates = store.all()
 
@@ -66,6 +67,7 @@ def pipeline_report(
         "status_counts": status_counts,
         "action_queue": action_queue,
         "candidates": candidate_rows,
+        "last_discovery": discovery_log.latest() if discovery_log is not None else None,
         "roi": roi_summary(store, revenue_ledger, spend_ledger),
         "totals": {
             "candidates": len(candidates),
@@ -92,6 +94,23 @@ def render_text(report: dict) -> str:
             lines.append(
                 f"  {item['name']} [{item['status']}] -> {item['next_action']}"
             )
+
+    lines.append("")
+    lines.append("LAST DISCOVERY")
+    last = report.get("last_discovery")
+    if not last:
+        lines.append("  (no discovery run recorded)")
+    else:
+        lines.append(f"  {last['ts']}  source={last['source']} limit={last['limit']}")
+        lines.append(
+            f"  fetched={last['fetched']} filtered_out={last['filtered_out']} "
+            f"dropped_below_score={last['dropped_below_score']} "
+            f"evaluated={last['evaluated']} kept={last['kept']}"
+        )
+        lines.append(
+            f"  new={last['new']} refreshed={last['refreshed']} "
+            f"shortlisted={last['shortlisted']}"
+        )
 
     totals = report["totals"]
     lines.append("")

@@ -12,12 +12,13 @@ from dataclasses import replace
 
 from . import lifecycle
 from .agent import DiscoveryAgent, EvaluatorAgent
+from .discovery_log import DiscoveryLog
 from .messages import Task
 from .opportunity import Opportunity, OpportunityScore
 from .orchestrator import Orchestrator
 from .registry import AgentRegistry
 from .offer import propose_offer
-from .store import Candidate, CandidateStore
+from .store import Candidate, CandidateStore, now_iso
 from .validation import plan_validation
 
 logger = logging.getLogger(__name__)
@@ -100,17 +101,22 @@ def run_discovery_cycle(
     limit: int = 10,
     shortlist_n: int = 3,
     min_score: float = 0.0,
+    log: DiscoveryLog | None = None,
 ) -> list[Candidate]:
     """Discover, evaluate, persist candidates, and auto-shortlist the top N.
 
     Candidates scoring below min_score (default 0.0 = no gate) are not
     persisted. Idempotent: re-runs refresh scores but never downgrade a
     candidate a human has already acted on. Returns all stored candidates.
+
+    When a DiscoveryLog is supplied, one entry recording the run's
+    counts is appended and saved.
     """
     opportunities = _discover(source, limit)
     if not opportunities:
         logger.warning("discovery returned no opportunities (source failure or empty)")
     ranked = run_evaluation(opportunities)
+    evaluated = len(ranked)
     kept = [s for s in ranked if s.total >= min_score]
     dropped = len(ranked) - len(kept)
     if dropped:
@@ -118,10 +124,13 @@ def run_discovery_cycle(
     ranked = kept
     scores = {s.opportunity_name: s for s in ranked}
 
+    new_count = 0
+    refreshed_count = 0
     for opp in opportunities:
         score = scores.get(opp.name)
         if score is None:
             continue
+        existed = store.get(opp.name) is not None
         store.upsert(
             Candidate(
                 name=opp.name,
@@ -133,7 +142,12 @@ def run_discovery_cycle(
                 breakdown=score.breakdown,
             )
         )
+        if existed:
+            refreshed_count += 1
+        else:
+            new_count += 1
 
+    shortlisted_count = 0
     for score in ranked[: max(0, shortlist_n)]:
         name = score.opportunity_name
         cand = store.get(name)
@@ -143,6 +157,25 @@ def run_discovery_cycle(
                     cand, "shortlisted", note="auto-shortlist", actor="system"
                 )
             )
+            shortlisted_count += 1
+
+    if log is not None:
+        log.add(
+            {
+                "ts": now_iso(),
+                "source": getattr(source, "name", ""),
+                "limit": limit,
+                "fetched": len(opportunities),
+                "filtered_out": int(getattr(source, "dropped", 0)),
+                "dropped_below_score": dropped,
+                "evaluated": evaluated,
+                "kept": len(kept),
+                "new": new_count,
+                "refreshed": refreshed_count,
+                "shortlisted": shortlisted_count,
+            }
+        )
+        log.save()
 
     store.save()
     return store.all()

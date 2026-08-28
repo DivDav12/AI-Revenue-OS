@@ -32,6 +32,7 @@ from pathlib import Path
 
 from .approval import record_decision
 from .dashboard import render_html
+from .discovery_log import DiscoveryLog
 from .filtering import is_relevant
 from .report import pipeline_report, render_candidate, render_text
 from .revenue import RevenueLedger, mark_launched, record_payment
@@ -75,8 +76,14 @@ def _require(store: CandidateStore, name: str):
 # --- read commands ---------------------------------------------------------
 
 
+def _discovery_log(data_dir: Path) -> DiscoveryLog:
+    return DiscoveryLog.load(data_dir / "discovery_runs.json")
+
+
 def _cmd_run(args) -> int:
-    store, revenue_ledger, spend_ledger = _load(_data_dir(args))
+    data_dir = _data_dir(args)
+    store, revenue_ledger, spend_ledger = _load(data_dir)
+    discovery_log = _discovery_log(data_dir)
     source = build_source(args.source, args.source_path)
     if args.filter:
         source = FilteredSource(source, is_relevant)
@@ -86,21 +93,29 @@ def _cmd_run(args) -> int:
         limit=args.limit,
         shortlist_n=args.shortlist,
         min_score=args.min_score,
+        log=discovery_log,
     )
-    print(render_text(pipeline_report(store, revenue_ledger, spend_ledger)))
+    print(render_text(
+        pipeline_report(store, revenue_ledger, spend_ledger, discovery_log)
+    ))
     return 0
 
 
 def _cmd_report(args) -> int:
-    store, revenue_ledger, spend_ledger = _load(_data_dir(args))
-    print(render_text(pipeline_report(store, revenue_ledger, spend_ledger)))
+    data_dir = _data_dir(args)
+    store, revenue_ledger, spend_ledger = _load(data_dir)
+    print(render_text(
+        pipeline_report(store, revenue_ledger, spend_ledger, _discovery_log(data_dir))
+    ))
     return 0
 
 
 def _cmd_dashboard(args) -> int:
     data_dir = _data_dir(args)
     store, revenue_ledger, spend_ledger = _load(data_dir)
-    report = pipeline_report(store, revenue_ledger, spend_ledger)
+    report = pipeline_report(
+        store, revenue_ledger, spend_ledger, _discovery_log(data_dir)
+    )
     html = render_html(report, generated_at=now_iso())
     out = Path(args.out) if args.out else data_dir / "dashboard.html"
     out.parent.mkdir(parents=True, exist_ok=True)

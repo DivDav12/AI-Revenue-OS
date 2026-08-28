@@ -96,6 +96,26 @@ def _candidate_blocks(candidates: list[dict]) -> str:
     return blocks
 
 
+_DISCOVERY_FIELDS = (
+    "source", "limit", "fetched", "filtered_out", "dropped_below_score",
+    "evaluated", "kept", "new", "refreshed", "shortlisted",
+)
+
+
+def _last_discovery(entry: dict | None) -> str:
+    if not entry:
+        return "<p class='muted'>No discovery run recorded.</p>"
+    rows = "".join(
+        f"<tr><td>{_esc(field)}</td>"
+        f"<td class='num'>{_esc(entry.get(field, ''))}</td></tr>"
+        for field in _DISCOVERY_FIELDS
+    )
+    return (
+        f"<p class='generated'>{_esc(entry.get('ts', ''))}</p>"
+        f"<table><tr><th>field</th><th>value</th></tr>{rows}</table>"
+    )
+
+
 def _roi_section(roi: dict) -> str:
     totals = (
         f"<p>revenue <strong>{_num(roi['grand_revenue'])}</strong> &nbsp; "
@@ -134,6 +154,8 @@ def render_html(report: dict, generated_at: str) -> str:
             _status_table(report["status_counts"]),
             "<h2>Action queue</h2>",
             _action_queue(report["action_queue"]),
+            "<h2>Last discovery</h2>",
+            _last_discovery(report.get("last_discovery")),
             "<h2>Candidates</h2>",
             _candidate_blocks(report.get("candidates", [])),
             "<h2>ROI</h2>",
