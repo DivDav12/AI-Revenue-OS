@@ -206,12 +206,25 @@ class LlmNormalizerCacheTests(unittest.TestCase):
         self.assertEqual(client.calls, 2)
 
     def test_estimate_skips_cached_signals(self):
+        from revenue_os.llm_normalize import cache_key
+
         sig = RawSignal(title="cached one", text="body")
         self.assertGreater(estimate_cost_usd([sig], "claude-sonnet-5"), 0.0)
-        self.cache.put(sig, "claude-sonnet-5", {c: 3.0 for c in CRITERIA}, "r")
+        self.cache.put(
+            cache_key(sig, "claude-sonnet-5"),
+            {"scores": {c: 3.0 for c in CRITERIA}, "rationale": "r"},
+        )
         self.assertEqual(
             estimate_cost_usd([sig], "claude-sonnet-5", cache=self.cache), 0.0
         )
+
+    def test_cache_key_sensitive_to_model_and_text(self):
+        from revenue_os.llm_normalize import cache_key
+
+        base = cache_key(RawSignal(title="A", text="b"), "claude-sonnet-5")
+        self.assertEqual(base, cache_key(RawSignal(title="A", text="b"), "claude-sonnet-5"))
+        self.assertNotEqual(base, cache_key(RawSignal(title="A", text="b"), "claude-opus-5"))
+        self.assertNotEqual(base, cache_key(RawSignal(title="A", text="c"), "claude-sonnet-5"))
 
 
 class RunCycleWithLlmTests(unittest.TestCase):

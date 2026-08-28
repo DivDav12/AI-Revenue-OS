@@ -10,7 +10,7 @@ Read commands:
 
 Human decision commands (operate on the persistent --data-dir store):
   approve NAME / reject NAME
-  investigate
+  investigate       (--planner llm opt-in; template by default)
   outcome NAME {validated|rejected} --metric TEXT
   prepare-launch
   launch NAME
@@ -206,9 +206,51 @@ def _cmd_reject(args) -> int:
     return 0
 
 
+def _build_planner(args, store, data_dir: Path):
+    """Return (planner, cache). Template path: the deterministic default.
+    LLM path (opt-in): estimate spend over the approved candidates,
+    refuse if it exceeds the ceiling, then a metered, cached planner."""
+    from .validation import plan_validation
+
+    if args.planner == "template":
+        return plan_validation, None
+
+    from .llm_cache import LlmCache
+    from .llm_normalize import build_client
+    from .llm_plan import LlmPlanner, estimate_plan_cost_usd
+
+    approved = [c for c in store.all() if c.status == "approved"]
+    cache = LlmCache.load(data_dir / "llm_plan_cache.json")
+    est = estimate_plan_cost_usd(
+        approved, args.model, cache=None if args.refresh_plan else cache
+    )
+    if est > args.max_plan_cost:
+        raise ValueError(
+            f"estimated plan cost ${est} exceeds --max-plan-cost "
+            f"${args.max_plan_cost}; nothing was planned"
+        )
+    planner = LlmPlanner(
+        client=build_client(), model=args.model,
+        max_cost_usd=args.max_plan_cost, cache=cache, refresh=args.refresh_plan,
+    )
+    return planner, cache
+
+
 def _cmd_investigate(args) -> int:
-    store, _, _ = _load(_data_dir(args))
-    investigating = investigate_approved(store)
+    data_dir = _data_dir(args)
+    store, _, _ = _load(data_dir)
+    planner, cache = _build_planner(args, store, data_dir)
+    investigating = investigate_approved(store, planner=planner)
+    if cache is not None:
+        cache.save()
+    if args.planner == "llm":
+        meter = getattr(planner, "meter", None)
+        actual = meter.cost_usd if meter is not None else 0.0
+        note = " (cost ceiling hit)" if getattr(planner, "ceiling_hit", False) else ""
+        print(
+            f"llm planner: actual ${actual}; cache {planner.cache_hits} hit / "
+            f"{planner.cache_misses} miss{note}"
+        )
     print(f"investigating: {len(investigating)} candidate(s)")
     return 0
 
@@ -366,9 +408,25 @@ def build_parser() -> argparse.ArgumentParser:
     reject.add_argument("name")
     reject.set_defaults(func=_cmd_reject)
 
-    sub.add_parser(
+    investigate = sub.add_parser(
         "investigate", parents=[common], help="plan + advance all approved candidates"
-    ).set_defaults(func=_cmd_investigate)
+    )
+    investigate.add_argument(
+        "--planner", choices=("template", "llm"), default="template",
+        help="how to design the validation test (default: deterministic template)",
+    )
+    investigate.add_argument(
+        "--model", default="claude-sonnet-5", help="model for --planner llm"
+    )
+    investigate.add_argument(
+        "--max-plan-cost", type=float, default=0.5,
+        help="USD ceiling for one --planner llm run (default 0.50)",
+    )
+    investigate.add_argument(
+        "--refresh-plan", action="store_true",
+        help="ignore cached llm plans and re-call the API",
+    )
+    investigate.set_defaults(func=_cmd_investigate)
 
     outcome = sub.add_parser(
         "outcome", parents=[common, actor], help="record a validation outcome"

@@ -28,7 +28,14 @@ _NEXT_ACTION = {
 }
 
 
-def next_action(candidate: Candidate) -> str | None:
+def next_action(candidate: Candidate, spend_ledger: SpendLedger | None = None) -> str | None:
+    if (
+        candidate.status == "investigating"
+        and candidate.plan.get("needs_human_budget")
+        and spend_ledger is not None
+        and spend_ledger.budget_for(candidate.name) == 0
+    ):
+        return "set a validation budget, then record outcome"
     return _NEXT_ACTION.get(candidate.status)
 
 
@@ -47,7 +54,7 @@ def pipeline_report(
     action_queue = [
         {"name": cand.name, "status": cand.status, "next_action": action}
         for cand in candidates
-        if (action := next_action(cand)) is not None
+        if (action := next_action(cand, spend_ledger)) is not None
     ]
 
     candidate_rows = [
@@ -59,6 +66,8 @@ def pipeline_report(
             "breakdown": dict(cand.breakdown),
             "estimate_source": cand.estimate_source,
             "rationale": cand.rationale,
+            "plan_needs_budget": bool(cand.plan.get("needs_human_budget")),
+            "plan_max_cost": cand.plan.get("max_cost", 0.0),
         }
         for cand in candidates
     ]

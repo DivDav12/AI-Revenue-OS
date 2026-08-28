@@ -95,8 +95,14 @@ def _candidate_blocks(candidates: list[dict]) -> str:
             f"<p>{_esc(rationale)}</p>" if rationale
             else "<p class='muted'>No rationale.</p>"
         )
+        budget_html = ""
+        if c.get("plan_needs_budget"):
+            budget_html = (
+                f"<p><strong>validation needs a budget decision: "
+                f"~${_num(c.get('plan_max_cost', 0.0))}</strong></p>"
+            )
         blocks += (
-            f"<details><summary>{summary}</summary>{rationale_html}"
+            f"<details><summary>{summary}</summary>{rationale_html}{budget_html}"
             f"{_breakdown_table(c.get('breakdown', {}))}</details>"
         )
     return blocks

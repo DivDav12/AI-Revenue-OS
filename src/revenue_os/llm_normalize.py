@@ -19,6 +19,7 @@ No money is moved anywhere in this module.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 
@@ -99,6 +100,12 @@ class CostMeter:
         )
 
 
+def cache_key(signal, model: str) -> str:
+    text = getattr(signal, "text", "") or ""
+    raw = f"eval\n{_PROMPT_VERSION}\n{model}\n{signal.title}\n{text}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def estimate_cost_usd(signals, model: str, cache=None) -> float:
     """Local pre-flight estimate (no API call): ~chars/4 in, ~350 out per
     signal. Signals already in `cache` are free and are skipped."""
@@ -106,7 +113,7 @@ def estimate_cost_usd(signals, model: str, cache=None) -> float:
     rubric_tokens = len(_RUBRIC) // 4
     total_in = total_out = 0
     for signal in signals:
-        if cache is not None and cache.get(signal, model) is not None:
+        if cache is not None and cache.get(cache_key(signal, model)) is not None:
             continue
         body = len(signal.title) + len(getattr(signal, "text", "") or "")
         total_in += rubric_tokens + body // 4 + 40
@@ -130,15 +137,15 @@ def build_client():
         raise ValueError(f"could not create Anthropic client: {exc}") from exc
 
 
-def _tool_input(response) -> dict:
+def _tool_input(response, tool_name: str = "record_scores") -> dict:
     for block in getattr(response, "content", []) or []:
         if getattr(block, "type", None) == "tool_use" and \
-                getattr(block, "name", None) == "record_scores":
+                getattr(block, "name", None) == tool_name:
             raw = block.input
             if isinstance(raw, str):
                 raw = json.loads(raw)
             return dict(raw)
-    raise ValueError("llm response had no record_scores tool call")
+    raise ValueError(f"llm response had no {tool_name} tool call")
 
 
 def _validate_scores(data: dict) -> dict[str, float]:
@@ -220,8 +227,9 @@ class LlmNormalizer:
             self.meter = CostMeter(self.model)
 
     def __call__(self, signal) -> Opportunity:
+        key = cache_key(signal, self.model)
         if self.cache is not None and not self.refresh:
-            hit = self.cache.get(signal, self.model)
+            hit = self.cache.get(key)
             if hit is not None:
                 self.cache_hits += 1
                 return _build(signal, dict(hit["scores"]), hit.get("rationale", ""))
@@ -237,5 +245,9 @@ class LlmNormalizer:
         )
         self.cache_misses += 1
         if self.cache is not None:
-            self.cache.put(signal, self.model, opp.estimates(), opp.rationale)
+            self.cache.put(
+                key,
+                {"scores": opp.estimates(), "rationale": opp.rationale,
+                 "model": self.model},
+            )
         return opp

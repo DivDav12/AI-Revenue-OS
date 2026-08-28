@@ -4,17 +4,12 @@ import unittest
 from pathlib import Path
 
 from revenue_os.llm_cache import LlmCache
-from revenue_os.opportunity import CRITERIA
-from revenue_os.sources import RawSignal
-
-_SCORES = {c: 3.0 for c in CRITERIA}
 
 
 class LlmCacheTests(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
         self.path = Path(self._dir.name) / "llm_cache.json"
-        self.sig = RawSignal(title="A paid API", text="monthly pricing")
 
     def tearDown(self):
         self._dir.cleanup()
@@ -22,44 +17,27 @@ class LlmCacheTests(unittest.TestCase):
     def test_missing_file_is_empty(self):
         self.assertEqual(len(LlmCache.load(self.path)), 0)
 
-    def test_round_trip(self):
+    def test_round_trip_stamps_cached_at(self):
         cache = LlmCache.load(self.path)
-        cache.put(self.sig, "claude-sonnet-5", _SCORES, "looks fine")
+        cache.put("k1", {"scores": {"a": 1.0}, "rationale": "x"})
+        cache.put("k2", {"plan": {"effort": "low"}})
         cache.save()
 
         reloaded = LlmCache.load(self.path)
-        self.assertEqual(len(reloaded), 1)
-        hit = reloaded.get(self.sig, "claude-sonnet-5")
-        self.assertEqual(hit["scores"], _SCORES)
-        self.assertEqual(hit["rationale"], "looks fine")
+        self.assertEqual(len(reloaded), 2)
+        self.assertIn("k1", reloaded)
+        hit = reloaded.get("k1")
+        self.assertEqual(hit["scores"], {"a": 1.0})
         self.assertIn("cached_at", hit)
 
     def test_get_unknown_returns_none(self):
-        self.assertIsNone(LlmCache.load(self.path).get(self.sig, "claude-sonnet-5"))
+        self.assertIsNone(LlmCache.load(self.path).get("nope"))
 
-    def test_key_stable_and_sensitive(self):
+    def test_get_returns_a_copy(self):
         cache = LlmCache(self.path)
-        base = cache.key(self.sig, "claude-sonnet-5")
-        self.assertEqual(base, cache.key(self.sig, "claude-sonnet-5"))
-        self.assertNotEqual(base, cache.key(self.sig, "claude-opus-5"))
-        self.assertNotEqual(
-            base, cache.key(RawSignal(title="A paid API", text="different"), "claude-sonnet-5")
-        )
-        self.assertNotEqual(
-            base, cache.key(RawSignal(title="Other", text="monthly pricing"), "claude-sonnet-5")
-        )
-
-    def test_prompt_version_is_in_key(self):
-        cache = LlmCache(self.path)
-        from revenue_os import llm_normalize
-
-        original = llm_normalize._PROMPT_VERSION
-        try:
-            llm_normalize._PROMPT_VERSION = original + "-x"
-            bumped = cache.key(self.sig, "claude-sonnet-5")
-        finally:
-            llm_normalize._PROMPT_VERSION = original
-        self.assertNotEqual(bumped, cache.key(self.sig, "claude-sonnet-5"))
+        cache.put("k", {"v": 1})
+        cache.get("k")["v"] = 99
+        self.assertEqual(cache.get("k")["v"], 1)
 
     def test_corrupt_file_raises(self):
         self.path.write_text("{not json", encoding="utf-8")

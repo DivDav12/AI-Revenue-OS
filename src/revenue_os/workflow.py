@@ -195,16 +195,22 @@ def run_discovery_cycle(
     return store.all()
 
 
-def investigate_approved(store: CandidateStore) -> list[Candidate]:
+def investigate_approved(store: CandidateStore, planner=plan_validation) -> list[Candidate]:
     """Attach a validation plan to each approved candidate and start investigation.
 
-    Idempotent: only 'approved' candidates are touched. Returns the
-    candidates now in 'investigating'.
+    `planner` maps a candidate to a ValidationPlan (default: the template
+    planner). If it raises, that candidate is left 'approved' for a later
+    retry and the rest continue. Idempotent. Returns the candidates now
+    in 'investigating'.
     """
     for cand in list(store.all()):
         if cand.status != "approved":
             continue
-        plan = plan_validation(cand)
+        try:
+            plan = planner(cand)
+        except Exception as exc:  # a bad plan must not strand the others
+            logger.warning("could not plan %r, left approved: %s", cand.name, exc)
+            continue
         advanced = lifecycle.advance(
             cand, "investigating", note="auto-investigate", actor="system"
         )

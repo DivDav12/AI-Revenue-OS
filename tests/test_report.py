@@ -41,6 +41,31 @@ class NextActionTests(unittest.TestCase):
                 next_action(Candidate(name="c", status=status)), expected[status]
             )
 
+    def test_budget_decision_state_for_costed_plan(self):
+        with tempfile.TemporaryDirectory() as d:
+            _, spend = _ledgers(d)
+            cand = Candidate(
+                name="c", status="investigating",
+                plan={"needs_human_budget": True, "max_cost": 62.0},
+            )
+            self.assertEqual(
+                next_action(cand, spend),
+                "set a validation budget, then record outcome",
+            )
+            from revenue_os.spend import set_budget
+
+            set_budget(spend, "c", 70.0, approver="o")
+            self.assertEqual(next_action(cand, spend), "record validation outcome")
+
+    def test_free_plan_keeps_default_action(self):
+        with tempfile.TemporaryDirectory() as d:
+            _, spend = _ledgers(d)
+            cand = Candidate(
+                name="c", status="investigating",
+                plan={"needs_human_budget": False},
+            )
+            self.assertEqual(next_action(cand, spend), "record validation outcome")
+
 
 class PipelineReportTests(unittest.TestCase):
     def setUp(self):

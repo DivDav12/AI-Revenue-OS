@@ -1,30 +1,24 @@
-"""Content-addressed cache of LLM criterion estimates.
+"""Content-addressed cache for LLM results.
 
-One JSON object at <data-dir>/llm_cache.json, atomically written, in the
-shape of the other stores. The key is a hash of the prompt version, the
-model, and the exact signal text sent to the model, so a re-run scores
-unchanged signals for free and returns stable numbers.
+One JSON object per cache file, atomically written, in the shape of the
+other stores. Keys are opaque strings the caller computes (a hash of the
+prompt version, the model, and the exact text sent to the model); values
+are caller-defined dicts, stamped with `cached_at` on write.
 
-No expiry: `run --refresh-eval` is the manual way to rebuild an entry.
-Standard library only. Never imported on the keyword path.
+Used by the LLM evaluator (llm_normalize) and the LLM planner (llm_plan),
+each with its own cache file. No expiry: `--refresh-eval` /
+`--refresh-plan` rebuild entries. Standard library only; never imported
+on the deterministic paths.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import tempfile
 from pathlib import Path
 
-from . import llm_normalize
 from .store import now_iso
-
-
-def _key(signal, model: str) -> str:
-    text = getattr(signal, "text", "") or ""
-    raw = f"{llm_normalize._PROMPT_VERSION}\n{model}\n{signal.title}\n{text}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 class LlmCache:
@@ -59,20 +53,15 @@ class LlmCache:
                 os.unlink(tmp)
             raise
 
-    def key(self, signal, model: str) -> str:
-        return _key(signal, model)
-
-    def get(self, signal, model: str) -> dict | None:
-        entry = self._by_key.get(_key(signal, model))
+    def get(self, key: str) -> dict | None:
+        entry = self._by_key.get(key)
         return dict(entry) if entry is not None else None
 
-    def put(self, signal, model: str, scores: dict, rationale: str) -> None:
-        self._by_key[_key(signal, model)] = {
-            "scores": {k: float(v) for k, v in scores.items()},
-            "rationale": str(rationale),
-            "model": model,
-            "cached_at": now_iso(),
-        }
+    def put(self, key: str, value: dict) -> None:
+        self._by_key[key] = {**value, "cached_at": now_iso()}
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._by_key
 
     def __len__(self) -> int:
         return len(self._by_key)
