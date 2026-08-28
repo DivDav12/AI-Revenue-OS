@@ -161,6 +161,33 @@ def _llm_spend_section(spend: dict | None) -> str:
     )
 
 
+def _outcomes_section(retro: dict | None) -> str:
+    retro = retro or {}
+    counts = retro.get("counts", {})
+    have = counts.get("validated", 0) + counts.get("rejected", 0)
+    if not retro.get("ready"):
+        return f"<p class='muted'>Need more recorded outcomes; have {have}.</p>"
+    tot = retro["total"]
+    head = (
+        f"<p>validated <strong>{_num(counts['validated'])}</strong> &nbsp; "
+        f"rejected <strong>{_num(counts['rejected'])}</strong> &nbsp; "
+        f"avg score {_num(tot['validated_avg'])} vs {_num(tot['rejected_avg'])}</p>"
+    )
+    rows = ""
+    for name in CRITERIA:
+        c = retro["by_criterion"][name]
+        rows += (
+            f"<tr><td>{_esc(name)}</td>"
+            f"<td class='num'>{_num(c['validated_avg'])}</td>"
+            f"<td class='num'>{_num(c['rejected_avg'])}</td>"
+            f"<td class='num'>{_num(c['gap'])}</td></tr>"
+        )
+    return head + (
+        "<table><tr><th>criterion</th><th>validated</th>"
+        f"<th>rejected</th><th>gap</th></tr>{rows}</table>"
+    )
+
+
 def _roi_section(roi: dict) -> str:
     totals = (
         f"<p>revenue <strong>{_num(roi['grand_revenue'])}</strong> &nbsp; "
@@ -205,6 +232,8 @@ def render_html(report: dict, generated_at: str) -> str:
             _llm_spend_section(report.get("llm_spend")),
             "<h2>Candidates</h2>",
             _candidate_blocks(report.get("candidates", [])),
+            "<h2>Outcomes</h2>",
+            _outcomes_section(report.get("outcomes")),
             "<h2>ROI</h2>",
             _roi_section(report["roi"]),
         ]

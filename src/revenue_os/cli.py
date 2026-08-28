@@ -5,6 +5,7 @@ Read commands:
                    (--evaluator llm opt-in; keyword heuristic by default)
   report           print the report only (no discovery)
   llm-costs        print recorded AI operating spend
+  outcomes         retrospective on validated vs rejected candidates
   dashboard        write a static HTML pipeline snapshot (no discovery)
   candidate NAME   print one candidate's full state
   demo             full end-to-end walkthrough in a throwaway directory
@@ -211,6 +212,35 @@ def _cmd_llm_budget(args) -> int:
         return 0
     new_cap = budget.set_cap(args.amount, actor=args.actor)
     print(f"llm budget cap -> ${new_cap}")
+    return 0
+
+
+def _cmd_outcomes(args) -> int:
+    from .opportunity import CRITERIA
+    from .retro import outcome_retro
+
+    store, _, _ = _load(_data_dir(args))
+    retro = outcome_retro(store)
+    c = retro["counts"]
+    have = c["validated"] + c["rejected"]
+    if not retro["ready"]:
+        print(f"(need more recorded outcomes; have {have})")
+        return 0
+    tot = retro["total"]
+    print(
+        f"validated {c['validated']} / rejected {c['rejected']}  "
+        f"avg score {tot['validated_avg']} vs {tot['rejected_avg']}"
+    )
+    print(f"  {'criterion':<24} {'validated':>10} {'rejected':>10} {'gap':>8}")
+    for name in CRITERIA:
+        row = retro["by_criterion"][name]
+        print(
+            f"  {name:<24} {row['validated_avg']:>10} "
+            f"{row['rejected_avg']:>10} {row['gap']:>+8}"
+        )
+    print("recorded outcomes:")
+    for o in retro["outcomes"]:
+        print(f"  {o['name']} [{o['outcome']}] score={o['score']} -> {o['metric_value']}")
     return 0
 
 
@@ -510,6 +540,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "llm-costs", parents=[common], help="print recorded AI operating spend"
     ).set_defaults(func=_cmd_llm_costs)
+
+    sub.add_parser(
+        "outcomes", parents=[common],
+        help="retrospective: how validated vs rejected candidates scored",
+    ).set_defaults(func=_cmd_outcomes)
 
     llm_budget = sub.add_parser(
         "llm-budget", parents=[common, actor_only],

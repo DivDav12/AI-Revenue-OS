@@ -119,6 +119,21 @@ class PipelineReportTests(unittest.TestCase):
         self.assertIn("ROI", text1)
         self.assertIn("b [shortlisted] -> approve or reject", text1)
 
+    def test_outcomes_section_not_ready_then_ready(self):
+        text = render_text(pipeline_report(self.store, self.rev, self.spend))
+        self.assertIn("OUTCOMES", text)
+        self.assertIn("need more recorded outcomes; have 0", text)
+
+        for i in range(3):
+            self.store.put(Candidate(
+                name=f"v{i}", status="validated", total=3.0,
+                breakdown={c: 3.0 for c in CRITERIA},
+                outcome={"outcome": "validated", "metric_value": "ok"},
+            ))
+        text = render_text(pipeline_report(self.store, self.rev, self.spend))
+        self.assertIn("validated 3 / rejected 0", text)
+        self.assertIn("most predictive:", text)
+
     def test_empty_store(self):
         report = pipeline_report(self.store, self.rev, self.spend)
         self.assertEqual(report["action_queue"], [])

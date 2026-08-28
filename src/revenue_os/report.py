@@ -8,6 +8,7 @@ from __future__ import annotations
 from . import lifecycle
 from .analytics import roi_summary
 from .opportunity import CRITERIA
+from .retro import outcome_retro
 from .revenue import RevenueLedger
 from .spend import SpendLedger
 from .store import Candidate, CandidateStore
@@ -90,6 +91,7 @@ def pipeline_report(
         "candidates": candidate_rows,
         "last_discovery": discovery_log.latest() if discovery_log is not None else None,
         "llm_spend": llm_spend,
+        "outcomes": outcome_retro(store),
         "roi": roi_summary(store, revenue_ledger, spend_ledger),
         "totals": {
             "candidates": len(candidates),
@@ -159,6 +161,26 @@ def render_text(report: dict) -> str:
             lines.append(
                 f"  cap ${spend['cap_usd']}  remaining ${spend['remaining_usd']}"
             )
+
+    lines.append("")
+    lines.append("OUTCOMES")
+    retro = report.get("outcomes") or {}
+    n_v = retro.get("counts", {}).get("validated", 0)
+    n_r = retro.get("counts", {}).get("rejected", 0)
+    if not retro.get("ready"):
+        lines.append(f"  (need more recorded outcomes; have {n_v + n_r})")
+    else:
+        tot = retro["total"]
+        lines.append(
+            f"  validated {n_v} / rejected {n_r} - "
+            f"avg score validated {tot['validated_avg']} vs "
+            f"rejected {tot['rejected_avg']}"
+        )
+        preds = ", ".join(
+            f"{name} {retro['by_criterion'][name]['gap']:+g}"
+            for name in retro["most_predictive"]
+        )
+        lines.append(f"  most predictive: {preds}")
 
     totals = report["totals"]
     lines.append("")
