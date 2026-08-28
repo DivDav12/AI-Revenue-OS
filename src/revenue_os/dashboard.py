@@ -103,7 +103,27 @@ section{background:var(--surface);border:1px solid var(--edge);border-radius:10p
   .rail{position:static;height:auto;display:flex;flex-wrap:wrap;gap:.3rem}
   .brand{width:100%}}
 
-.agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:.8rem}
+.amap{position:relative;width:100%;max-width:960px;aspect-ratio:5/4;margin:.4rem auto 1.4rem;
+  overflow:visible}
+.wires{position:absolute;inset:0;width:100%;height:100%;overflow:visible;z-index:1}
+.wires line{stroke:var(--edge-hi);stroke-width:2;stroke-dasharray:5 6;opacity:.75}
+.wires marker path{fill:var(--edge-hi)}
+.node{position:absolute;transform:translate(-50%,-50%);width:190px;z-index:2}
+.node .acard{padding:.62rem .7rem}
+.node .acard .task{font-size:.72rem}
+.taskchip{position:absolute;transform:translate(-50%,-50%);z-index:3;white-space:nowrap;
+  font-size:.6rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
+  padding:.2rem .55rem;border-radius:20px;background:var(--surface);
+  border:1px solid var(--glow);color:var(--glow);box-shadow:0 0 16px -4px var(--glow)}
+.standby{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:1;
+  text-align:center;font-size:.7rem;letter-spacing:.16em;text-transform:uppercase;color:var(--dim)}
+.standby span{display:block;margin-top:.3rem;font-size:.68rem;letter-spacing:.04em;
+  text-transform:none}
+@media (max-width:760px){
+  .amap{aspect-ratio:auto;max-width:none;display:grid;gap:.7rem}
+  .amap .node{position:static;transform:none;width:auto}
+  .wires,.taskchip,.standby{display:none}
+}
 .acard{background:linear-gradient(180deg,var(--surface2),var(--surface));
   border:1px solid var(--edge);border-radius:11px;padding:.85rem .9rem;
   position:relative;overflow:hidden;
@@ -273,7 +293,61 @@ def _agent_card(*, key, name, role, status, task, meta) -> str:
     )
 
 
-def _agents(agent_log, spend_entries, goal, session, queue_open: bool = False) -> str:
+# ---------------------------------------------------------------------------
+# orchestration map: deterministic role positions on a fixed logical canvas
+# (5:4 so the SVG wire layer scales uniformly with the positioned nodes)
+# ---------------------------------------------------------------------------
+
+_MAP_W, _MAP_H = 800, 640
+_MAP_POS = {
+    "discovery":  (400, 70),
+    "researcher": (150, 232),
+    "evaluator":  (650, 232),
+    "decision":   (120, 368),
+    "operator":   (400, 358),
+    "planner":    (400, 486),
+    "offer":      (400, 582),
+}
+
+
+def _pct(role: str) -> tuple[float, float]:
+    x, y = _MAP_POS[role]
+    return round(100 * x / _MAP_W, 2), round(100 * y / _MAP_H, 2)
+
+
+def _wires(edges: list[tuple[str, str]], last_edge) -> str:
+    if not edges:
+        wires = (
+            "<svg viewBox='0 0 800 640' class='wires' preserveAspectRatio='xMidYMid meet'"
+            " aria-hidden='true'></svg>"
+            "<div class='standby'>No active task links"
+            "<span>Agents are standing by.</span></div>"
+        )
+        return wires
+    lines = "".join(
+        "<line x1='{}' y1='{}' x2='{}' y2='{}' marker-end='url(#wa)'/>".format(
+            *_MAP_POS[a], *_MAP_POS[b]
+        )
+        for a, b in edges
+    )
+    chip = ""
+    if last_edge:
+        a, b, label = last_edge
+        mx = round(100 * (_MAP_POS[a][0] + _MAP_POS[b][0]) / 2 / _MAP_W, 2)
+        my = round(100 * (_MAP_POS[a][1] + _MAP_POS[b][1]) / 2 / _MAP_H, 2)
+        chip = (f"<div class='taskchip' style='left:{mx}%;top:{my}%'>"
+                f"{_esc(label)}</div>")
+    return (
+        "<svg viewBox='0 0 800 640' class='wires' preserveAspectRatio='xMidYMid meet'"
+        " aria-hidden='true'>"
+        "<defs><marker id='wa' viewBox='0 0 10 10' refX='8' refY='5' markerWidth='5'"
+        " markerHeight='5' orient='auto'><path d='M0 0 L10 5 L0 10 z'/></marker></defs>"
+        f"<g>{lines}</g></svg>{chip}"
+    )
+
+
+def _agent_map(agent_log, spend_entries, goal, session, report,
+               queue_open: bool = False) -> str:
     goal = goal or {}
     decisions = [e for e in (agent_log or []) if e.get("action") not in _MARKERS]
     running = bool(session) and not session.get("ended_at")
@@ -281,12 +355,9 @@ def _agents(agent_log, spend_entries, goal, session, queue_open: bool = False) -
     for e in (spend_entries or []):
         by_act.setdefault(e.get("activity"), []).append(e)
 
-    if not decisions and not by_act:
-        return "<p class='muted'>No agent activity yet.</p>"
+    nodes: dict[str, dict] = {}
 
-    cards = []
-
-    # --- operator (CEO) -------------------------------------------------
+    # --- operator (CEO) ----------------------------------------------
     if decisions:
         last = decisions[-1]
         note = f"{_esc(last.get('action', ''))} &mdash; {_esc(last.get('reason', ''))}"
@@ -296,34 +367,29 @@ def _agents(agent_log, spend_entries, goal, session, queue_open: bool = False) -
             op_status = "waiting"
         else:
             op_status = "idle"
-        cards.append(_agent_card(
-            key="operator", name="operator (CEO)", role="Coordinator",
-            status=op_status, task=note,
-            meta=[("decisions", len(decisions)), ("last", _esc(last.get("ts", "")))],
-        ))
+        op_meta = [("decisions", len(decisions)), ("last", _esc(last.get("ts", "")))]
     else:
-        cards.append(_agent_card(
-            key="operator", name="operator (CEO)", role="Coordinator",
-            status="idle", task="", meta=[("decisions", 0)],
-        ))
+        note, op_status, op_meta = "", "idle", [("decisions", 0)]
+    nodes["operator"] = dict(key="operator", name="operator (CEO)", role="Coordinator",
+                             status=op_status, task=note, meta=op_meta)
 
-    # --- discovery (deterministic, always available) ------------------
+    # --- discovery --------------------------------------------------
     disc = [e for e in decisions if e.get("action") == "discover"]
-    src = ", ".join(goal.get("sources", ["static"])) if goal else "static"
-    cards.append(_agent_card(
+    src = ", ".join(goal.get("sources", ["static"]))
+    nodes["discovery"] = dict(
         key="discovery", name="Discovery", role="Signal intake",
-        status="active" if (running and disc) else ("idle"),
+        status="active" if (running and disc) else "idle",
         task=f"sources: {_esc(src)}",
         meta=[("runs", len(disc)),
               ("last", _esc(disc[-1]["ts"]) if disc else "&mdash;"),
               ("filter", "on" if goal.get("filter") else "off")],
-    ))
+    )
 
-    # --- the configurable workers ------------------------------------
+    # --- configurable workers -------------------------------------
     for activity, key, name, role, gkey, on_val in _WORKERS:
         entries = by_act.get(activity, [])
         runs = len(entries)
-        mode = goal.get(gkey) if goal else None
+        mode = goal.get(gkey)
         ceiling = bool(entries and entries[-1].get("ceiling_hit"))
         if ceiling:
             status = "error"
@@ -344,14 +410,40 @@ def _agents(agent_log, spend_entries, goal, session, queue_open: bool = False) -
             task += f" &mdash; {calls} call(s)"
         meta = [("runs", runs)]
         if runs:
-            meta += [("cost", f"${_num(cost)}"),
-                     ("cache", f"{hits}/{hits + misses}")]
+            meta += [("cost", f"${_num(cost)}"), ("cache", f"{hits}/{hits + misses}")]
         if mode is not None:
             meta.append(("enabled", "yes" if mode == on_val else "no"))
-        cards.append(_agent_card(key=key, name=name, role=role,
-                                 status=status, task=task, meta=meta))
+        nodes[key] = dict(key=key, name=name, role=role,
+                          status=status, task=task, meta=meta)
 
-    return f"<div class='agrid'>{''.join(cards)}</div>"
+    # --- real relationships (only what the log / spend actually show) --
+    def took(action: str) -> bool:
+        return any(e.get("action") == action for e in decisions)
+
+    edges: list[tuple[str, str]] = []
+    if took("discover"):
+        edges += [("operator", "discovery"), ("discovery", "evaluator")]
+    if took("research"):
+        edges.append(("operator", "researcher"))
+    if took("investigate"):
+        edges.append(("operator", "planner"))
+    if took("prepare_launch"):
+        edges.append(("operator", "offer"))
+    if goal.get("decision_policy") == "llm" and by_act.get("decide"):
+        edges.append(("decision", "operator"))
+
+    last_edge = None
+    if decisions:
+        tgt = _ACT_AGENT.get(decisions[-1].get("action"))
+        if tgt and tgt != "operator" and ("operator", tgt) in edges:
+            last_edge = ("operator", tgt, decisions[-1].get("action"))
+
+    positioned = "".join(
+        f"<div class='node' style='left:{_pct(r)[0]}%;top:{_pct(r)[1]}%'>"
+        f"{_agent_card(**nodes[r])}</div>"
+        for r in _MAP_POS if r in nodes
+    )
+    return f"<div class='amap'>{_wires(edges, last_edge)}{positioned}</div>"
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +509,7 @@ def _topbar(report, session, agent_log, spend_entries, goal) -> str:
         + _metric("Main goal", _esc(goal_v), _esc(goal_s))
         + _metric("Session", _esc(_session_line(session)))
         + _metric("Active agents", str(active), "with recorded activity this session")
+        + _metric("Agent tasks", str(len(decisions)), "recorded this session")
         + _metric("Awaiting you", str(len(queue)), q_sub)
         + _metric("LLM spend", spend_v, spend_s)
         + _metric("Revenue", rev_v, rev_s)
@@ -692,7 +785,6 @@ _NAV = (
     ("Finances", "#finances", "offer"),
     ("Automations", None, "decision"),
     ("Logs", "#activity", "researcher"),
-    ("Settings", None, "evaluator"),
 )
 
 
@@ -725,7 +817,7 @@ def render_html(report: dict, generated_at: str, *,
         + _topbar(report, session, agent_log, spend_entries, goal)
         + _attention(queue)
         + "<section id='agents'><h2>Agents</h2>"
-        + _agents(agent_log or [], spend_entries, goal, session, bool(queue))
+        + _agent_map(agent_log or [], spend_entries, goal, session, report, bool(queue))
         + "</section>"
         + "<div class='cols'>"
         + "<section id='tasks'><h2>Task queue</h2>"

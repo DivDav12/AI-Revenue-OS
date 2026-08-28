@@ -43,9 +43,13 @@ class RenderHtmlTests(unittest.TestCase):
         html = render_html(_report(self.store, self.d), _FIXED_TS)
         self.assertTrue(html.startswith("<!doctype html>"))
         self.assertIn("No candidates.", html)
-        self.assertIn("No agent activity yet.", html)
         self.assertIn("No agent decisions recorded.", html)
         self.assertIn("Nothing awaiting a human.", html)
+        # empty map still renders standing-by nodes, invents no links
+        self.assertIn("class='amap'", html)
+        self.assertIn("Agents are standing by.", html)
+        self.assertIn("operator (CEO)", html)
+        self.assertNotIn("marker-end", html)
         self.assertIn(_FIXED_TS, html)
 
     def test_agents_and_decisions_sections(self):
@@ -155,17 +159,17 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertIn("class='shell'", html)          # sidebar + main grid
         self.assertIn("class='rail'", html)           # left nav rail
         self.assertIn("class='topbar'", html)         # top metric cards
-        self.assertIn("class='agrid'", html)          # agent workstation grid
+        self.assertIn("class='amap'", html)           # central orchestration map
         self.assertIn("--bg:#070b14", html)           # dark navy theme
         self.assertIn("prefers-color-scheme: light", html)
         self.assertIn("<svg viewBox", html)           # inline SVG avatars/icons
         # sidebar nav items
         for label in ("Dashboard", "Agents", "Tasks", "Opportunities",
-                      "Finances", "Automations", "Logs", "Settings"):
+                      "Finances", "Automations", "Logs"):
             self.assertIn(label, html)
         # top-bar metrics
-        for k in ("Main goal", "Session", "Active agents", "Awaiting you",
-                  "LLM spend", "Revenue"):
+        for k in ("Main goal", "Session", "Active agents", "Agent tasks",
+                  "Awaiting you", "LLM spend", "Revenue"):
             self.assertIn(k, html)
 
     def test_command_center_visual_treatment(self):
@@ -180,10 +184,10 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertIn("@keyframes scan", html)               # active-card scanline
         self.assertIn("@keyframes pulse", html)
         # no external resources sneaked in via the new styling
-        self.assertNotIn("http://", html)
-        self.assertNotIn("https://", html)
+        self.assertNotIn("://", html)                        # no protocol anywhere
         self.assertNotRegex(html, r"src\s*=")
-        self.assertNotIn("url(", html)                       # no external/asset urls
+        self.assertNotIn("url(http", html)                   # no remote css assets
+        self.assertNotIn("<script", html)
 
     def test_agent_card_carries_status_state_class(self):
         base = _report(self.store, self.d)
@@ -208,6 +212,63 @@ class RenderHtmlTests(unittest.TestCase):
             render_html(r, _FIXED_TS, agent_log=log),
             render_html(r, _FIXED_TS, agent_log=log),
         )
+
+    def test_agent_map_positions_nodes_and_draws_only_real_links(self):
+        base = _report(self.store, self.d)
+        # operator only discovered + researched -> exactly those links
+        log = [
+            {"ts": "t0", "action": "session_start", "reason": ""},
+            {"ts": "t1", "action": "discover", "reason": "cold start"},
+            {"ts": "t2", "action": "research", "reason": "due diligence"},
+        ]
+        html = render_html(base, _FIXED_TS, agent_log=log,
+                           goal={"sources": ["static"], "decision_policy": "rules"})
+        self.assertIn("class='amap'", html)
+        self.assertIn("class='node'", html)
+        self.assertIn("class='wires'", html)
+        # deterministic role positions (operator centre, discovery up top)
+        self.assertIn("left:50.0%;top:55.94%", html)   # operator
+        self.assertIn("left:50.0%;top:10.94%", html)   # discovery
+        # real links present
+        self.assertIn("marker-end='url(#wa)'", html)
+        # discover -> operator/discovery/evaluator lines exist; investigate did
+        # NOT happen, so no operator->planner line
+        self.assertIn("x1='400' y1='358' x2='400' y2='70'", html)   # op->discovery
+        self.assertIn("x1='400' y1='70' x2='650' y2='232'", html)   # discovery->evaluator
+        self.assertIn("x1='400' y1='358' x2='150' y2='232'", html)  # op->research
+        self.assertNotIn("x2='400' y2='486'", html)                 # no op->planner
+        # most-recent real task shown as a static chip on its edge
+        self.assertIn("class='taskchip'", html)
+        self.assertIn(">research</div>", html)
+
+    def test_agent_map_empty_links_shows_standby_not_fake_edges(self):
+        html = render_html(
+            _report(self.store, self.d), _FIXED_TS,
+            goal={"sources": ["static"], "decision_policy": "rules"},
+        )
+        self.assertIn("No active task links", html)
+        self.assertIn("Agents are standing by.", html)
+        self.assertNotIn("<line", html)
+        self.assertNotIn("class='taskchip'", html)
+        # nodes still rendered
+        self.assertIn("operator (CEO)", html)
+        self.assertIn("Research Agent", html)
+
+    def test_agent_map_decision_link_needs_llm_policy_and_real_call(self):
+        base = _report(self.store, self.d)
+        log = [{"ts": "t", "action": "stop", "reason": "enough"}]
+        # llm policy configured but no decide spend -> no decision->operator link
+        no_call = render_html(base, _FIXED_TS, agent_log=log,
+                              goal={"decision_policy": "llm"})
+        self.assertNotIn("x1='120' y1='368'", no_call)
+        # with a real decide spend entry -> link appears
+        with_call = render_html(
+            base, _FIXED_TS, agent_log=log,
+            spend_entries=[{"ts": "t", "activity": "decide", "api_calls": 1,
+                            "cost_usd": 0.01}],
+            goal={"decision_policy": "llm"},
+        )
+        self.assertIn("x1='120' y1='368' x2='400' y2='358'", with_call)
 
     def test_agent_cards_reflect_goal_modes(self):
         base = _report(self.store, self.d)
