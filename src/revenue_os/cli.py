@@ -30,9 +30,10 @@ import sys
 from pathlib import Path
 
 from .approval import record_decision
+from .filtering import is_relevant
 from .report import pipeline_report, render_candidate, render_text
 from .revenue import RevenueLedger, mark_launched, record_payment
-from .sources import build_source
+from .sources import FilteredSource, build_source
 from .spend import (
     DEFAULT_CEILING,
     SpendLedger,
@@ -75,7 +76,15 @@ def _require(store: CandidateStore, name: str):
 def _cmd_run(args) -> int:
     store, revenue_ledger, spend_ledger = _load(_data_dir(args))
     source = build_source(args.source)
-    run_discovery_cycle(source, store, limit=args.limit, shortlist_n=args.shortlist)
+    if args.filter:
+        source = FilteredSource(source, is_relevant)
+    run_discovery_cycle(
+        source,
+        store,
+        limit=args.limit,
+        shortlist_n=args.shortlist,
+        min_score=args.min_score,
+    )
     print(render_text(pipeline_report(store, revenue_ledger, spend_ledger)))
     return 0
 
@@ -222,6 +231,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--source", choices=("static", "hn"), default="static")
     run.add_argument("--limit", type=int, default=10)
     run.add_argument("--shortlist", type=int, default=3)
+    run.add_argument(
+        "--filter", action="store_true", help="keep only commercially relevant signals"
+    )
+    run.add_argument(
+        "--min-score", type=float, default=0.0, help="drop candidates below this score"
+    )
     run.set_defaults(func=_cmd_run)
 
     sub.add_parser("report", parents=[common], help="print the report only").set_defaults(

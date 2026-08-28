@@ -79,6 +79,7 @@ def discover_evaluate_select(
     *,
     limit: int = 10,
     top_n: int = 5,
+    min_score: float = 0.0,
     orchestrator: Orchestrator | None = None,
 ) -> list[OpportunityScore]:
     """CEO flow: discover signals -> normalize -> evaluate -> rank -> select top_n.
@@ -88,6 +89,7 @@ def discover_evaluate_select(
     """
     opportunities = _discover(source, limit)
     ranked = run_evaluation(opportunities, orchestrator=orchestrator)
+    ranked = [s for s in ranked if s.total >= min_score]
     return ranked[: max(0, top_n)]
 
 
@@ -97,16 +99,23 @@ def run_discovery_cycle(
     *,
     limit: int = 10,
     shortlist_n: int = 3,
+    min_score: float = 0.0,
 ) -> list[Candidate]:
     """Discover, evaluate, persist candidates, and auto-shortlist the top N.
 
-    Idempotent: re-runs refresh scores but never downgrade a candidate a
-    human has already acted on. Returns all stored candidates, ranked.
+    Candidates scoring below min_score (default 0.0 = no gate) are not
+    persisted. Idempotent: re-runs refresh scores but never downgrade a
+    candidate a human has already acted on. Returns all stored candidates.
     """
     opportunities = _discover(source, limit)
     if not opportunities:
         logger.warning("discovery returned no opportunities (source failure or empty)")
     ranked = run_evaluation(opportunities)
+    kept = [s for s in ranked if s.total >= min_score]
+    dropped = len(ranked) - len(kept)
+    if dropped:
+        logger.info("dropped %d candidate(s) below min_score=%s", dropped, min_score)
+    ranked = kept
     scores = {s.opportunity_name: s for s in ranked}
 
     for opp in opportunities:

@@ -52,6 +52,18 @@ class StaticSource:
         return self._signals[: max(0, limit)]
 
 
+class FilteredSource:
+    """Wraps another Source, keeping only signals that satisfy a predicate."""
+
+    def __init__(self, inner, predicate, name: str = "filtered") -> None:
+        self._inner = inner
+        self._predicate = predicate
+        self.name = name
+
+    def fetch(self, limit: int) -> list[RawSignal]:
+        return [s for s in self._inner.fetch(limit) if self._predicate(s)]
+
+
 class LocalFileSource:
     """Reads a JSON list of signal dicts from disk. Offline, deterministic."""
 
