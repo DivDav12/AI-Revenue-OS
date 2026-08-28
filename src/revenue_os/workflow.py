@@ -7,11 +7,13 @@ collects the Results, and returns the successful scores ranked by total
 
 from __future__ import annotations
 
+from . import lifecycle
 from .agent import DiscoveryAgent, EvaluatorAgent
 from .messages import Task
 from .opportunity import Opportunity, OpportunityScore
 from .orchestrator import Orchestrator
 from .registry import AgentRegistry
+from .store import Candidate, CandidateStore
 
 
 def _default_orchestrator() -> Orchestrator:
@@ -48,18 +50,7 @@ def run_evaluation(
     return scores
 
 
-def discover_evaluate_select(
-    source,
-    *,
-    limit: int = 10,
-    top_n: int = 5,
-    orchestrator: Orchestrator | None = None,
-) -> list[OpportunityScore]:
-    """CEO flow: discover signals -> normalize -> evaluate -> rank -> select top_n.
-
-    Selection only flags candidates for further investigation; no action
-    is taken and no financially or legally sensitive step is performed.
-    """
+def _discover(source, limit: int) -> list[Opportunity]:
     discovery = Orchestrator(registry=AgentRegistry())
     discovery.register(DiscoveryAgent(source, name="discovery"))
     discovery.add_task(
@@ -73,6 +64,67 @@ def discover_evaluate_select(
     for result in discovery.run_cycle():
         if result.status == "ok":
             opportunities.extend(result.output["opportunities"])
+    return opportunities
 
+
+def discover_evaluate_select(
+    source,
+    *,
+    limit: int = 10,
+    top_n: int = 5,
+    orchestrator: Orchestrator | None = None,
+) -> list[OpportunityScore]:
+    """CEO flow: discover signals -> normalize -> evaluate -> rank -> select top_n.
+
+    Selection only flags candidates for further investigation; no action
+    is taken and no financially or legally sensitive step is performed.
+    """
+    opportunities = _discover(source, limit)
     ranked = run_evaluation(opportunities, orchestrator=orchestrator)
     return ranked[: max(0, top_n)]
+
+
+def run_discovery_cycle(
+    source,
+    store: CandidateStore,
+    *,
+    limit: int = 10,
+    shortlist_n: int = 3,
+) -> list[Candidate]:
+    """Discover, evaluate, persist candidates, and auto-shortlist the top N.
+
+    Idempotent: re-runs refresh scores but never downgrade a candidate a
+    human has already acted on. Returns all stored candidates, ranked.
+    """
+    opportunities = _discover(source, limit)
+    ranked = run_evaluation(opportunities)
+    scores = {s.opportunity_name: s for s in ranked}
+
+    for opp in opportunities:
+        score = scores.get(opp.name)
+        if score is None:
+            continue
+        store.upsert(
+            Candidate(
+                name=opp.name,
+                description=opp.description,
+                source=opp.source,
+                raw_ref=opp.raw_ref,
+                total=score.total,
+                verdict=score.verdict,
+                breakdown=score.breakdown,
+            )
+        )
+
+    for score in ranked[: max(0, shortlist_n)]:
+        name = score.opportunity_name
+        cand = store.get(name)
+        if cand is not None and cand.status == "discovered":
+            store.put(
+                lifecycle.advance(
+                    cand, "shortlisted", note="auto-shortlist", actor="system"
+                )
+            )
+
+    store.save()
+    return store.all()

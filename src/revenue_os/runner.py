@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import logging
+import tempfile
+from pathlib import Path
 
 from .agent import DiscoveryAgent, EvaluatorAgent, ReverseAgent, WorkerAgent
+from .approval import record_decision
 from .messages import Result, Task
 from .orchestrator import Orchestrator
 from .registry import AgentRegistry
 from .sources import RawSignal, StaticSource
-from .workflow import discover_evaluate_select
+from .store import CandidateStore
+from .workflow import run_discovery_cycle
 
 _SAMPLE_SIGNALS = [
     RawSignal(
@@ -61,12 +65,25 @@ def run_once(tasks: list[Task] | None = None) -> list[Result]:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    candidates = discover_evaluate_select(
-        StaticSource(_SAMPLE_SIGNALS), limit=10, top_n=3
+    tmp = Path(tempfile.mkdtemp(prefix="revenue-os-"))
+    store = CandidateStore.load(tmp / "candidates.json")
+
+    candidates = run_discovery_cycle(
+        StaticSource(_SAMPLE_SIGNALS), store, limit=10, shortlist_n=3
     )
-    print("Candidate opportunities for further investigation:")
-    for rank, score in enumerate(candidates, start=1):
-        print(
-            f"  {rank}. {score.opportunity_name}: "
-            f"{score.total} ({score.verdict})"
+    print("Persisted candidates (ranked):")
+    for rank, cand in enumerate(candidates, start=1):
+        print(f"  {rank}. {cand.name}: {cand.total} ({cand.verdict}) [{cand.status}]")
+
+    shortlisted = [c for c in candidates if c.status == "shortlisted"]
+    if shortlisted:
+        decided = record_decision(
+            store,
+            shortlisted[0].name,
+            "approve",
+            approver="human-owner",
+            note="demo approval",
         )
+        print(f"\nHuman decision recorded: {decided.name} -> {decided.status}")
+
+    print(f"\nStore file: {store.path}")
