@@ -22,6 +22,7 @@ Cost-control commands (authorize/record only; never move money):
   authorize-spend NAME AMOUNT --purpose TEXT [--ceiling N]
   deny-spend NAME AMOUNT --purpose TEXT --reason TEXT
   record-spend NAME AMOUNT
+  llm-budget [AMOUNT]   show or raise the cumulative AI spend cap
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ from pathlib import Path
 from .approval import record_decision
 from .dashboard import render_html
 from .discovery_log import DiscoveryLog
+from .llm_budget import LlmBudget
 from .llm_spend import LlmSpendLog, entry_from
 from .filtering import is_relevant
 from .report import pipeline_report, render_candidate, render_text
@@ -93,6 +95,25 @@ def _record_llm_spend(data_dir: Path, activity: str, worker) -> None:
     log.save()
 
 
+def _llm_budget(data_dir: Path) -> LlmBudget:
+    return LlmBudget.load(data_dir / "llm_budget.json")
+
+
+def _budget_gate(data_dir: Path, est: float, per_run_ceiling: float) -> float:
+    """Refuse if recorded LLM spend + this run's estimate exceeds the
+    cumulative cap; otherwise return the effective per-run ceiling
+    (never more than what is left under the cap)."""
+    cap = _llm_budget(data_dir).cap
+    spent = _llm_spend_log(data_dir).summary()["total_cost_usd"]
+    remaining = round(cap - spent, 4)
+    if remaining <= 0 or est > remaining:
+        raise ValueError(
+            f"recorded LLM spend ${spent} + estimated ${est} exceeds the "
+            f"cumulative cap ${cap}; raise it with `llm-budget <amount>`"
+        )
+    return min(per_run_ceiling, remaining)
+
+
 def _build_normalizer(args, source, data_dir: Path):
     """Return (normalizer, evaluator_name, est_cost_usd, cache).
 
@@ -119,10 +140,11 @@ def _build_normalizer(args, source, data_dir: Path):
             f"estimated eval cost ${est} exceeds --max-eval-cost "
             f"${args.max_eval_cost}; nothing was evaluated"
         )
+    ceiling = _budget_gate(data_dir, est, args.max_eval_cost)
     normalizer = LlmNormalizer(
         client=build_client(),
         model=args.model,
-        max_cost_usd=args.max_eval_cost,
+        max_cost_usd=ceiling,
         cache=cache,
         refresh=args.refresh_eval,
     )
@@ -161,7 +183,8 @@ def _cmd_run(args) -> int:
             f"{normalizer.cache_misses} miss{note}"
         )
     print(render_text(pipeline_report(
-        store, revenue_ledger, spend_ledger, discovery_log, _llm_spend_log(data_dir)
+        store, revenue_ledger, spend_ledger, discovery_log,
+        _llm_spend_log(data_dir), _llm_budget(data_dir),
     )))
     return 0
 
@@ -171,8 +194,23 @@ def _cmd_report(args) -> int:
     store, revenue_ledger, spend_ledger = _load(data_dir)
     print(render_text(pipeline_report(
         store, revenue_ledger, spend_ledger,
-        _discovery_log(data_dir), _llm_spend_log(data_dir),
+        _discovery_log(data_dir), _llm_spend_log(data_dir), _llm_budget(data_dir),
     )))
+    return 0
+
+
+def _cmd_llm_budget(args) -> int:
+    data_dir = _data_dir(args)
+    budget = _llm_budget(data_dir)
+    if args.amount is None:
+        spent = _llm_spend_log(data_dir).summary()["total_cost_usd"]
+        print(
+            f"cap ${budget.cap}  spent ${spent}  "
+            f"remaining ${round(budget.cap - spent, 4)}"
+        )
+        return 0
+    new_cap = budget.set_cap(args.amount, actor=args.actor)
+    print(f"llm budget cap -> ${new_cap}")
     return 0
 
 
@@ -205,7 +243,7 @@ def _cmd_dashboard(args) -> int:
     store, revenue_ledger, spend_ledger = _load(data_dir)
     report = pipeline_report(
         store, revenue_ledger, spend_ledger,
-        _discovery_log(data_dir), _llm_spend_log(data_dir),
+        _discovery_log(data_dir), _llm_spend_log(data_dir), _llm_budget(data_dir),
     )
     html = render_html(report, generated_at=now_iso())
     out = Path(args.out) if args.out else data_dir / "dashboard.html"
@@ -268,9 +306,10 @@ def _build_planner(args, store, data_dir: Path):
             f"estimated plan cost ${est} exceeds --max-plan-cost "
             f"${args.max_plan_cost}; nothing was planned"
         )
+    ceiling = _budget_gate(data_dir, est, args.max_plan_cost)
     planner = LlmPlanner(
         client=build_client(), model=args.model,
-        max_cost_usd=args.max_plan_cost, cache=cache, refresh=args.refresh_plan,
+        max_cost_usd=ceiling, cache=cache, refresh=args.refresh_plan,
     )
     return planner, cache
 
@@ -328,9 +367,10 @@ def _build_proposer(args, store, data_dir: Path):
             f"estimated offer cost ${est} exceeds --max-offer-cost "
             f"${args.max_offer_cost}; nothing was proposed"
         )
+    ceiling = _budget_gate(data_dir, est, args.max_offer_cost)
     proposer = LlmOfferProposer(
         client=build_client(), model=args.model,
-        max_cost_usd=args.max_offer_cost, cache=cache, refresh=args.refresh_offer,
+        max_cost_usd=ceiling, cache=cache, refresh=args.refresh_offer,
     )
     return proposer, cache
 
@@ -470,6 +510,16 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "llm-costs", parents=[common], help="print recorded AI operating spend"
     ).set_defaults(func=_cmd_llm_costs)
+
+    llm_budget = sub.add_parser(
+        "llm-budget", parents=[common, actor_only],
+        help="show or raise the cumulative AI spend cap",
+    )
+    llm_budget.add_argument(
+        "amount", type=float, nargs="?", default=None,
+        help="new cap in USD (omit to show cap/spent/remaining)",
+    )
+    llm_budget.set_defaults(func=_cmd_llm_budget)
 
     dash = sub.add_parser(
         "dashboard", parents=[common], help="write a static HTML pipeline snapshot"

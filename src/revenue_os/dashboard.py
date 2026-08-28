@@ -144,9 +144,16 @@ def _llm_spend_section(spend: dict | None) -> str:
     if not spend or spend.get("runs", 0) == 0:
         return "<p class='muted'>No LLM runs recorded.</p>"
     by = spend["by_activity"]
+    cap_html = ""
+    if "cap_usd" in spend:
+        cap_html = (
+            f"<p>cap <strong>${_num(spend['cap_usd'])}</strong> &nbsp; "
+            f"remaining <strong>${_num(spend['remaining_usd'])}</strong></p>"
+        )
     return (
         f"<p>total <strong>${_num(spend['total_cost_usd'])}</strong> over "
         f"{_num(spend['runs'])} run(s), {_num(spend['total_api_calls'])} api call(s)</p>"
+        f"{cap_html}"
         f"<table><tr><th>activity</th><th>cost</th></tr>"
         f"<tr><td>evaluate</td><td class='num'>${_num(by['evaluate'])}</td></tr>"
         f"<tr><td>plan</td><td class='num'>${_num(by['plan'])}</td></tr>"

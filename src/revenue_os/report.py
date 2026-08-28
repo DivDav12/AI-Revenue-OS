@@ -45,6 +45,7 @@ def pipeline_report(
     spend_ledger: SpendLedger,
     discovery_log=None,
     llm_spend_log=None,
+    llm_budget=None,
 ) -> dict:
     candidates = store.all()
 
@@ -74,6 +75,13 @@ def pipeline_report(
         for cand in candidates
     ]
 
+    llm_spend = llm_spend_log.summary() if llm_spend_log is not None else None
+    if llm_spend is not None and llm_budget is not None:
+        llm_spend["cap_usd"] = llm_budget.cap
+        llm_spend["remaining_usd"] = round(
+            llm_budget.cap - llm_spend["total_cost_usd"], 4
+        )
+
     grand_revenue = revenue_ledger.total()
     grand_spent = spend_ledger.total_spent()
     return {
@@ -81,7 +89,7 @@ def pipeline_report(
         "action_queue": action_queue,
         "candidates": candidate_rows,
         "last_discovery": discovery_log.latest() if discovery_log is not None else None,
-        "llm_spend": llm_spend_log.summary() if llm_spend_log is not None else None,
+        "llm_spend": llm_spend,
         "roi": roi_summary(store, revenue_ledger, spend_ledger),
         "totals": {
             "candidates": len(candidates),
@@ -147,6 +155,10 @@ def render_text(report: dict) -> str:
         lines.append(
             f"  evaluate ${by['evaluate']}  plan ${by['plan']}  offer ${by['offer']}"
         )
+        if "cap_usd" in spend:
+            lines.append(
+                f"  cap ${spend['cap_usd']}  remaining ${spend['remaining_usd']}"
+            )
 
     totals = report["totals"]
     lines.append("")
