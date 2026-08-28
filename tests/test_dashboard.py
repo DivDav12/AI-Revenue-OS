@@ -76,6 +76,28 @@ class RenderHtmlTests(unittest.TestCase):
         r = _report(self.store, self.d)
         self.assertEqual(render_html(r, _FIXED_TS), render_html(r, _FIXED_TS))
 
+    def test_candidate_breakdown_in_details_block(self):
+        from revenue_os.opportunity import CRITERIA
+
+        breakdown = {name: 3.0 for name in CRITERIA}
+        breakdown["demand"] = 1.0
+        self.store.put(
+            Candidate(name="alpha", status="shortlisted", total=2.75,
+                      verdict="hold", breakdown=breakdown)
+        )
+        html = render_html(_report(self.store, self.d), _FIXED_TS)
+        self.assertIn("<details>", html)
+        self.assertIn("<summary>", html)
+        for name in CRITERIA:
+            self.assertIn(name, html)
+        self.assertNotIn("<script", html)
+        self.assertNotIn("https://", html)
+
+    def test_candidate_with_empty_breakdown_renders(self):
+        self.store.put(Candidate(name="alpha", status="discovered"))
+        html = render_html(_report(self.store, self.d), _FIXED_TS)
+        self.assertIn("No score breakdown.", html)
+
     def test_roi_table_appears_after_payment(self):
         self.store.put(Candidate(name="alpha", status="validated"))
         mark_launched(self.store, "alpha", actor="o")

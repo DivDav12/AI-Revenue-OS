@@ -4,7 +4,13 @@ from pathlib import Path
 
 from revenue_os import lifecycle
 from revenue_os.analytics import roi_summary
-from revenue_os.report import next_action, pipeline_report, render_text
+from revenue_os.opportunity import CRITERIA
+from revenue_os.report import (
+    next_action,
+    pipeline_report,
+    render_candidate,
+    render_text,
+)
 from revenue_os.revenue import RevenueLedger, mark_launched, record_payment
 from revenue_os.spend import SpendLedger, SpendRequest, authorize_spend, record_spend, set_budget
 from revenue_os.store import Candidate, CandidateStore
@@ -98,6 +104,41 @@ class PipelineReportTests(unittest.TestCase):
             "grand_net": 0.0,
         })
         self.assertIn("(nothing awaiting a human)", render_text(report))
+
+
+class RenderCandidateTests(unittest.TestCase):
+    def _scored(self, **over):
+        breakdown = {name: 3.0 for name in CRITERIA}
+        breakdown["demand"] = 1.0
+        breakdown.update(over)
+        return Candidate(
+            name="c", status="shortlisted", total=2.75, verdict="hold",
+            breakdown=breakdown,
+        )
+
+    def test_shows_all_eight_criteria_in_order(self):
+        text = render_candidate(self._scored())
+        self.assertIn("score breakdown", text)
+        for name in CRITERIA:
+            self.assertIn(name, text)
+        positions = [text.index(name) for name in CRITERIA]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_marks_only_sub_neutral_criteria(self):
+        lines = render_candidate(self._scored()).splitlines()
+        demand = next(l for l in lines if "demand" in l)
+        automation = next(l for l in lines if "automation_potential" in l)
+        self.assertTrue(demand.rstrip().endswith("<"))
+        self.assertFalse(automation.rstrip().endswith("<"))
+
+    def test_empty_breakdown_renders(self):
+        text = render_candidate(Candidate(name="c", status="discovered"))
+        self.assertIn("score breakdown", text)
+        self.assertIn("(none)", text)
+
+    def test_deterministic(self):
+        cand = self._scored()
+        self.assertEqual(render_candidate(cand), render_candidate(cand))
 
 
 if __name__ == "__main__":

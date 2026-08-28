@@ -11,6 +11,8 @@ from __future__ import annotations
 from html import escape
 
 from . import lifecycle
+from .opportunity import CRITERIA
+from .report import NEUTRAL_SCORE
 
 _STYLE = """
 body { font: 14px/1.5 system-ui, sans-serif; margin: 2rem; color: #1a1a1a; }
@@ -21,7 +23,11 @@ table { border-collapse: collapse; width: 100%; max-width: 900px; }
 th, td { text-align: left; padding: .35rem .6rem; border-bottom: 1px solid #ddd; }
 th { background: #f4f4f4; }
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.low { color: #b00; font-weight: bold; }
 .muted { color: #888; }
+details { margin: .25rem 0; max-width: 900px; }
+summary { cursor: pointer; padding: .2rem 0; }
+details table { margin: .4rem 0 .8rem; max-width: 460px; }
 """.strip()
 
 
@@ -57,20 +63,37 @@ def _action_queue(queue: list[dict]) -> str:
     )
 
 
-def _candidate_table(candidates: list[dict]) -> str:
+def _breakdown_table(breakdown: dict) -> str:
+    if not breakdown:
+        return "<p class='muted'>No score breakdown.</p>"
+    rows = ""
+    for name in CRITERIA:
+        value = breakdown.get(name)
+        if value is None:
+            continue
+        low = float(value) < NEUTRAL_SCORE
+        cell = (
+            f"<td class='low'>{_num(value)} &lt;</td>" if low
+            else f"<td class='num'>{_num(value)}</td>"
+        )
+        rows += f"<tr><td>{_esc(name)}</td>{cell}</tr>"
+    return f"<table><tr><th>criterion</th><th>score</th></tr>{rows}</table>"
+
+
+def _candidate_blocks(candidates: list[dict]) -> str:
     if not candidates:
         return "<p class='muted'>No candidates.</p>"
-    rows = "".join(
-        f"<tr><td>{_esc(c['name'])}</td>"
-        f"<td>{_esc(c['status'])}</td>"
-        f"<td class='num'>{_num(c['score'])}</td>"
-        f"<td>{_esc(c['verdict'])}</td></tr>"
-        for c in candidates
-    )
-    return (
-        "<table><tr><th>candidate</th><th>status</th>"
-        f"<th>score</th><th>verdict</th></tr>{rows}</table>"
-    )
+    blocks = ""
+    for c in candidates:
+        summary = (
+            f"{_esc(c['name'])} &mdash; {_esc(c['status'])} &mdash; "
+            f"{_num(c['score'])} ({_esc(c['verdict'])})"
+        )
+        blocks += (
+            f"<details><summary>{summary}</summary>"
+            f"{_breakdown_table(c.get('breakdown', {}))}</details>"
+        )
+    return blocks
 
 
 def _roi_section(roi: dict) -> str:
@@ -112,7 +135,7 @@ def render_html(report: dict, generated_at: str) -> str:
             "<h2>Action queue</h2>",
             _action_queue(report["action_queue"]),
             "<h2>Candidates</h2>",
-            _candidate_table(report.get("candidates", [])),
+            _candidate_blocks(report.get("candidates", [])),
             "<h2>ROI</h2>",
             _roi_section(report["roi"]),
         ]

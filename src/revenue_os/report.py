@@ -7,9 +7,13 @@ from __future__ import annotations
 
 from . import lifecycle
 from .analytics import roi_summary
+from .opportunity import CRITERIA
 from .revenue import RevenueLedger
 from .spend import SpendLedger
 from .store import Candidate, CandidateStore
+
+# midpoint of the 0-5 criterion scale; values below this are "weak"
+NEUTRAL_SCORE = 2.5
 
 # lifecycle status -> the single next step a human must take (None = nothing)
 _NEXT_ACTION = {
@@ -51,6 +55,7 @@ def pipeline_report(
             "status": cand.status,
             "score": cand.total,
             "verdict": cand.verdict,
+            "breakdown": dict(cand.breakdown),
         }
         for cand in candidates
     ]
@@ -119,6 +124,17 @@ def render_candidate(candidate: Candidate) -> str:
         f"  first_seen     {candidate.first_seen}",
         f"  last_scored    {candidate.last_scored}",
     ]
+
+    lines.append("  score breakdown")
+    if candidate.breakdown:
+        for name in CRITERIA:
+            value = candidate.breakdown.get(name)
+            if value is None:
+                continue
+            mark = " <" if float(value) < NEUTRAL_SCORE else ""
+            lines.append(f"    {name:<24} {value}{mark}")
+    else:
+        lines.append("    (none)")
 
     lines.append("  plan")
     if candidate.plan:
