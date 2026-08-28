@@ -101,6 +101,19 @@ def build_planner(*, mode: str, store, model: str, max_cost_usd: float,
     return planner, cache
 
 
+def build_decider(*, mode: str, model: str, max_cost_usd: float, data_dir):
+    """Return an LlmDecisionPolicy, or None for the deterministic 'rules'
+    policy. Raises ValueError if the cumulative cap is already exhausted."""
+    if mode == "rules":
+        return None
+
+    from .decide_llm import LlmDecisionPolicy
+    from .llm_normalize import build_client
+
+    ceiling = budget_gate(data_dir, 0.01, max_cost_usd)  # one small call
+    return LlmDecisionPolicy(client=build_client(), model=model, max_cost_usd=ceiling)
+
+
 def build_proposer(*, mode: str, store, model: str, max_cost_usd: float,
                    refresh: bool, data_dir):
     """Return (proposer, cache)."""

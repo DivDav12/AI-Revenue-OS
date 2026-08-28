@@ -208,9 +208,7 @@ def render_text(report: dict) -> str:
             f"  total ${spend['total_cost_usd']} over {spend['runs']} run(s), "
             f"{spend['total_api_calls']} api call(s)"
         )
-        lines.append(
-            f"  evaluate ${by['evaluate']}  plan ${by['plan']}  offer ${by['offer']}"
-        )
+        lines.append("  " + "  ".join(f"{a} ${by[a]}" for a in by))
         if "cap_usd" in spend:
             lines.append(
                 f"  cap ${spend['cap_usd']}  remaining ${spend['remaining_usd']}"

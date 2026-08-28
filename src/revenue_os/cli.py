@@ -205,10 +205,14 @@ def _cmd_agent_goal(args) -> int:
         updates["planner"] = args.planner
     if args.proposer is not None:
         updates["proposer"] = args.proposer
+    if args.decision_policy is not None:
+        updates["decision_policy"] = args.decision_policy
     if args.model is not None:
         updates["model"] = args.model
     if args.max_llm_cost_per_action is not None:
         updates["max_llm_cost_per_action"] = args.max_llm_cost_per_action
+    if args.max_decision_cost is not None:
+        updates["max_decision_cost"] = args.max_decision_cost
     if updates:
         goal = replace(goal, **updates)
         save_goal(data_dir, goal)
@@ -337,10 +341,10 @@ def _cmd_llm_costs(args) -> int:
         )
     s = LlmSpendLog.load(data_dir / "llm_spend.json").summary()
     by = s["by_activity"]
+    activities = " ".join(f"{a} ${by[a]}" for a in by)
     print(
         f"total ${s['total_cost_usd']} over {s['runs']} run(s), "
-        f"{s['total_api_calls']} api call(s) "
-        f"(evaluate ${by['evaluate']} plan ${by['plan']} offer ${by['offer']})"
+        f"{s['total_api_calls']} api call(s) ({activities})"
     )
     return 0
 
@@ -627,8 +631,10 @@ def build_parser() -> argparse.ArgumentParser:
     ag_goal.add_argument("--evaluator", choices=("keyword", "llm"), default=None)
     ag_goal.add_argument("--planner", choices=("template", "llm"), default=None)
     ag_goal.add_argument("--proposer", choices=("template", "llm"), default=None)
+    ag_goal.add_argument("--decision-policy", choices=("rules", "llm"), default=None)
     ag_goal.add_argument("--model", default=None, help="model for the llm workers")
     ag_goal.add_argument("--max-llm-cost-per-action", type=float, default=None)
+    ag_goal.add_argument("--max-decision-cost", type=float, default=None)
     ag_goal.set_defaults(func=_cmd_agent_goal)
 
     llm_budget = sub.add_parser(

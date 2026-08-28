@@ -29,7 +29,9 @@ from .agent_log import AgentLog
 from .discovery_log import DiscoveryLog
 from .filtering import is_relevant
 from .llm_spend import LlmSpendLog
+from .decide_llm import summarize_for_decision
 from .llm_workers import (
+    build_decider,
     build_evaluator,
     build_planner,
     build_proposer,
@@ -62,8 +64,10 @@ class Goal:
     evaluator: str = "keyword"          # keyword | llm
     planner: str = "template"           # template | llm
     proposer: str = "template"          # template | llm
+    decision_policy: str = "rules"      # rules | llm
     model: str = "claude-sonnet-5"
     max_llm_cost_per_action: float = 0.5
+    max_decision_cost: float = 0.05
 
     def to_dict(self) -> dict:
         return {
@@ -78,8 +82,10 @@ class Goal:
             "evaluator": self.evaluator,
             "planner": self.planner,
             "proposer": self.proposer,
+            "decision_policy": self.decision_policy,
             "model": self.model,
             "max_llm_cost_per_action": self.max_llm_cost_per_action,
+            "max_decision_cost": self.max_decision_cost,
         }
 
     @classmethod
@@ -96,13 +102,17 @@ class Goal:
             evaluator=d.get("evaluator", "keyword"),
             planner=d.get("planner", "template"),
             proposer=d.get("proposer", "template"),
+            decision_policy=d.get("decision_policy", "rules"),
             model=d.get("model", "claude-sonnet-5"),
             max_llm_cost_per_action=float(d.get("max_llm_cost_per_action", 0.5)),
+            max_decision_cost=float(d.get("max_decision_cost", 0.05)),
         )
 
     @property
     def uses_llm(self) -> bool:
-        return "llm" in (self.evaluator, self.planner, self.proposer)
+        return "llm" in (
+            self.evaluator, self.planner, self.proposer, self.decision_policy
+        )
 
 
 def load_goal(data_dir: str | Path) -> Goal:
@@ -193,7 +203,7 @@ def _validated_without_offer(report: dict) -> int:
 
 def decide(
     obs: dict, goal: Goal, *,
-    discovery_exhausted: bool = False, llm_capped: bool = False,
+    discovery_exhausted: bool = False, llm_capped: bool = False, policy=None,
 ) -> Decision:
     """Pure: pick the next non-human action from the observed state."""
     report = obs["report"]
@@ -234,6 +244,13 @@ def decide(
     if not discovery_exhausted:
         if total == 0 or age is None:
             return Decision("discover", "no discovery has run yet")
+
+        if policy is not None:
+            choice = policy(summarize_for_decision(obs, goal))
+            if choice is not None:
+                action, rationale = choice
+                return Decision(action, f"llm policy: {rationale}", {"policy": "llm"})
+
         if counts["shortlisted"] < goal.shortlist_n and counts["discovered"] == 0:
             return Decision(
                 "discover",
@@ -372,16 +389,33 @@ class OperatorAgent:
         log = AgentLog.load(self.data_dir / "agent_log.json")
         cycle = len(log)
 
+        policy = None
+        if self.goal.decision_policy == "llm" and not self._llm_capped:
+            try:
+                policy = build_decider(
+                    mode="llm", model=self.goal.model,
+                    max_cost_usd=self.goal.max_decision_cost, data_dir=self.data_dir,
+                )
+            except ValueError:
+                # decision policy is starved of budget -> fall back to the
+                # deterministic rules; leaf workers still gate on _llm_capped
+                policy = None
+
         decision = decide(
             self.observe(now), self.goal,
             discovery_exhausted=self._discovery_exhausted,
             llm_capped=self._llm_capped,
+            policy=policy,
         )
         result: dict = {}
         if decision.action != "stop":
             result = self.act(decision)
             if decision.action == "discover" and result.get("new_candidates", 0) == 0:
                 self._discovery_exhausted = True
+
+        if policy is not None and getattr(policy, "calls", 0) > 0:
+            record_llm_spend(self.data_dir, "decide", policy)
+            result = {**result, "decide_cost": round(policy.meter.cost_usd, 4)}
 
         digest = digest_line(self.observe(now)["report"]["action_queue"])
         entry = {

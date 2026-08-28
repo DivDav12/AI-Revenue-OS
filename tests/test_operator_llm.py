@@ -25,6 +25,7 @@ _PAYLOADS = {
         "what_is_sold": "thing", "price": 49.0, "currency": "USD",
         "delivery": "digital", "call_to_action": "buy", "positioning": "for X",
     },
+    "choose_action": {"action": "stop", "rationale": "funnel is full enough"},
 }
 
 
@@ -152,6 +153,34 @@ class OperatorLlmTests(unittest.TestCase):
             OperatorAgent(self.d, Goal(evaluator="llm", planner="llm")).run()
         statuses = {c.status for c in CandidateStore.load(self.d / "candidates.json").all()}
         self.assertTrue(statuses <= {"discovered", "shortlisted"})
+
+    def test_decision_policy_records_decide_spend(self):
+        goal = Goal(decision_policy="llm", shortlist_n=3)
+        with mock.patch("revenue_os.llm_normalize.build_client", return_value=_FakeClient()):
+            steps = OperatorAgent(self.d, goal).run()
+        # discover (cold start, no policy call) then a policy-driven stop
+        acts = [e["activity"] for e in self._spend()]
+        self.assertIn("decide", acts)
+        stop = steps[-1]
+        self.assertEqual(stop.decision.action, "stop")
+        self.assertIn("llm policy", stop.decision.reason)
+        self.assertIn("decide_cost", stop.entry["detail"])
+
+    def test_decision_policy_default_rules_no_decide_spend(self):
+        OperatorAgent(self.d, Goal()).run()
+        self.assertFalse((self.d / "llm_spend.json").exists())
+
+    def test_decision_policy_cap_exhaustion_falls_back_to_rules(self):
+        log = LlmSpendLog(self.d / "llm_spend.json")
+        log.add({"activity": "decide", "cost_usd": 5.0, "api_calls": 1})
+        log.save()
+        with mock.patch("revenue_os.llm_normalize.build_client", return_value=_FakeClient()):
+            steps = OperatorAgent(self.d, Goal(decision_policy="llm")).run()
+        # deterministic rules still run: cold-start discover, then stop
+        self.assertEqual(steps[0].decision.action, "discover")
+        self.assertNotIn("llm policy", steps[-1].decision.reason)
+        acts = [e["activity"] for e in self._spend()]
+        self.assertNotIn("decide", acts[1:])  # no new decide entry recorded
 
 
 class AgentLoopMaxSpendTests(unittest.TestCase):
