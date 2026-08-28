@@ -13,6 +13,12 @@ Human decision commands (operate on the persistent --data-dir store):
   prepare-launch
   launch NAME
   payment NAME AMOUNT
+
+Cost-control commands (authorize/record only; never move money):
+  budget NAME AMOUNT
+  authorize-spend NAME AMOUNT --purpose TEXT [--ceiling N]
+  deny-spend NAME AMOUNT --purpose TEXT --reason TEXT
+  record-spend NAME AMOUNT
 """
 
 from __future__ import annotations
@@ -27,7 +33,15 @@ from .approval import record_decision
 from .report import pipeline_report, render_candidate, render_text
 from .revenue import RevenueLedger, mark_launched, record_payment
 from .sources import build_source
-from .spend import SpendLedger
+from .spend import (
+    DEFAULT_CEILING,
+    SpendLedger,
+    SpendRequest,
+    authorize_spend,
+    deny_spend,
+    record_spend,
+    set_budget,
+)
 from .store import CandidateStore
 from .validation import record_validation_outcome
 from .workflow import investigate_approved, prepare_launch, run_discovery_cycle
@@ -142,14 +156,63 @@ def _cmd_payment(args) -> int:
     return 0
 
 
+# --- cost-control commands (authorize/record only; never move money) ----
+
+
+def _cmd_budget(args) -> int:
+    store, _, spend_ledger = _load(_data_dir(args))
+    _require(store, args.name)
+    cap = set_budget(spend_ledger, args.name, args.amount, approver=args.actor)
+    print(f"budget: {args.name} -> {cap}")
+    return 0
+
+
+def _cmd_authorize_spend(args) -> int:
+    store, _, spend_ledger = _load(_data_dir(args))
+    _require(store, args.name)
+    request = SpendRequest(
+        candidate_name=args.name,
+        purpose=args.purpose,
+        amount=args.amount,
+        requested_by=args.actor,
+    )
+    authorize_spend(spend_ledger, request, approver=args.actor, ceiling=args.ceiling)
+    print(f"authorized: {args.name} {args.amount} (purpose: {args.purpose})")
+    return 0
+
+
+def _cmd_deny_spend(args) -> int:
+    store, _, spend_ledger = _load(_data_dir(args))
+    _require(store, args.name)
+    request = SpendRequest(
+        candidate_name=args.name,
+        purpose=args.purpose,
+        amount=args.amount,
+        requested_by=args.actor,
+    )
+    deny_spend(spend_ledger, request, approver=args.actor, reason=args.reason)
+    print(f"denied: {args.name} {args.amount} (reason: {args.reason})")
+    return 0
+
+
+def _cmd_record_spend(args) -> int:
+    store, _, spend_ledger = _load(_data_dir(args))
+    _require(store, args.name)
+    record_spend(spend_ledger, args.name, args.amount, actor=args.actor, note=args.note)
+    print(f"spent: {args.name} {args.amount}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
         "--data-dir", default=argparse.SUPPRESS, help="state directory (default: ./data)"
     )
 
-    actor = argparse.ArgumentParser(add_help=False)
-    actor.add_argument("--actor", default="human-owner", help="who is acting")
+    actor_only = argparse.ArgumentParser(add_help=False)
+    actor_only.add_argument("--actor", default="human-owner", help="who is acting")
+
+    actor = argparse.ArgumentParser(add_help=False, parents=[actor_only])
     actor.add_argument("--note", default="", help="note recorded in history")
 
     parser = argparse.ArgumentParser(prog="revenue_os", parents=[common])
@@ -207,6 +270,41 @@ def build_parser() -> argparse.ArgumentParser:
     payment.add_argument("name")
     payment.add_argument("amount", type=float)
     payment.set_defaults(func=_cmd_payment)
+
+    budget = sub.add_parser(
+        "budget", parents=[common, actor_only], help="set/raise a candidate's spend cap"
+    )
+    budget.add_argument("name")
+    budget.add_argument("amount", type=float)
+    budget.set_defaults(func=_cmd_budget)
+
+    auth = sub.add_parser(
+        "authorize-spend", parents=[common, actor_only], help="authorize a spend request"
+    )
+    auth.add_argument("name")
+    auth.add_argument("amount", type=float)
+    auth.add_argument("--purpose", required=True, help="what the spend is for")
+    auth.add_argument(
+        "--ceiling", type=float, default=DEFAULT_CEILING,
+        help="max authorizable amount (default 0.0)",
+    )
+    auth.set_defaults(func=_cmd_authorize_spend)
+
+    deny = sub.add_parser(
+        "deny-spend", parents=[common, actor_only], help="deny a spend request"
+    )
+    deny.add_argument("name")
+    deny.add_argument("amount", type=float)
+    deny.add_argument("--purpose", required=True, help="what the spend was for")
+    deny.add_argument("--reason", required=True, help="why it was denied")
+    deny.set_defaults(func=_cmd_deny_spend)
+
+    rec = sub.add_parser(
+        "record-spend", parents=[common, actor], help="log money already spent"
+    )
+    rec.add_argument("name")
+    rec.add_argument("amount", type=float)
+    rec.set_defaults(func=_cmd_record_spend)
 
     return parser
 
