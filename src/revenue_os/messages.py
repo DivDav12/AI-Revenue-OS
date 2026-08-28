@@ -24,6 +24,7 @@ class Task:
 
     objective: str
     payload: dict = field(default_factory=dict)
+    capability: str | None = None  # optional routing hint for the registry
     id: str = field(default_factory=_new_id)
     created_at: datetime = field(default_factory=_now)
 
