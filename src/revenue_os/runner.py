@@ -12,7 +12,15 @@ from .messages import Result, Task
 from .orchestrator import Orchestrator
 from .registry import AgentRegistry
 from .sources import RawSignal, StaticSource
+from .analytics import roi_summary
 from .revenue import RevenueLedger, mark_launched, record_payment, revenue_summary
+from .spend import (
+    SpendLedger,
+    SpendRequest,
+    authorize_spend,
+    record_spend,
+    set_budget,
+)
 from .store import CandidateStore
 from .validation import record_validation_outcome
 from .workflow import investigate_approved, prepare_launch, run_discovery_cycle
@@ -129,4 +137,17 @@ def main() -> None:
     )
     print(f"Payment recorded: {earning.name} -> {earning.status}")
     print(f"\nRevenue summary: {revenue_summary(store, ledger)}")
+
+    spend_ledger = SpendLedger.load(tmp / "spend.json")
+    set_budget(spend_ledger, final.name, 15.0, approver="human-owner")
+    request = SpendRequest(
+        candidate_name=final.name,
+        purpose="domain for landing page",
+        amount=12.0,
+        requested_by="system",
+    )
+    authorize_spend(spend_ledger, request, approver="human-owner", ceiling=20.0)
+    record_spend(spend_ledger, final.name, 12.0, actor="human-owner", note="domain")
+    print(f"Spend recorded: {final.name} -> 12.0 (authorized within budget)")
+    print(f"\nROI summary: {roi_summary(store, ledger, spend_ledger)}")
     print(f"\nStore file: {store.path}")
