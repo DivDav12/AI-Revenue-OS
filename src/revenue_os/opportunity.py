@@ -69,15 +69,25 @@ def _verdict(total: float) -> str:
     return "reject"
 
 
-def score_opportunity(opp: Opportunity) -> OpportunityScore:
-    """Deterministically score an Opportunity. Raises ValueError on bad input."""
+def score_opportunity(opp: Opportunity, weights: dict[str, float] | None = None) -> OpportunityScore:
+    """Deterministically score an Opportunity. Raises ValueError on bad input.
+
+    `weights` (optional, from calibration) reweights the criterion mean;
+    they average 1.0, so the total stays on the 0-5 scale. Omitted /
+    None gives the plain equal-weight mean. `breakdown` always carries
+    the raw per-criterion estimates.
+    """
     breakdown = opp.estimates()
     for name, value in breakdown.items():
         if not SCORE_MIN <= value <= SCORE_MAX:
             raise ValueError(
                 f"estimate {name}={value} out of range [{SCORE_MIN}, {SCORE_MAX}]"
             )
-    total = round(sum(breakdown.values()) / len(breakdown), 2)
+    if weights:
+        total = sum(breakdown[c] * weights[c] for c in CRITERIA) / len(CRITERIA)
+    else:
+        total = sum(breakdown.values()) / len(breakdown)
+    total = round(max(SCORE_MIN, min(SCORE_MAX, total)), 2)
     return OpportunityScore(
         opportunity_name=opp.name,
         total=total,

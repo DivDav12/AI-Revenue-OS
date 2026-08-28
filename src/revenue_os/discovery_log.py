@@ -11,6 +11,8 @@ Each entry records what a single run of run_discovery_cycle did:
   kept                 candidates persisted this run
   new / refreshed      of those, how many were first-seen vs. re-scored
   shortlisted          candidates auto-shortlisted this run
+  calibrated           --calibrated was requested
+  weights_applied      calibration actually had enough data to reweight
 
 Read-only consumers surface the latest entry. Standard library only.
 """

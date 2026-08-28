@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from . import lifecycle
 from .analytics import roi_summary
+from .calibration import calibration_weights
 from .opportunity import CRITERIA
 from .retro import outcome_retro
 from .revenue import RevenueLedger
@@ -91,7 +92,7 @@ def pipeline_report(
         "candidates": candidate_rows,
         "last_discovery": discovery_log.latest() if discovery_log is not None else None,
         "llm_spend": llm_spend,
-        "outcomes": outcome_retro(store),
+        "outcomes": {**outcome_retro(store), "weights": calibration_weights(store)},
         "roi": roi_summary(store, revenue_ledger, spend_ledger),
         "totals": {
             "candidates": len(candidates),
@@ -181,6 +182,15 @@ def render_text(report: dict) -> str:
             for name in retro["most_predictive"]
         )
         lines.append(f"  most predictive: {preds}")
+        weights = retro.get("weights")
+        if weights is None:
+            lines.append("  calibration weights: equal (need more outcomes)")
+        else:
+            top = sorted(weights, key=weights.get, reverse=True)[:3]
+            lines.append(
+                "  calibration weights: "
+                + ", ".join(f"{n} x{weights[n]}" for n in top)
+            )
 
     totals = report["totals"]
     lines.append("")

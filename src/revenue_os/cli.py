@@ -170,6 +170,7 @@ def _cmd_run(args) -> int:
         normalizer=normalizer,
         evaluator=evaluator,
         est_cost_usd=est_cost,
+        calibrated=args.calibrated,
     )
     if cache is not None:
         cache.save()
@@ -216,6 +217,7 @@ def _cmd_llm_budget(args) -> int:
 
 
 def _cmd_outcomes(args) -> int:
+    from .calibration import calibration_weights
     from .opportunity import CRITERIA
     from .retro import outcome_retro
 
@@ -231,13 +233,17 @@ def _cmd_outcomes(args) -> int:
         f"validated {c['validated']} / rejected {c['rejected']}  "
         f"avg score {tot['validated_avg']} vs {tot['rejected_avg']}"
     )
-    print(f"  {'criterion':<24} {'validated':>10} {'rejected':>10} {'gap':>8}")
+    weights = calibration_weights(store)
+    print(f"  {'criterion':<24} {'validated':>10} {'rejected':>10} {'gap':>8} {'weight':>8}")
     for name in CRITERIA:
         row = retro["by_criterion"][name]
+        w = "-" if weights is None else weights[name]
         print(
             f"  {name:<24} {row['validated_avg']:>10} "
-            f"{row['rejected_avg']:>10} {row['gap']:>+8}"
+            f"{row['rejected_avg']:>10} {row['gap']:>+8} {w:>8}"
         )
+    if weights is None:
+        print("  weights: equal (need >= 8 outcomes with both classes)")
     print("recorded outcomes:")
     for o in retro["outcomes"]:
         print(f"  {o['name']} [{o['outcome']}] score={o['score']} -> {o['metric_value']}")
@@ -530,6 +536,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--refresh-eval", action="store_true",
         help="ignore cached llm scores and re-call the API",
+    )
+    run.add_argument(
+        "--calibrated", action="store_true",
+        help="reweight the criterion mean from recorded validation outcomes",
     )
     run.set_defaults(func=_cmd_run)
 

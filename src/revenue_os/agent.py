@@ -85,7 +85,7 @@ class EvaluatorAgent(Agent):
                 error="payload['opportunity'] must be an Opportunity",
             )
         try:
-            score = score_opportunity(opp)
+            score = score_opportunity(opp, task.payload.get("weights"))
         except ValueError as exc:
             return Result(
                 task_id=task.id,

@@ -49,6 +49,35 @@ class OpportunityScoringTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             score_opportunity(_uniform(6))
 
+    def test_weights_none_is_identical_to_omitted(self):
+        opp = _uniform(3.5)
+        self.assertEqual(
+            score_opportunity(opp).total, score_opportunity(opp, None).total
+        )
+
+    def test_equal_weights_match_plain_mean(self):
+        from revenue_os.opportunity import CRITERIA
+
+        opp = Opportunity(name="k", demand=5, profit_potential=1, startup_affordability=3,
+                          automation_potential=3, competition_headroom=3,
+                          legal_feasibility=3, speed_to_first_revenue=3, scalability=3)
+        w = {c: 1.0 for c in CRITERIA}
+        self.assertEqual(score_opportunity(opp, w).total, score_opportunity(opp).total)
+
+    def test_weights_shift_total_toward_weighted_criteria(self):
+        from revenue_os.opportunity import CRITERIA
+
+        high_demand = Opportunity(name="hd", demand=5, profit_potential=1,
+                                  startup_affordability=1, automation_potential=1,
+                                  competition_headroom=1, legal_feasibility=1,
+                                  speed_to_first_revenue=1, scalability=1)
+        w = {c: 0.5 for c in CRITERIA}
+        w["demand"] = 4.5  # mean stays 1.0
+        weighted = score_opportunity(high_demand, w).total
+        plain = score_opportunity(high_demand).total
+        self.assertGreater(weighted, plain)
+        self.assertLessEqual(weighted, 5.0)
+
 
 class EvaluatorAgentTests(unittest.TestCase):
     def _orchestrator(self) -> Orchestrator:

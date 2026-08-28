@@ -12,6 +12,7 @@ from dataclasses import replace
 
 from . import lifecycle
 from .agent import DiscoveryAgent, EvaluatorAgent
+from .calibration import calibration_weights
 from .discovery_log import DiscoveryLog
 from .messages import Task
 from .normalize import to_opportunity
@@ -32,7 +33,10 @@ def _default_orchestrator() -> Orchestrator:
 
 
 def run_evaluation(
-    opportunities: list[Opportunity], orchestrator: Orchestrator | None = None
+    opportunities: list[Opportunity],
+    orchestrator: Orchestrator | None = None,
+    *,
+    weights: dict[str, float] | None = None,
 ) -> list[OpportunityScore]:
     orchestrator = orchestrator or _default_orchestrator()
     for opp in opportunities:
@@ -40,7 +44,7 @@ def run_evaluation(
             Task(
                 objective=f"evaluate opportunity: {opp.name}",
                 capability="evaluate",
-                payload={"opportunity": opp},
+                payload={"opportunity": opp, "weights": weights},
             )
         )
     scores: list[OpportunityScore] = []
@@ -106,6 +110,7 @@ def run_discovery_cycle(
     normalizer=to_opportunity,
     evaluator: str = "keyword",
     est_cost_usd: float = 0.0,
+    calibrated: bool = False,
 ) -> list[Candidate]:
     """Discover, evaluate, persist candidates, and auto-shortlist the top N.
 
@@ -114,13 +119,16 @@ def run_discovery_cycle(
     candidate a human has already acted on. Returns all stored candidates.
 
     `normalizer` maps a signal to an Opportunity (default: the keyword
-    heuristic). When a DiscoveryLog is supplied, one entry recording the
-    run's counts and evaluator cost is appended and saved.
+    heuristic). `calibrated` reweights the criterion mean from recorded
+    validation outcomes (a no-op until there are enough). When a
+    DiscoveryLog is supplied, one entry recording the run's counts and
+    evaluator cost is appended and saved.
     """
+    weights = calibration_weights(store) if calibrated else None
     opportunities = _discover(source, limit, normalizer)
     if not opportunities:
         logger.warning("discovery returned no opportunities (source failure or empty)")
-    ranked = run_evaluation(opportunities)
+    ranked = run_evaluation(opportunities, weights=weights)
     evaluated = len(ranked)
     kept = [s for s in ranked if s.total >= min_score]
     dropped = len(ranked) - len(kept)
@@ -187,6 +195,8 @@ def run_discovery_cycle(
                 "cost_ceiling_hit": bool(getattr(normalizer, "ceiling_hit", False)),
                 "eval_cache_hits": int(getattr(normalizer, "cache_hits", 0)),
                 "eval_cache_misses": int(getattr(normalizer, "cache_misses", 0)),
+                "calibrated": bool(calibrated),
+                "weights_applied": weights is not None,
             }
         )
         log.save()
