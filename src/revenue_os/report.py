@@ -44,6 +44,7 @@ def pipeline_report(
     revenue_ledger: RevenueLedger,
     spend_ledger: SpendLedger,
     discovery_log=None,
+    llm_spend_log=None,
 ) -> dict:
     candidates = store.all()
 
@@ -80,6 +81,7 @@ def pipeline_report(
         "action_queue": action_queue,
         "candidates": candidate_rows,
         "last_discovery": discovery_log.latest() if discovery_log is not None else None,
+        "llm_spend": llm_spend_log.summary() if llm_spend_log is not None else None,
         "roi": roi_summary(store, revenue_ledger, spend_ledger),
         "totals": {
             "candidates": len(candidates),
@@ -130,6 +132,21 @@ def render_text(report: dict) -> str:
                 f"cache_hits={last.get('eval_cache_hits', 0)} "
                 f"cache_misses={last.get('eval_cache_misses', 0)}"
             )
+
+    lines.append("")
+    lines.append("LLM SPEND")
+    spend = report.get("llm_spend")
+    if not spend or spend["runs"] == 0:
+        lines.append("  (no LLM runs recorded)")
+    else:
+        by = spend["by_activity"]
+        lines.append(
+            f"  total ${spend['total_cost_usd']} over {spend['runs']} run(s), "
+            f"{spend['total_api_calls']} api call(s)"
+        )
+        lines.append(
+            f"  evaluate ${by['evaluate']}  plan ${by['plan']}  offer ${by['offer']}"
+        )
 
     totals = report["totals"]
     lines.append("")

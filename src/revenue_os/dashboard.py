@@ -140,6 +140,20 @@ def _last_discovery(entry: dict | None) -> str:
     )
 
 
+def _llm_spend_section(spend: dict | None) -> str:
+    if not spend or spend.get("runs", 0) == 0:
+        return "<p class='muted'>No LLM runs recorded.</p>"
+    by = spend["by_activity"]
+    return (
+        f"<p>total <strong>${_num(spend['total_cost_usd'])}</strong> over "
+        f"{_num(spend['runs'])} run(s), {_num(spend['total_api_calls'])} api call(s)</p>"
+        f"<table><tr><th>activity</th><th>cost</th></tr>"
+        f"<tr><td>evaluate</td><td class='num'>${_num(by['evaluate'])}</td></tr>"
+        f"<tr><td>plan</td><td class='num'>${_num(by['plan'])}</td></tr>"
+        f"<tr><td>offer</td><td class='num'>${_num(by['offer'])}</td></tr></table>"
+    )
+
+
 def _roi_section(roi: dict) -> str:
     totals = (
         f"<p>revenue <strong>{_num(roi['grand_revenue'])}</strong> &nbsp; "
@@ -180,6 +194,8 @@ def render_html(report: dict, generated_at: str) -> str:
             _action_queue(report["action_queue"]),
             "<h2>Last discovery</h2>",
             _last_discovery(report.get("last_discovery")),
+            "<h2>LLM spend</h2>",
+            _llm_spend_section(report.get("llm_spend")),
             "<h2>Candidates</h2>",
             _candidate_blocks(report.get("candidates", [])),
             "<h2>ROI</h2>",

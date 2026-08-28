@@ -4,6 +4,7 @@ Read commands:
   run              discovery cycle against a source, then print the report
                    (--evaluator llm opt-in; keyword heuristic by default)
   report           print the report only (no discovery)
+  llm-costs        print recorded AI operating spend
   dashboard        write a static HTML pipeline snapshot (no discovery)
   candidate NAME   print one candidate's full state
   demo             full end-to-end walkthrough in a throwaway directory
@@ -34,6 +35,7 @@ from pathlib import Path
 from .approval import record_decision
 from .dashboard import render_html
 from .discovery_log import DiscoveryLog
+from .llm_spend import LlmSpendLog, entry_from
 from .filtering import is_relevant
 from .report import pipeline_report, render_candidate, render_text
 from .revenue import RevenueLedger, mark_launched, record_payment
@@ -79,6 +81,16 @@ def _require(store: CandidateStore, name: str):
 
 def _discovery_log(data_dir: Path) -> DiscoveryLog:
     return DiscoveryLog.load(data_dir / "discovery_runs.json")
+
+
+def _llm_spend_log(data_dir: Path) -> LlmSpendLog:
+    return LlmSpendLog.load(data_dir / "llm_spend.json")
+
+
+def _record_llm_spend(data_dir: Path, activity: str, worker) -> None:
+    log = _llm_spend_log(data_dir)
+    log.add(entry_from(activity, worker))
+    log.save()
 
 
 def _build_normalizer(args, source, data_dir: Path):
@@ -139,6 +151,7 @@ def _cmd_run(args) -> int:
     if cache is not None:
         cache.save()
     if evaluator == "llm":
+        _record_llm_spend(data_dir, "evaluate", normalizer)
         meter = getattr(normalizer, "meter", None)
         actual = meter.cost_usd if meter is not None else 0.0
         note = " (cost ceiling hit)" if getattr(normalizer, "ceiling_hit", False) else ""
@@ -147,18 +160,43 @@ def _cmd_run(args) -> int:
             f"cache {normalizer.cache_hits} hit / "
             f"{normalizer.cache_misses} miss{note}"
         )
-    print(render_text(
-        pipeline_report(store, revenue_ledger, spend_ledger, discovery_log)
-    ))
+    print(render_text(pipeline_report(
+        store, revenue_ledger, spend_ledger, discovery_log, _llm_spend_log(data_dir)
+    )))
     return 0
 
 
 def _cmd_report(args) -> int:
     data_dir = _data_dir(args)
     store, revenue_ledger, spend_ledger = _load(data_dir)
-    print(render_text(
-        pipeline_report(store, revenue_ledger, spend_ledger, _discovery_log(data_dir))
-    ))
+    print(render_text(pipeline_report(
+        store, revenue_ledger, spend_ledger,
+        _discovery_log(data_dir), _llm_spend_log(data_dir),
+    )))
+    return 0
+
+
+def _cmd_llm_costs(args) -> int:
+    data_dir = _data_dir(args)
+    entries = _llm_spend_log(data_dir).entries()
+    if not entries:
+        print("(no LLM runs recorded)")
+        return 0
+    for e in entries:
+        print(
+            f"{e['ts']}  {e['activity']:<8} {e.get('model', '')}  "
+            f"calls={e.get('api_calls', 0)} "
+            f"tokens={e.get('input_tokens', 0)}+{e.get('output_tokens', 0)} "
+            f"cost=${e.get('cost_usd', 0)} "
+            f"cache={e.get('cache_hits', 0)}h/{e.get('cache_misses', 0)}m"
+        )
+    s = LlmSpendLog.load(data_dir / "llm_spend.json").summary()
+    by = s["by_activity"]
+    print(
+        f"total ${s['total_cost_usd']} over {s['runs']} run(s), "
+        f"{s['total_api_calls']} api call(s) "
+        f"(evaluate ${by['evaluate']} plan ${by['plan']} offer ${by['offer']})"
+    )
     return 0
 
 
@@ -166,7 +204,8 @@ def _cmd_dashboard(args) -> int:
     data_dir = _data_dir(args)
     store, revenue_ledger, spend_ledger = _load(data_dir)
     report = pipeline_report(
-        store, revenue_ledger, spend_ledger, _discovery_log(data_dir)
+        store, revenue_ledger, spend_ledger,
+        _discovery_log(data_dir), _llm_spend_log(data_dir),
     )
     html = render_html(report, generated_at=now_iso())
     out = Path(args.out) if args.out else data_dir / "dashboard.html"
@@ -244,6 +283,7 @@ def _cmd_investigate(args) -> int:
     if cache is not None:
         cache.save()
     if args.planner == "llm":
+        _record_llm_spend(data_dir, "plan", planner)
         meter = getattr(planner, "meter", None)
         actual = meter.cost_usd if meter is not None else 0.0
         note = " (cost ceiling hit)" if getattr(planner, "ceiling_hit", False) else ""
@@ -303,6 +343,7 @@ def _cmd_prepare_launch(args) -> int:
     if cache is not None:
         cache.save()
     if args.proposer == "llm":
+        _record_llm_spend(data_dir, "offer", proposer)
         meter = getattr(proposer, "meter", None)
         actual = meter.cost_usd if meter is not None else 0.0
         note = " (cost ceiling hit)" if getattr(proposer, "ceiling_hit", False) else ""
@@ -425,6 +466,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("report", parents=[common], help="print the report only").set_defaults(
         func=_cmd_report
     )
+
+    sub.add_parser(
+        "llm-costs", parents=[common], help="print recorded AI operating spend"
+    ).set_defaults(func=_cmd_llm_costs)
 
     dash = sub.add_parser(
         "dashboard", parents=[common], help="write a static HTML pipeline snapshot"
