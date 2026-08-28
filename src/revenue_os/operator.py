@@ -183,6 +183,14 @@ def save_session(data_dir: str | Path, session: Session) -> None:
     _atomic_write(_session_path(data_dir), json.dumps(asdict(session), indent=2))
 
 
+def session_dict(data_dir: str | Path) -> dict | None:
+    """The raw agent_session.json, or None if there is no session."""
+    path = _session_path(data_dir)
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 @dataclass(frozen=True)
 class Decision:
     action: str

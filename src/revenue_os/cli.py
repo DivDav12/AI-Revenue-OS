@@ -259,6 +259,8 @@ def _cmd_agent_loop(args) -> int:
     agent = OperatorAgent(data_dir, load_goal(data_dir))
 
     def on_tick(steps):
+        if args.dashboard:
+            _write_dashboard(data_dir)
         if args.quiet and len(steps) == 1 and steps[0].decision.action == "stop":
             return
         _print_steps(steps)
@@ -273,6 +275,8 @@ def _cmd_agent_loop(args) -> int:
         fresh=args.fresh,
         on_tick=on_tick,
     )
+    if args.dashboard:
+        _write_dashboard(data_dir)
     print(
         f"stopped: {session.end_reason} "
         f"({session.ticks} tick(s), {session.cycles} cycle(s))"
@@ -351,17 +355,30 @@ def _cmd_llm_costs(args) -> int:
     return 0
 
 
-def _cmd_dashboard(args) -> int:
-    data_dir = _data_dir(args)
+def _write_dashboard(data_dir: Path, out: Path | None = None) -> Path:
+    from .agent_log import AgentLog
+    from .operator import session_dict
+
     store, revenue_ledger, spend_ledger = _load(data_dir)
     report = pipeline_report(
         store, revenue_ledger, spend_ledger,
         _discovery_log(data_dir), _llm_spend_log(data_dir), _llm_budget(data_dir),
     )
-    html = render_html(report, generated_at=now_iso())
-    out = Path(args.out) if args.out else data_dir / "dashboard.html"
+    html = render_html(
+        report, generated_at=now_iso(),
+        agent_log=AgentLog.load(data_dir / "agent_log.json").entries(),
+        session=session_dict(data_dir),
+        spend_entries=_llm_spend_log(data_dir).entries(),
+    )
+    out = out or data_dir / "dashboard.html"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(html, encoding="utf-8")
+    return out
+
+
+def _cmd_dashboard(args) -> int:
+    data_dir = _data_dir(args)
+    out = _write_dashboard(data_dir, Path(args.out) if args.out else None)
     print(f"dashboard written: {out}")
     return 0
 
@@ -604,6 +621,10 @@ def build_parser() -> argparse.ArgumentParser:
     ag_loop.add_argument("--max-total-cycles", type=int, default=None)
     ag_loop.add_argument("--max-spend", type=float, default=None, help="USD since session start")
     ag_loop.add_argument("--fresh", action="store_true", help="ignore an unfinished session")
+    ag_loop.add_argument(
+        "--dashboard", action="store_true",
+        help="regenerate <data-dir>/dashboard.html after each tick",
+    )
     ag_loop.add_argument("-q", "--quiet", action="store_true", help="print only ticks that did something")
     ag_loop.set_defaults(func=_cmd_agent_loop)
 

@@ -28,7 +28,17 @@ td.low { color: #b00; font-weight: bold; }
 details { margin: .25rem 0; max-width: 900px; }
 summary { cursor: pointer; padding: .2rem 0; }
 details table { margin: .4rem 0 .8rem; max-width: 460px; }
+.marker { color: #06c; font-weight: bold; }
 """.strip()
+
+# llm_spend activity -> the conceptual agent that does it
+_ACTIVITY_AGENT = {
+    "evaluate": "evaluator",
+    "plan": "planner",
+    "offer": "offer proposer",
+    "decide": "decision policy",
+    "research": "researcher",
+}
 
 
 def _esc(value: object) -> str:
@@ -233,12 +243,104 @@ def _roi_section(roi: dict) -> str:
     return totals + f"<table>{header}{rows}</table>"
 
 
-def render_html(report: dict, generated_at: str) -> str:
+_MARKERS = ("session_start", "session_end")
+
+
+def _session_line(session: dict | None) -> str:
+    if not session:
+        return ""
+    t, c = session.get("ticks", 0), session.get("cycles", 0)
+    if session.get("ended_at"):
+        return (
+            f"<p class='generated'>session ended: "
+            f"{_esc(session.get('end_reason', 'stopped'))} after "
+            f"{_num(t)} tick(s), {_num(c)} cycle(s)</p>"
+        )
+    return (
+        f"<p class='generated'>session running: {_num(t)} tick(s), "
+        f"{_num(c)} cycle(s), last {_esc(session.get('last_tick_at', ''))}</p>"
+    )
+
+
+def _agents_section(agent_log: list[dict], spend: dict | None) -> str:
+    decisions = [e for e in (agent_log or []) if e.get("action") not in _MARKERS]
+    by_act: dict[str, list[dict]] = {}
+    for e in _spend_entries_by_activity(spend):
+        by_act.setdefault(e["activity"], []).append(e)
+
+    if not decisions and not by_act:
+        return "<p class='muted'>No agent activity yet.</p>"
+
+    rows = ""
+    if decisions:
+        last = decisions[-1]
+        rows += (
+            f"<tr><td>operator (CEO)</td>"
+            f"<td>{_esc(last.get('ts', ''))}</td>"
+            f"<td class='num'>{_num(len(decisions))}</td>"
+            f"<td class='num'>-</td><td class='num'>-</td>"
+            f"<td>{_esc(last.get('action', ''))} &mdash; {_esc(last.get('reason', ''))}</td>"
+            "</tr>"
+        )
+    for activity, agent in _ACTIVITY_AGENT.items():
+        entries = by_act.get(activity)
+        if not entries:
+            continue
+        calls = sum(int(e.get("api_calls", 0)) for e in entries)
+        cost = round(sum(float(e.get("cost_usd", 0.0)) for e in entries), 4)
+        last = entries[-1]
+        rows += (
+            f"<tr><td>{_esc(agent)}</td>"
+            f"<td>{_esc(last.get('ts', ''))}</td>"
+            f"<td class='num'>{_num(len(entries))}</td>"
+            f"<td class='num'>{_num(calls)}</td>"
+            f"<td class='num'>${_num(cost)}</td>"
+            f"<td>cache {_num(last.get('cache_hits', 0))}h/"
+            f"{_num(last.get('cache_misses', 0))}m</td></tr>"
+        )
+    return (
+        "<table><tr><th>agent</th><th>last active</th><th>runs</th>"
+        f"<th>api calls</th><th>cost</th><th>note</th></tr>{rows}</table>"
+    )
+
+
+def _agent_decisions_section(agent_log: list[dict], limit: int = 12) -> str:
+    entries = (agent_log or [])[-limit:]
+    if not entries:
+        return "<p class='muted'>No agent decisions recorded.</p>"
+    rows = ""
+    for e in entries:
+        action = e.get("action", "")
+        cls = " class='marker'" if action in _MARKERS else ""
+        rows += (
+            f"<tr><td>{_esc(e.get('ts', ''))}</td>"
+            f"<td{cls}>{_esc(action)}</td>"
+            f"<td>{_esc(e.get('reason', ''))}</td></tr>"
+        )
+    return f"<table><tr><th>when</th><th>action</th><th>reason</th></tr>{rows}</table>"
+
+
+def _spend_entries_by_activity(spend: dict | None):
+    """spend may be a summary dict (no entries) or the raw entry list."""
+    if isinstance(spend, list):
+        return spend
+    return []
+
+
+def render_html(report: dict, generated_at: str, *,
+                agent_log: list[dict] | None = None,
+                session: dict | None = None,
+                spend_entries: list[dict] | None = None) -> str:
     """Build the full standalone HTML document for a pipeline report."""
     body = "".join(
         [
             "<h1>AI-Revenue-OS &mdash; pipeline</h1>",
             f"<p class='generated'>generated {_esc(generated_at)}</p>",
+            _session_line(session),
+            "<h2>Agents</h2>",
+            _agents_section(agent_log or [], spend_entries),
+            "<h2>Agent decisions</h2>",
+            _agent_decisions_section(agent_log or []),
             "<h2>Status</h2>",
             _status_table(report["status_counts"]),
             "<h2>Action queue</h2>",

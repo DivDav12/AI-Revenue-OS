@@ -43,8 +43,44 @@ class RenderHtmlTests(unittest.TestCase):
         html = render_html(_report(self.store, self.d), _FIXED_TS)
         self.assertTrue(html.startswith("<!doctype html>"))
         self.assertIn("No candidates.", html)
+        self.assertIn("No agent activity yet.", html)
+        self.assertIn("No agent decisions recorded.", html)
         self.assertIn("Nothing awaiting a human.", html)
         self.assertIn(_FIXED_TS, html)
+
+    def test_agents_and_decisions_sections(self):
+        agent_log = [
+            {"ts": "t0", "action": "session_start", "reason": "interval=0s"},
+            {"ts": "t1", "action": "discover", "reason": "cold start"},
+            {"ts": "t2", "action": "research", "reason": "3 not researched"},
+        ]
+        spend = [
+            {"ts": "t2", "activity": "research", "model": "claude-sonnet-5",
+             "api_calls": 3, "cost_usd": 0.01, "cache_hits": 0, "cache_misses": 3},
+        ]
+        html = render_html(
+            _report(self.store, self.d), _FIXED_TS,
+            agent_log=agent_log, spend_entries=spend,
+        )
+        self.assertIn("<h2>Agents</h2>", html)
+        self.assertIn("operator (CEO)", html)
+        self.assertIn("researcher", html)
+        self.assertIn("research &mdash; 3 not researched", html)
+        self.assertIn("class='marker'>session_start", html)
+        self.assertNotIn("<script", html)
+        self.assertNotIn("https://", html)
+
+    def test_session_line_running_and_ended(self):
+        base = _report(self.store, self.d)
+        running = render_html(base, _FIXED_TS, session={
+            "ticks": 2, "cycles": 5, "last_tick_at": "t9", "ended_at": None,
+        })
+        self.assertIn("session running: 2 tick(s), 5 cycle(s)", running)
+        ended = render_html(base, _FIXED_TS, session={
+            "ticks": 3, "cycles": 4, "ended_at": "tX", "end_reason": "max-ticks",
+        })
+        self.assertIn("session ended: max-ticks after 3 tick(s)", ended)
+        self.assertNotIn("session running", render_html(base, _FIXED_TS))
 
     def test_populated_store_shows_counts_and_names(self):
         self.store.put(Candidate(name="alpha", status="shortlisted", total=3.1, verdict="hold"))
@@ -150,6 +186,25 @@ class DashboardCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(target.exists())
         self.assertNotIn("https://", target.read_text(encoding="utf-8"))
+
+    def test_dashboard_shows_operator_decisions(self):
+        _run(["agent-run", "--data-dir", self.data])
+        _run(["dashboard", "--data-dir", self.data])
+        html = (Path(self.data) / "dashboard.html").read_text(encoding="utf-8")
+        self.assertIn("operator (CEO)", html)
+        self.assertIn("no discovery has run yet", html)
+
+    def test_agent_loop_dashboard_flag(self):
+        _run(["agent-loop", "--interval", "0", "--max-ticks", "2",
+              "--dashboard", "--data-dir", self.data])
+        html_path = Path(self.data) / "dashboard.html"
+        self.assertTrue(html_path.exists())
+        self.assertIn("session ended", html_path.read_text(encoding="utf-8"))
+
+    def test_agent_loop_without_dashboard_flag(self):
+        _run(["agent-loop", "--interval", "0", "--max-ticks", "1",
+              "--data-dir", self.data])
+        self.assertFalse((Path(self.data) / "dashboard.html").exists())
 
 
 if __name__ == "__main__":
