@@ -1,6 +1,8 @@
 """Entry point: `python -m revenue_os`."""
 
-from .runner import main
+import sys
+
+from .cli import main
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

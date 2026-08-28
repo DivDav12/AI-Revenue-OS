@@ -7,6 +7,7 @@ collects the Results, and returns the successful scores ranked by total
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 
 from . import lifecycle
@@ -18,6 +19,8 @@ from .registry import AgentRegistry
 from .offer import propose_offer
 from .store import Candidate, CandidateStore
 from .validation import plan_validation
+
+logger = logging.getLogger(__name__)
 
 
 def _default_orchestrator() -> Orchestrator:
@@ -101,6 +104,8 @@ def run_discovery_cycle(
     human has already acted on. Returns all stored candidates, ranked.
     """
     opportunities = _discover(source, limit)
+    if not opportunities:
+        logger.warning("discovery returned no opportunities (source failure or empty)")
     ranked = run_evaluation(opportunities)
     scores = {s.opportunity_name: s for s in ranked}
 

@@ -115,3 +115,40 @@ class HackerNewsSource:
             if item:
                 signals.append(_map_hn_item(item))
         return signals
+
+
+_SAMPLE_SIGNALS = [
+    RawSignal(
+        title="Show HN: an open-source no-code automation platform",
+        text="We built a self-serve tool to automate repetitive API workflows.",
+        source="sample",
+        external_id="s1",
+    ),
+    RawSignal(
+        title="Ask HN: how do you find your first paying customers?",
+        text="Bootstrapped founder looking for revenue and pricing advice.",
+        source="sample",
+        external_id="s2",
+    ),
+    RawSignal(
+        title="Launch: a marketplace for reusable document templates",
+        text="MVP is live, free tier plus paid plans.",
+        source="sample",
+        external_id="s3",
+    ),
+    RawSignal(
+        title="A weekend project with no obvious business model",
+        text="Just something I made for fun.",
+        source="sample",
+        external_id="s4",
+    ),
+]
+
+
+def build_source(name: str) -> Source:
+    """Factory: 'static' (offline default) or 'hn' (real Hacker News API)."""
+    if name == "static":
+        return StaticSource(_SAMPLE_SIGNALS)
+    if name == "hn":
+        return HackerNewsSource()
+    raise ValueError(f"unknown source: {name!r} (expected 'static' or 'hn')")

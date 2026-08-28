@@ -8,13 +8,12 @@ from pathlib import Path
 
 from .agent import DiscoveryAgent, EvaluatorAgent, ReverseAgent, WorkerAgent
 from .approval import record_decision
+from .analytics import roi_summary
 from .messages import Result, Task
 from .orchestrator import Orchestrator
 from .registry import AgentRegistry
-from .sources import RawSignal, StaticSource
-from .analytics import roi_summary
-from .report import pipeline_report, render_text
 from .revenue import RevenueLedger, mark_launched, record_payment, revenue_summary
+from .sources import _SAMPLE_SIGNALS, StaticSource
 from .spend import (
     SpendLedger,
     SpendRequest,
@@ -25,35 +24,6 @@ from .spend import (
 from .store import CandidateStore
 from .validation import record_validation_outcome
 from .workflow import investigate_approved, prepare_launch, run_discovery_cycle
-
-_DATA_DIR = Path("data")
-
-_SAMPLE_SIGNALS = [
-    RawSignal(
-        title="Show HN: an open-source no-code automation platform",
-        text="We built a self-serve tool to automate repetitive API workflows.",
-        source="sample",
-        external_id="s1",
-    ),
-    RawSignal(
-        title="Ask HN: how do you find your first paying customers?",
-        text="Bootstrapped founder looking for revenue and pricing advice.",
-        source="sample",
-        external_id="s2",
-    ),
-    RawSignal(
-        title="Launch: a marketplace for reusable document templates",
-        text="MVP is live, free tier plus paid plans.",
-        source="sample",
-        external_id="s3",
-    ),
-    RawSignal(
-        title="A weekend project with no obvious business model",
-        text="Just something I made for fun.",
-        source="sample",
-        external_id="s4",
-    ),
-]
 
 
 def build_orchestrator() -> Orchestrator:
@@ -76,17 +46,11 @@ def run_once(tasks: list[Task] | None = None) -> list[Result]:
     return orchestrator.run_cycle()
 
 
-def main() -> None:
-    """Run one discovery cycle against the persistent store and print the report."""
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    store = CandidateStore.load(_DATA_DIR / "candidates.json")
-    revenue_ledger = RevenueLedger.load(_DATA_DIR / "revenue.json")
-    spend_ledger = SpendLedger.load(_DATA_DIR / "spend.json")
+def main() -> int:
+    """Thin wrapper: delegate to the CLI."""
+    from .cli import main as cli_main
 
-    run_discovery_cycle(
-        StaticSource(_SAMPLE_SIGNALS), store, limit=10, shortlist_n=3
-    )
-    print(render_text(pipeline_report(store, revenue_ledger, spend_ledger)))
+    return cli_main()
 
 
 def demo() -> None:
