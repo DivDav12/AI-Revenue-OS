@@ -136,6 +136,20 @@ def pipeline_report(
     }
 
 
+def digest_line(action_queue: list[dict]) -> str:
+    """One-line summary of the action queue for the human."""
+    if not action_queue:
+        return "nothing awaiting a human"
+    groups: dict[str, int] = {}
+    for item in action_queue:
+        groups[item["next_action"]] = groups.get(item["next_action"], 0) + 1
+    line = " | ".join(f"{n} {action}" for action, n in groups.items())
+    n_stale = sum(1 for i in action_queue if i["stale"])
+    if n_stale:
+        line += f"  ({n_stale} stale)"
+    return line
+
+
 def render_text(report: dict) -> str:
     lines: list[str] = []
 

@@ -5,6 +5,8 @@ Read commands:
                    (--evaluator llm opt-in; keyword heuristic by default)
   report           print the report only (no discovery)
   digest [-q]      one-line summary of what needs the human
+  agent-run        operator agent: loop the non-human pipeline to a fixed point
+  agent-step / agent-log / agent-goal
   llm-costs        print recorded AI operating spend
   outcomes         retrospective on validated vs rejected candidates
   dashboard        write a static HTML pipeline snapshot (no discovery)
@@ -30,6 +32,7 @@ Cost-control commands (authorize/record only; never move money):
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -41,7 +44,7 @@ from .discovery_log import DiscoveryLog
 from .llm_budget import LlmBudget
 from .llm_spend import LlmSpendLog, entry_from
 from .filtering import is_relevant
-from .report import pipeline_report, render_candidate, render_text
+from .report import digest_line, pipeline_report, render_candidate, render_text
 from .revenue import RevenueLedger, mark_launched, record_payment
 from .sources import FilteredSource, build_source
 from .spend import (
@@ -221,23 +224,79 @@ def _cmd_digest(args) -> int:
     data_dir = _data_dir(args)
     store, revenue_ledger, spend_ledger = _load(data_dir)
     queue = pipeline_report(store, revenue_ledger, spend_ledger)["action_queue"]
-
     if args.quiet:
         return 1 if queue else 0
+    print(digest_line(queue))
+    return 0
 
-    if not queue:
-        print("nothing awaiting a human")
+
+def _cmd_agent_goal(args) -> int:
+    from dataclasses import replace
+
+    from .operator import load_goal, save_goal
+
+    data_dir = _data_dir(args)
+    goal = load_goal(data_dir)
+    updates: dict = {}
+    if args.sources is not None:
+        updates["sources"] = tuple(s.strip() for s in args.sources.split(",") if s.strip())
+    if args.filter is not None:
+        updates["filter"] = args.filter
+    if args.calibrated is not None:
+        updates["calibrated"] = args.calibrated
+    if args.min_score is not None:
+        updates["min_score"] = args.min_score
+    if args.shortlist is not None:
+        updates["shortlist_n"] = args.shortlist
+    if args.limit is not None:
+        updates["limit"] = args.limit
+    if args.target_validated is not None:
+        updates["target_validated"] = (
+            None if args.target_validated < 0 else args.target_validated
+        )
+    if updates:
+        goal = replace(goal, **updates)
+        save_goal(data_dir, goal)
+    print(json.dumps(goal.to_dict(), indent=2))
+    return 0
+
+
+def _cmd_agent_step(args) -> int:
+    from .operator import OperatorAgent, load_goal
+
+    data_dir = _data_dir(args)
+    step = OperatorAgent(data_dir, load_goal(data_dir)).step()
+    print(f"{step.decision.action}: {step.decision.reason}")
+    if step.result:
+        print(f"  -> {step.result}")
+    print(step.digest)
+    return 0
+
+
+def _cmd_agent_run(args) -> int:
+    from .operator import OperatorAgent, load_goal
+
+    data_dir = _data_dir(args)
+    steps = OperatorAgent(data_dir, load_goal(data_dir)).run(max_cycles=args.max_cycles)
+    for step in steps:
+        line = f"  {step.decision.action}: {step.decision.reason}"
+        if step.result:
+            line += f"  {step.result}"
+        print(line)
+    print(steps[-1].digest if steps else "nothing to do")
+    return 0
+
+
+def _cmd_agent_log(args) -> int:
+    from .agent_log import AgentLog
+
+    data_dir = _data_dir(args)
+    entries = AgentLog.load(data_dir / "agent_log.json").entries()
+    if not entries:
+        print("(no agent decisions recorded)")
         return 0
-
-    groups: dict[str, int] = {}
-    for item in queue:
-        groups[item["next_action"]] = groups.get(item["next_action"], 0) + 1
-    parts = [f"{n} {action}" for action, n in groups.items()]
-    line = " | ".join(parts)
-    n_stale = sum(1 for i in queue if i["stale"])
-    if n_stale:
-        line += f"  ({n_stale} stale)"
-    print(line)
+    for e in entries[-args.limit:]:
+        print(f"{e['ts']}  cycle {e['cycle']}  {e['action']}: {e['reason']}")
     return 0
 
 
@@ -590,6 +649,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="no output; exit 1 if anything awaits a human",
     )
     digest.set_defaults(func=_cmd_digest)
+
+    ag_run = sub.add_parser(
+        "agent-run", parents=[common],
+        help="operator agent: loop the non-human pipeline to a fixed point",
+    )
+    ag_run.add_argument("--max-cycles", type=int, default=20)
+    ag_run.set_defaults(func=_cmd_agent_run)
+
+    sub.add_parser(
+        "agent-step", parents=[common], help="operator agent: one decide/act step"
+    ).set_defaults(func=_cmd_agent_step)
+
+    ag_log = sub.add_parser(
+        "agent-log", parents=[common], help="operator agent: recent decisions"
+    )
+    ag_log.add_argument("--limit", type=int, default=20)
+    ag_log.set_defaults(func=_cmd_agent_log)
+
+    ag_goal = sub.add_parser(
+        "agent-goal", parents=[common], help="operator agent: show or set the goal"
+    )
+    ag_goal.add_argument("--sources", default=None, help="comma list, e.g. static,hn,file:leads.json")
+    ag_goal.add_argument("--filter", action=argparse.BooleanOptionalAction, default=None)
+    ag_goal.add_argument("--calibrated", action=argparse.BooleanOptionalAction, default=None)
+    ag_goal.add_argument("--min-score", type=float, default=None)
+    ag_goal.add_argument("--shortlist", type=int, default=None)
+    ag_goal.add_argument("--limit", type=int, default=None)
+    ag_goal.add_argument(
+        "--target-validated", type=int, default=None,
+        help="stop once this many are validated (negative clears)",
+    )
+    ag_goal.set_defaults(func=_cmd_agent_goal)
 
     llm_budget = sub.add_parser(
         "llm-budget", parents=[common, actor_only],
