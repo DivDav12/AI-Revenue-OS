@@ -45,11 +45,22 @@ def pipeline_report(
         if (action := next_action(cand)) is not None
     ]
 
+    candidate_rows = [
+        {
+            "name": cand.name,
+            "status": cand.status,
+            "score": cand.total,
+            "verdict": cand.verdict,
+        }
+        for cand in candidates
+    ]
+
     grand_revenue = revenue_ledger.total()
     grand_spent = spend_ledger.total_spent()
     return {
         "status_counts": status_counts,
         "action_queue": action_queue,
+        "candidates": candidate_rows,
         "roi": roi_summary(store, revenue_ledger, spend_ledger),
         "totals": {
             "candidates": len(candidates),

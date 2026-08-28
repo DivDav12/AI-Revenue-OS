@@ -3,6 +3,7 @@
 Read commands:
   run              discovery cycle against a source, then print the report
   report           print the report only (no discovery)
+  dashboard        write a static HTML pipeline snapshot (no discovery)
   candidate NAME   print one candidate's full state
   demo             full end-to-end walkthrough in a throwaway directory
 
@@ -30,6 +31,7 @@ import sys
 from pathlib import Path
 
 from .approval import record_decision
+from .dashboard import render_html
 from .filtering import is_relevant
 from .report import pipeline_report, render_candidate, render_text
 from .revenue import RevenueLedger, mark_launched, record_payment
@@ -43,7 +45,7 @@ from .spend import (
     record_spend,
     set_budget,
 )
-from .store import CandidateStore
+from .store import CandidateStore, now_iso
 from .validation import record_validation_outcome
 from .workflow import investigate_approved, prepare_launch, run_discovery_cycle
 
@@ -92,6 +94,18 @@ def _cmd_run(args) -> int:
 def _cmd_report(args) -> int:
     store, revenue_ledger, spend_ledger = _load(_data_dir(args))
     print(render_text(pipeline_report(store, revenue_ledger, spend_ledger)))
+    return 0
+
+
+def _cmd_dashboard(args) -> int:
+    data_dir = _data_dir(args)
+    store, revenue_ledger, spend_ledger = _load(data_dir)
+    report = pipeline_report(store, revenue_ledger, spend_ledger)
+    html = render_html(report, generated_at=now_iso())
+    out = Path(args.out) if args.out else data_dir / "dashboard.html"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(html, encoding="utf-8")
+    print(f"dashboard written: {out}")
     return 0
 
 
@@ -242,6 +256,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("report", parents=[common], help="print the report only").set_defaults(
         func=_cmd_report
     )
+
+    dash = sub.add_parser(
+        "dashboard", parents=[common], help="write a static HTML pipeline snapshot"
+    )
+    dash.add_argument(
+        "--out", default=None, help="output path (default: <data-dir>/dashboard.html)"
+    )
+    dash.set_defaults(func=_cmd_dashboard)
 
     cand = sub.add_parser("candidate", parents=[common], help="show one candidate")
     cand.add_argument("name")
