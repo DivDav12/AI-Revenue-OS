@@ -13,6 +13,7 @@ from .orchestrator import Orchestrator
 from .registry import AgentRegistry
 from .sources import RawSignal, StaticSource
 from .analytics import roi_summary
+from .report import pipeline_report, render_text
 from .revenue import RevenueLedger, mark_launched, record_payment, revenue_summary
 from .spend import (
     SpendLedger,
@@ -24,6 +25,8 @@ from .spend import (
 from .store import CandidateStore
 from .validation import record_validation_outcome
 from .workflow import investigate_approved, prepare_launch, run_discovery_cycle
+
+_DATA_DIR = Path("data")
 
 _SAMPLE_SIGNALS = [
     RawSignal(
@@ -74,6 +77,20 @@ def run_once(tasks: list[Task] | None = None) -> list[Result]:
 
 
 def main() -> None:
+    """Run one discovery cycle against the persistent store and print the report."""
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    store = CandidateStore.load(_DATA_DIR / "candidates.json")
+    revenue_ledger = RevenueLedger.load(_DATA_DIR / "revenue.json")
+    spend_ledger = SpendLedger.load(_DATA_DIR / "spend.json")
+
+    run_discovery_cycle(
+        StaticSource(_SAMPLE_SIGNALS), store, limit=10, shortlist_n=3
+    )
+    print(render_text(pipeline_report(store, revenue_ledger, spend_ledger)))
+
+
+def demo() -> None:
+    """Full end-to-end walkthrough in a throwaway directory."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     tmp = Path(tempfile.mkdtemp(prefix="revenue-os-"))
     store = CandidateStore.load(tmp / "candidates.json")
