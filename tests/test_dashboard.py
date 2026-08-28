@@ -146,6 +146,43 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertIn("niche but real demand", html)
         self.assertNotIn("<script", html)
 
+    def test_command_center_shell(self):
+        html = render_html(_report(self.store, self.d), _FIXED_TS)
+        self.assertIn("command center", html)
+        self.assertIn("class='grid'", html)
+        self.assertIn("class='panel c12'", html)
+        self.assertIn("--bg:#0d1117", html)                     # dark theme
+        self.assertIn("prefers-color-scheme: light", html)      # light fallback
+        self.assertIn("<span class='k'>model</span>", html)
+        self.assertIn("<span class='k'>llm spend</span>", html)
+
+    def test_roster_reflects_goal_modes(self):
+        base = _report(self.store, self.d)
+        # default deterministic goal -> workers "off" with their template modes
+        off = render_html(base, _FIXED_TS, goal={
+            "evaluator": "keyword", "research": "off", "planner": "template",
+            "proposer": "template", "decision_policy": "rules", "sources": ["static"],
+        }, agent_log=[{"ts": "t", "action": "discover", "reason": "x"}])
+        self.assertIn("mode: keyword", off)
+        self.assertIn("mode: off", off)
+        # enable research in the goal but no calls yet -> "idle", not "on"
+        idle = render_html(base, _FIXED_TS, goal={"research": "llm", "sources": ["hn"]},
+                           agent_log=[{"ts": "t", "action": "discover", "reason": "x"}])
+        self.assertRegex(idle, r"researcher</td>\s*<td class='muted'>due diligence</td>\s*<td>idle</td>")
+        self.assertIn("sources: hn", idle)
+
+    def test_roster_worker_on_when_it_has_spend(self):
+        spend = [{"ts": "t", "activity": "research", "model": "m", "api_calls": 2,
+                  "cost_usd": 0.02, "cache_hits": 1, "cache_misses": 1}]
+        html = render_html(
+            _report(self.store, self.d), _FIXED_TS,
+            agent_log=[{"ts": "t", "action": "research", "reason": "r"}],
+            spend_entries=spend, goal={"research": "off"},
+        )
+        self.assertRegex(html, r"researcher</td>\s*<td class='muted'>due diligence</td>\s*<td>on</td>")
+        self.assertIn("$0.02", html)
+        self.assertIn("cache 1/2", html)
+
     def test_roi_table_appears_after_payment(self):
         self.store.put(Candidate(name="alpha", status="validated"))
         mark_launched(self.store, "alpha", actor="o")

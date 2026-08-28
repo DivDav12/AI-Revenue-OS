@@ -357,7 +357,7 @@ def _cmd_llm_costs(args) -> int:
 
 def _write_dashboard(data_dir: Path, out: Path | None = None) -> Path:
     from .agent_log import AgentLog
-    from .operator import session_dict
+    from .operator import load_goal, session_dict
 
     store, revenue_ledger, spend_ledger = _load(data_dir)
     report = pipeline_report(
@@ -369,6 +369,7 @@ def _write_dashboard(data_dir: Path, out: Path | None = None) -> Path:
         agent_log=AgentLog.load(data_dir / "agent_log.json").entries(),
         session=session_dict(data_dir),
         spend_entries=_llm_spend_log(data_dir).entries(),
+        goal=load_goal(data_dir).to_dict(),
     )
     out = out or data_dir / "dashboard.html"
     out.parent.mkdir(parents=True, exist_ok=True)
