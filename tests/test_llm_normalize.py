@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from revenue_os import cli
+from revenue_os.llm_cache import LlmCache
 from revenue_os.llm_normalize import (
     CostCeilingExceeded,
     CostMeter,
@@ -157,6 +158,62 @@ class LlmNormalizerTests(unittest.TestCase):
         self.assertEqual(client.calls, 2)
 
 
+class LlmNormalizerCacheTests(unittest.TestCase):
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.cache = LlmCache(Path(self._dir.name) / "llm_cache.json")
+
+    def tearDown(self):
+        self._dir.cleanup()
+
+    def test_second_call_is_a_cache_hit(self):
+        client = _FakeClient()
+        norm = LlmNormalizer(client=client, model="claude-sonnet-5", cache=self.cache)
+        first = norm(RawSignal(title="A niche SaaS"))
+        second = norm(RawSignal(title="A niche SaaS"))
+        self.assertEqual(client.calls, 1)
+        self.assertEqual(norm.cache_hits, 1)
+        self.assertEqual(norm.cache_misses, 1)
+        self.assertEqual(first.estimates(), second.estimates())
+        self.assertEqual(first.rationale, second.rationale)
+
+    def test_cache_hit_ignores_ceiling_and_meter(self):
+        client = _FakeClient(usage=(400_000, 0))
+        norm = LlmNormalizer(
+            client=client, model="claude-sonnet-5", cache=self.cache, max_cost_usd=0.01
+        )
+        norm(RawSignal(title="x"))  # miss: 1 call, cost now 0.8 (> ceiling)
+        cost_after_miss = norm.meter.cost_usd
+        norm(RawSignal(title="x"))  # hit: must not raise, must not spend
+        self.assertEqual(client.calls, 1)
+        self.assertEqual(norm.meter.cost_usd, cost_after_miss)
+
+    def test_refresh_forces_recall(self):
+        client = _FakeClient()
+        norm = LlmNormalizer(
+            client=client, model="claude-sonnet-5", cache=self.cache, refresh=True
+        )
+        norm(RawSignal(title="x"))
+        norm(RawSignal(title="x"))
+        self.assertEqual(client.calls, 2)
+        self.assertEqual(norm.cache_hits, 0)
+
+    def test_changed_text_is_a_miss(self):
+        client = _FakeClient()
+        norm = LlmNormalizer(client=client, model="claude-sonnet-5", cache=self.cache)
+        norm(RawSignal(title="x", text="v1"))
+        norm(RawSignal(title="x", text="v2"))
+        self.assertEqual(client.calls, 2)
+
+    def test_estimate_skips_cached_signals(self):
+        sig = RawSignal(title="cached one", text="body")
+        self.assertGreater(estimate_cost_usd([sig], "claude-sonnet-5"), 0.0)
+        self.cache.put(sig, "claude-sonnet-5", {c: 3.0 for c in CRITERIA}, "r")
+        self.assertEqual(
+            estimate_cost_usd([sig], "claude-sonnet-5", cache=self.cache), 0.0
+        )
+
+
 class RunCycleWithLlmTests(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
@@ -268,6 +325,51 @@ class CliLlmTests(unittest.TestCase):
         store = CandidateStore.load(Path(self.data) / "candidates.json")
         self.assertTrue(all(c.estimate_source == "keyword" for c in store.all()))
         self.assertNotIn("anthropic", sys.modules)
+        self.assertFalse((Path(self.data) / "llm_cache.json").exists())
+
+    def _scores(self):
+        return {
+            c.name: c.total
+            for c in CandidateStore.load(Path(self.data) / "candidates.json").all()
+        }
+
+    def test_second_run_is_fully_cached(self):
+        fake = _FakeClient()
+        with mock.patch("revenue_os.llm_normalize.build_client", return_value=fake):
+            _run(["run", "--source", "static", "--evaluator", "llm",
+                  "--data-dir", self.data])
+            first_calls = fake.calls
+            first_scores = self._scores()
+            code, out = _run(["run", "--source", "static", "--evaluator", "llm",
+                              "--data-dir", self.data])
+        self.assertEqual(code, 0)
+        self.assertGreater(first_calls, 0)
+        self.assertEqual(fake.calls, first_calls)  # no new API calls
+        self.assertEqual(self._scores(), first_scores)
+        self.assertTrue((Path(self.data) / "llm_cache.json").exists())
+        self.assertIn("miss", out)
+        entry = DiscoveryLog.load(Path(self.data) / "discovery_runs.json").latest()
+        self.assertEqual(entry["eval_cache_misses"], 0)
+        self.assertGreater(entry["eval_cache_hits"], 0)
+
+    def test_refresh_eval_recalls(self):
+        fake = _FakeClient()
+        with mock.patch("revenue_os.llm_normalize.build_client", return_value=fake):
+            _run(["run", "--source", "static", "--evaluator", "llm",
+                  "--data-dir", self.data])
+            n = fake.calls
+            _run(["run", "--source", "static", "--evaluator", "llm",
+                  "--refresh-eval", "--data-dir", self.data])
+        self.assertEqual(fake.calls, 2 * n)
+
+    def test_fully_cached_run_ignores_zero_ceiling(self):
+        fake = _FakeClient()
+        with mock.patch("revenue_os.llm_normalize.build_client", return_value=fake):
+            _run(["run", "--source", "static", "--evaluator", "llm",
+                  "--data-dir", self.data])
+            code, _ = _run(["run", "--source", "static", "--evaluator", "llm",
+                            "--max-eval-cost", "0.0", "--data-dir", self.data])
+        self.assertEqual(code, 0)
 
 
 class LiveLlmTests(unittest.TestCase):

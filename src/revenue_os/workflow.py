@@ -185,6 +185,8 @@ def run_discovery_cycle(
                 "est_cost_usd": round(float(est_cost_usd), 4),
                 "actual_cost_usd": round(meter.cost_usd, 4) if meter is not None else 0.0,
                 "cost_ceiling_hit": bool(getattr(normalizer, "ceiling_hit", False)),
+                "eval_cache_hits": int(getattr(normalizer, "cache_hits", 0)),
+                "eval_cache_misses": int(getattr(normalizer, "cache_misses", 0)),
             }
         )
         log.save()

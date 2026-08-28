@@ -106,6 +106,7 @@ _DISCOVERY_FIELDS = (
     "source", "limit", "fetched", "filtered_out", "dropped_below_score",
     "evaluated", "kept", "new", "refreshed", "shortlisted",
     "evaluator", "est_cost_usd", "actual_cost_usd", "cost_ceiling_hit",
+    "eval_cache_hits", "eval_cache_misses",
 )
 
 

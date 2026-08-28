@@ -81,31 +81,40 @@ def _discovery_log(data_dir: Path) -> DiscoveryLog:
     return DiscoveryLog.load(data_dir / "discovery_runs.json")
 
 
-def _build_normalizer(args, source):
-    """Return (normalizer, evaluator_name, est_cost_usd).
+def _build_normalizer(args, source, data_dir: Path):
+    """Return (normalizer, evaluator_name, est_cost_usd, cache).
 
     Keyword path: the deterministic default. LLM path (opt-in): fetch the
-    signals once to estimate spend, refuse if the estimate exceeds the
-    ceiling, then hand back a metered, ceiling-bounded normalizer.
+    signals once, estimate spend for the ones not already cached, refuse
+    if that exceeds the ceiling, then hand back a metered, cache-backed,
+    ceiling-bounded normalizer.
     """
     from .normalize import to_opportunity
 
     if args.evaluator == "keyword":
-        return to_opportunity, "keyword", 0.0
+        return to_opportunity, "keyword", 0.0, None
 
+    from .llm_cache import LlmCache
     from .llm_normalize import LlmNormalizer, build_client, estimate_cost_usd
 
+    cache = LlmCache.load(data_dir / "llm_cache.json")
     signals = source.fetch(args.limit)
-    est = estimate_cost_usd(signals, args.model)
+    est = estimate_cost_usd(
+        signals, args.model, cache=None if args.refresh_eval else cache
+    )
     if est > args.max_eval_cost:
         raise ValueError(
             f"estimated eval cost ${est} exceeds --max-eval-cost "
             f"${args.max_eval_cost}; nothing was evaluated"
         )
     normalizer = LlmNormalizer(
-        client=build_client(), model=args.model, max_cost_usd=args.max_eval_cost
+        client=build_client(),
+        model=args.model,
+        max_cost_usd=args.max_eval_cost,
+        cache=cache,
+        refresh=args.refresh_eval,
     )
-    return normalizer, "llm", est
+    return normalizer, "llm", est, cache
 
 
 def _cmd_run(args) -> int:
@@ -115,7 +124,7 @@ def _cmd_run(args) -> int:
     source = build_source(args.source, args.source_path)
     if args.filter:
         source = FilteredSource(source, is_relevant)
-    normalizer, evaluator, est_cost = _build_normalizer(args, source)
+    normalizer, evaluator, est_cost, cache = _build_normalizer(args, source, data_dir)
     run_discovery_cycle(
         source,
         store,
@@ -127,11 +136,17 @@ def _cmd_run(args) -> int:
         evaluator=evaluator,
         est_cost_usd=est_cost,
     )
+    if cache is not None:
+        cache.save()
     if evaluator == "llm":
         meter = getattr(normalizer, "meter", None)
         actual = meter.cost_usd if meter is not None else 0.0
         note = " (cost ceiling hit)" if getattr(normalizer, "ceiling_hit", False) else ""
-        print(f"llm evaluator: est ${est_cost}, actual ${actual}{note}")
+        print(
+            f"llm evaluator: est ${est_cost}, actual ${actual}; "
+            f"cache {normalizer.cache_hits} hit / "
+            f"{normalizer.cache_misses} miss{note}"
+        )
     print(render_text(
         pipeline_report(store, revenue_ledger, spend_ledger, discovery_log)
     ))
@@ -316,6 +331,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--max-eval-cost", type=float, default=1.0,
         help="USD ceiling for one --evaluator llm run (default 1.00)",
+    )
+    run.add_argument(
+        "--refresh-eval", action="store_true",
+        help="ignore cached llm scores and re-call the API",
     )
     run.set_defaults(func=_cmd_run)
 

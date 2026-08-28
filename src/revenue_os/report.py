@@ -113,6 +113,13 @@ def render_text(report: dict) -> str:
             f"  new={last['new']} refreshed={last['refreshed']} "
             f"shortlisted={last['shortlisted']}"
         )
+        if last.get("evaluator") == "llm":
+            lines.append(
+                f"  evaluator=llm est_cost=${last.get('est_cost_usd', 0)} "
+                f"actual_cost=${last.get('actual_cost_usd', 0)} "
+                f"cache_hits={last.get('eval_cache_hits', 0)} "
+                f"cache_misses={last.get('eval_cache_misses', 0)}"
+            )
 
     totals = report["totals"]
     lines.append("")

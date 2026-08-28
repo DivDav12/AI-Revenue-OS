@@ -11,6 +11,8 @@ Safety:
     single-turn user content
   - a per-run USD ceiling halts further calls (LlmNormalizer)
   - token usage is measured (CostMeter) and surfaced by the caller
+  - unchanged signals are served from a local cache (see llm_cache.py),
+    so re-runs cost nothing
 
 No money is moved anywhere in this module.
 """
@@ -26,6 +28,10 @@ from .opportunity import CRITERIA, SCORE_MAX, SCORE_MIN, Opportunity
 DEFAULT_MODEL = "claude-sonnet-5"
 _MAX_RATIONALE = 280
 _MAX_TOKENS = 600
+
+# Bump when the rubric or tool schema changes materially; the LlmCache
+# key includes this, so a bump invalidates every cached entry.
+_PROMPT_VERSION = "1"
 
 # USD per 1M tokens (input, output); used only to estimate/measure spend.
 _PRICES: dict[str, tuple[float, float]] = {
@@ -93,12 +99,15 @@ class CostMeter:
         )
 
 
-def estimate_cost_usd(signals, model: str) -> float:
-    """Local pre-flight estimate (no API call): ~chars/4 in, ~350 out per signal."""
+def estimate_cost_usd(signals, model: str, cache=None) -> float:
+    """Local pre-flight estimate (no API call): ~chars/4 in, ~350 out per
+    signal. Signals already in `cache` are free and are skipped."""
     in_rate, out_rate = _PRICES.get(model, _FALLBACK_PRICE)
     rubric_tokens = len(_RUBRIC) // 4
     total_in = total_out = 0
     for signal in signals:
+        if cache is not None and cache.get(signal, model) is not None:
+            continue
         body = len(signal.title) + len(getattr(signal, "text", "") or "")
         total_in += rubric_tokens + body // 4 + 40
         total_out += 350
@@ -132,6 +141,31 @@ def _tool_input(response) -> dict:
     raise ValueError("llm response had no record_scores tool call")
 
 
+def _validate_scores(data: dict) -> dict[str, float]:
+    estimates: dict[str, float] = {}
+    for name in CRITERIA:
+        try:
+            value = float(data[name])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"llm response missing/invalid {name!r}") from exc
+        if not SCORE_MIN <= value <= SCORE_MAX:
+            raise ValueError(f"llm score {name}={value} out of range")
+        estimates[name] = round(value, 2)
+    return estimates
+
+
+def _build(signal, estimates: dict[str, float], rationale: str) -> Opportunity:
+    return Opportunity(
+        name=_slug(signal.title),
+        description=signal.title,
+        source=signal.source,
+        raw_ref=signal.url or signal.external_id,
+        rationale=str(rationale).strip()[:_MAX_RATIONALE],
+        estimate_source="llm",
+        **estimates,
+    )
+
+
 def to_opportunity_llm(signal, *, client, model: str = DEFAULT_MODEL, meter=None) -> Opportunity:
     """Score one signal with a single Claude call.
 
@@ -157,26 +191,8 @@ def to_opportunity_llm(signal, *, client, model: str = DEFAULT_MODEL, meter=None
         meter.add(getattr(response, "usage", None))
 
     data = _tool_input(response)
-    estimates: dict[str, float] = {}
-    for name in CRITERIA:
-        try:
-            value = float(data[name])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError(f"llm response missing/invalid {name!r}") from exc
-        if not SCORE_MIN <= value <= SCORE_MAX:
-            raise ValueError(f"llm score {name}={value} out of range")
-        estimates[name] = round(value, 2)
-
-    rationale = str(data.get("rationale", "")).strip()[:_MAX_RATIONALE]
-    return Opportunity(
-        name=_slug(signal.title),
-        description=signal.title,
-        source=signal.source,
-        raw_ref=signal.url or signal.external_id,
-        rationale=rationale,
-        estimate_source="llm",
-        **estimates,
-    )
+    estimates = _validate_scores(data)
+    return _build(signal, estimates, data.get("rationale", ""))
 
 
 class CostCeilingExceeded(Exception):
@@ -185,26 +201,41 @@ class CostCeilingExceeded(Exception):
 
 @dataclass
 class LlmNormalizer:
-    """Callable signal -> Opportunity that meters spend and stops calling
-    the API once `max_cost_usd` is reached."""
+    """Callable signal -> Opportunity that reuses cached scores, meters
+    spend on cache misses, and stops calling the API once `max_cost_usd`
+    is reached. Cache hits cost nothing and ignore the ceiling."""
 
     client: object
     model: str = DEFAULT_MODEL
     max_cost_usd: float = 1.0
     meter: CostMeter = field(default=None)
+    cache: object = None
+    refresh: bool = False
     ceiling_hit: bool = False
+    cache_hits: int = 0
+    cache_misses: int = 0
 
     def __post_init__(self) -> None:
         if self.meter is None:
             self.meter = CostMeter(self.model)
 
     def __call__(self, signal) -> Opportunity:
+        if self.cache is not None and not self.refresh:
+            hit = self.cache.get(signal, self.model)
+            if hit is not None:
+                self.cache_hits += 1
+                return _build(signal, dict(hit["scores"]), hit.get("rationale", ""))
+
         if self.meter.cost_usd >= self.max_cost_usd:
             self.ceiling_hit = True
             raise CostCeilingExceeded(
                 f"eval cost ${self.meter.cost_usd} reached ceiling "
                 f"${self.max_cost_usd}"
             )
-        return to_opportunity_llm(
+        opp = to_opportunity_llm(
             signal, client=self.client, model=self.model, meter=self.meter
         )
+        self.cache_misses += 1
+        if self.cache is not None:
+            self.cache.put(signal, self.model, opp.estimates(), opp.rationale)
+        return opp
