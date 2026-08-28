@@ -5,6 +5,10 @@ state, decides the next non-human action, executes it via the existing
 workflow functions, and repeats until only human-gated actions remain
 (or a cycle cap is hit). Every decision is logged.
 
+run() does one bounded pass; run_continuous() ticks forever - sleep,
+re-observe, tick again - bounded by ticks / wall-clock / cumulative
+cycles / spend, and resumable across restarts via agent_session.json.
+
 Deterministic policy, deterministic leaf workers, no LLM, no money. It
 has no code path to approve a candidate, launch an offer, set a budget,
 or record a payment - it stops at those gates and hands off via the
@@ -16,13 +20,15 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from dataclasses import dataclass, field
+import time
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .agent_log import AgentLog
 from .discovery_log import DiscoveryLog
 from .filtering import is_relevant
+from .llm_spend import LlmSpendLog
 from .report import STALE_AFTER_DAYS, _age_days, digest_line, pipeline_report
 from .revenue import RevenueLedger
 from .sources import FilteredSource, build_source
@@ -77,19 +83,55 @@ def load_goal(data_dir: str | Path) -> Goal:
     return Goal.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
 
-def save_goal(data_dir: str | Path, goal: Goal) -> None:
-    path = Path(data_dir) / "goal.json"
+def _atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(goal.to_dict(), indent=2)
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(payload)
+            fh.write(text)
         os.replace(tmp, path)
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)
         raise
+
+
+def save_goal(data_dir: str | Path, goal: Goal) -> None:
+    _atomic_write(Path(data_dir) / "goal.json", json.dumps(goal.to_dict(), indent=2))
+
+
+@dataclass
+class Session:
+    """One continuous-run session. Persisted to agent_session.json so a
+    restart resumes an unfinished session (counters continue)."""
+
+    started_at: str = ""
+    last_tick_at: str = ""
+    ticks: int = 0
+    cycles: int = 0
+    spend_baseline_usd: float = 0.0
+    ended_at: str | None = None
+    end_reason: str | None = None
+
+
+def _session_path(data_dir: str | Path) -> Path:
+    return Path(data_dir) / "agent_session.json"
+
+
+def load_session(data_dir: str | Path) -> tuple[Session, bool]:
+    """Return (session, resumed). Resume an unfinished session; otherwise
+    a fresh one."""
+    path = _session_path(data_dir)
+    if path.exists():
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        session = Session(**raw)
+        if session.ended_at is None:
+            return session, True
+    return Session(), False
+
+
+def save_session(data_dir: str | Path, session: Session) -> None:
+    _atomic_write(_session_path(data_dir), json.dumps(asdict(session), indent=2))
 
 
 @dataclass(frozen=True)
@@ -229,7 +271,7 @@ class OperatorAgent:
 
     # --- loop -------------------------------------------------------
 
-    def step(self, now: datetime | None = None) -> AgentStep:
+    def step(self, now: datetime | None = None, *, log_noop_stop: bool = True) -> AgentStep:
         now = now or datetime.now(timezone.utc)
         log = AgentLog.load(self.data_dir / "agent_log.json")
         cycle = len(log)
@@ -253,16 +295,115 @@ class OperatorAgent:
             "detail": {**decision.detail, **result},
             "digest_after": digest,
         }
-        log.add(entry)
-        log.save()
+        last = log.latest()
+        redundant_stop = (
+            decision.action == "stop" and not result
+            and last is not None
+            and last.get("action") == "stop"
+            and last.get("digest_after") == digest
+        )
+        if not (redundant_stop and not log_noop_stop):
+            log.add(entry)
+            log.save()
         return AgentStep(decision, result, digest, entry)
 
-    def run(self, max_cycles: int = 20, now: datetime | None = None) -> list[AgentStep]:
+    def run(
+        self, max_cycles: int = 20, now: datetime | None = None,
+        *, log_noop_stop: bool = True,
+    ) -> list[AgentStep]:
         self._discovery_exhausted = False
         steps: list[AgentStep] = []
         for _ in range(max(1, max_cycles)):
-            step = self.step(now=now)
+            step = self.step(now=now, log_noop_stop=log_noop_stop)
             steps.append(step)
             if step.decision.action == "stop":
                 break
         return steps
+
+    # --- continuous operation -----------------------------------------
+
+    def _marker(self, action: str, reason: str, ts: str) -> None:
+        log = AgentLog.load(self.data_dir / "agent_log.json")
+        log.add({
+            "ts": ts, "cycle": len(log), "action": action,
+            "reason": reason, "detail": {}, "digest_after": "",
+        })
+        log.save()
+
+    def _spent_since(self, baseline: float) -> float:
+        total = LlmSpendLog.load(
+            self.data_dir / "llm_spend.json"
+        ).summary()["total_cost_usd"]
+        return round(total - baseline, 4)
+
+    def run_continuous(
+        self,
+        interval: float,
+        *,
+        max_ticks: int | None = None,
+        max_runtime_s: float | None = None,
+        max_total_cycles: int | None = None,
+        max_spend_usd: float | None = None,
+        fresh: bool = False,
+        max_cycles: int = 20,
+        on_tick=None,
+        sleep_fn=time.sleep,
+        clock_fn=time.monotonic,
+        now_fn=None,
+    ) -> Session:
+        """Tick the agent to a fixed point, sleep, repeat - bounded and
+        resumable. Never passes a human gate; stops cleanly on Ctrl-C."""
+        now_fn = now_fn or (lambda: datetime.now(timezone.utc))
+
+        session, resumed = load_session(self.data_dir)
+        if fresh or not resumed:
+            session = Session(
+                started_at=now_fn().isoformat(),
+                spend_baseline_usd=LlmSpendLog.load(
+                    self.data_dir / "llm_spend.json"
+                ).summary()["total_cost_usd"],
+            )
+            save_session(self.data_dir, session)
+            self._marker("session_start", f"interval={interval}s", now_fn().isoformat())
+
+        start_clock = clock_fn()
+
+        def _bound_hit() -> str | None:
+            if max_ticks is not None and session.ticks >= max_ticks:
+                return "max-ticks"
+            if max_runtime_s is not None and clock_fn() - start_clock >= max_runtime_s:
+                return "max-runtime"
+            if max_total_cycles is not None and session.cycles >= max_total_cycles:
+                return "max-total-cycles"
+            if (
+                max_spend_usd is not None
+                and self._spent_since(session.spend_baseline_usd) >= max_spend_usd
+            ):
+                return "max-spend"
+            return None
+
+        reason: str | None = None
+        try:
+            while True:
+                reason = _bound_hit()
+                if reason:
+                    break
+                steps = self.run(max_cycles=max_cycles, log_noop_stop=False)
+                session.ticks += 1
+                session.cycles += len(steps)
+                session.last_tick_at = now_fn().isoformat()
+                save_session(self.data_dir, session)
+                if on_tick is not None:
+                    on_tick(steps)
+                reason = _bound_hit()
+                if reason:
+                    break
+                sleep_fn(interval)
+        except (KeyboardInterrupt, SystemExit):
+            reason = "interrupted"
+
+        session.ended_at = now_fn().isoformat()
+        session.end_reason = reason or "stopped"
+        save_session(self.data_dir, session)
+        self._marker("session_end", session.end_reason, session.ended_at)
+        return session

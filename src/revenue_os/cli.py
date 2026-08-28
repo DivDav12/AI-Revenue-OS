@@ -5,7 +5,8 @@ Read commands:
                    (--evaluator llm opt-in; keyword heuristic by default)
   report           print the report only (no discovery)
   digest [-q]      one-line summary of what needs the human
-  agent-run        operator agent: loop the non-human pipeline to a fixed point
+  agent-run        operator agent: one loop to a fixed point (also the cron primitive)
+  agent-loop       operator agent: tick / sleep / repeat, bounded and resumable
   agent-step / agent-log / agent-goal
   llm-costs        print recorded AI operating spend
   outcomes         retrospective on validated vs rejected candidates
@@ -273,17 +274,49 @@ def _cmd_agent_step(args) -> int:
     return 0
 
 
-def _cmd_agent_run(args) -> int:
-    from .operator import OperatorAgent, load_goal
-
-    data_dir = _data_dir(args)
-    steps = OperatorAgent(data_dir, load_goal(data_dir)).run(max_cycles=args.max_cycles)
+def _print_steps(steps) -> None:
     for step in steps:
         line = f"  {step.decision.action}: {step.decision.reason}"
         if step.result:
             line += f"  {step.result}"
         print(line)
+
+
+def _cmd_agent_run(args) -> int:
+    from .operator import OperatorAgent, load_goal
+
+    data_dir = _data_dir(args)
+    steps = OperatorAgent(data_dir, load_goal(data_dir)).run(max_cycles=args.max_cycles)
+    _print_steps(steps)
     print(steps[-1].digest if steps else "nothing to do")
+    return 0
+
+
+def _cmd_agent_loop(args) -> int:
+    from .operator import OperatorAgent, load_goal
+
+    data_dir = _data_dir(args)
+    agent = OperatorAgent(data_dir, load_goal(data_dir))
+
+    def on_tick(steps):
+        if args.quiet and len(steps) == 1 and steps[0].decision.action == "stop":
+            return
+        _print_steps(steps)
+        print(f"  digest: {steps[-1].digest}")
+
+    session = agent.run_continuous(
+        args.interval,
+        max_ticks=args.max_ticks,
+        max_runtime_s=args.max_runtime,
+        max_total_cycles=args.max_total_cycles,
+        max_spend_usd=args.max_spend,
+        fresh=args.fresh,
+        on_tick=on_tick,
+    )
+    print(
+        f"stopped: {session.end_reason} "
+        f"({session.ticks} tick(s), {session.cycles} cycle(s))"
+    )
     return 0
 
 
@@ -652,10 +685,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     ag_run = sub.add_parser(
         "agent-run", parents=[common],
-        help="operator agent: loop the non-human pipeline to a fixed point",
+        help="operator agent: loop to a fixed point once (also the cron primitive)",
     )
     ag_run.add_argument("--max-cycles", type=int, default=20)
     ag_run.set_defaults(func=_cmd_agent_run)
+
+    ag_loop = sub.add_parser(
+        "agent-loop", parents=[common],
+        help="operator agent: tick / sleep / repeat, bounded and resumable",
+    )
+    ag_loop.add_argument("--interval", type=float, required=True, help="seconds between ticks")
+    ag_loop.add_argument("--max-ticks", type=int, default=None)
+    ag_loop.add_argument("--max-runtime", type=float, default=None, help="seconds")
+    ag_loop.add_argument("--max-total-cycles", type=int, default=None)
+    ag_loop.add_argument("--max-spend", type=float, default=None, help="USD since session start")
+    ag_loop.add_argument("--fresh", action="store_true", help="ignore an unfinished session")
+    ag_loop.add_argument("-q", "--quiet", action="store_true", help="print only ticks that did something")
+    ag_loop.set_defaults(func=_cmd_agent_loop)
 
     sub.add_parser(
         "agent-step", parents=[common], help="operator agent: one decide/act step"
