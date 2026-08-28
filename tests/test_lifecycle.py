@@ -27,9 +27,9 @@ class LifecycleTests(unittest.TestCase):
             lifecycle.advance(_cand(), "approved")  # must be shortlisted first
 
     def test_reject_reachable_from_multiple_states(self):
-        for status in ("discovered", "shortlisted", "approved", "investigating"):
+        for status in ("discovered", "shortlisted", "approved", "investigating", "launched"):
             self.assertTrue(lifecycle.can_transition(status, "rejected"))
-        self.assertFalse(lifecycle.can_transition("validated", "rejected"))
+        self.assertFalse(lifecycle.can_transition("rejected", "rejected"))
 
 
 class ApprovalTests(unittest.TestCase):

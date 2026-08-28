@@ -15,10 +15,12 @@ STATUSES: tuple[str, ...] = (
     "approved",
     "investigating",
     "validated",
+    "launched",
+    "earning",
     "rejected",
 )
 
-TERMINAL: frozenset[str] = frozenset({"validated", "rejected"})
+TERMINAL: frozenset[str] = frozenset({"rejected"})
 
 # forward transitions; "rejected" is reachable from every non-terminal status.
 _FORWARD: dict[str, set[str]] = {
@@ -26,6 +28,9 @@ _FORWARD: dict[str, set[str]] = {
     "shortlisted": {"approved"},
     "approved": {"investigating"},
     "investigating": {"validated"},
+    "validated": {"launched"},
+    "launched": {"earning"},
+    "earning": {"earning"},  # further payments keep the candidate earning
 }
 
 

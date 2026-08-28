@@ -34,6 +34,7 @@ class Candidate:
     history: tuple = ()
     plan: dict = field(default_factory=dict)
     outcome: dict = field(default_factory=dict)
+    offer: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -50,6 +51,7 @@ class Candidate:
             "history": [dict(h) for h in self.history],
             "plan": dict(self.plan),
             "outcome": dict(self.outcome),
+            "offer": dict(self.offer),
         }
 
     @classmethod
@@ -68,6 +70,7 @@ class Candidate:
             history=tuple(data.get("history", ())),
             plan=dict(data.get("plan", {})),
             outcome=dict(data.get("outcome", {})),
+            offer=dict(data.get("offer", {})),
         )
 
 

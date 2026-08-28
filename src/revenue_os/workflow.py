@@ -15,6 +15,7 @@ from .messages import Task
 from .opportunity import Opportunity, OpportunityScore
 from .orchestrator import Orchestrator
 from .registry import AgentRegistry
+from .offer import propose_offer
 from .store import Candidate, CandidateStore
 from .validation import plan_validation
 
@@ -149,3 +150,17 @@ def investigate_approved(store: CandidateStore) -> list[Candidate]:
         store.put(replace(advanced, plan=plan.to_dict()))
     store.save()
     return [c for c in store.all() if c.status == "investigating"]
+
+
+def prepare_launch(store: CandidateStore) -> list[Candidate]:
+    """Attach a proposed first paid offer to each validated candidate.
+
+    Status is not changed: launching the offer is a human act
+    (revenue.mark_launched). Idempotent. Returns validated candidates.
+    """
+    for cand in list(store.all()):
+        if cand.status != "validated" or cand.offer:
+            continue
+        store.put(replace(cand, offer=propose_offer(cand).to_dict()))
+    store.save()
+    return [c for c in store.all() if c.status == "validated"]

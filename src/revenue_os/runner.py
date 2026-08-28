@@ -12,9 +12,10 @@ from .messages import Result, Task
 from .orchestrator import Orchestrator
 from .registry import AgentRegistry
 from .sources import RawSignal, StaticSource
+from .revenue import RevenueLedger, mark_launched, record_payment, revenue_summary
 from .store import CandidateStore
 from .validation import record_validation_outcome
-from .workflow import investigate_approved, run_discovery_cycle
+from .workflow import investigate_approved, prepare_launch, run_discovery_cycle
 
 _SAMPLE_SIGNALS = [
     RawSignal(
@@ -98,15 +99,34 @@ def main() -> None:
         print(f"  success metric: {cand.plan['success_metric']}")
         print(f"  max cost: {cand.plan['max_cost']}")
 
-    if investigating:
-        final = record_validation_outcome(
-            store,
-            investigating[0].name,
-            "validated",
-            metric_value="27 waitlist signups",
-            actor="human-owner",
-            note="demo outcome",
-        )
-        print(f"\nValidation outcome recorded: {final.name} -> {final.status}")
+    if not investigating:
+        print(f"\nStore file: {store.path}")
+        return
 
+    final = record_validation_outcome(
+        store,
+        investigating[0].name,
+        "validated",
+        metric_value="27 waitlist signups",
+        actor="human-owner",
+        note="demo outcome",
+    )
+    print(f"\nValidation outcome recorded: {final.name} -> {final.status}")
+
+    for cand in prepare_launch(store):
+        print(f"\nProposed offer for {cand.name}:")
+        print(f"  sells: {cand.offer['what_is_sold']}")
+        print(f"  price: {cand.offer['price']} {cand.offer['currency']} "
+              f"(estimate: {cand.offer['price_is_estimate']})")
+        print(f"  delivery: {cand.offer['delivery']}")
+
+    ledger = RevenueLedger.load(tmp / "revenue.json")
+    launched = mark_launched(store, final.name, actor="human-owner", note="offer live")
+    print(f"\nOffer launched: {launched.name} -> {launched.status}")
+
+    earning = record_payment(
+        store, ledger, final.name, 29.0, actor="human-owner", note="first sale"
+    )
+    print(f"Payment recorded: {earning.name} -> {earning.status}")
+    print(f"\nRevenue summary: {revenue_summary(store, ledger)}")
     print(f"\nStore file: {store.path}")
