@@ -93,3 +93,52 @@ def render_text(report: dict) -> str:
         )
 
     return "\n".join(lines)
+
+
+def render_candidate(candidate: Candidate) -> str:
+    """Deterministic detail view of a single candidate."""
+    lines: list[str] = [
+        f"CANDIDATE {candidate.name}",
+        f"  status         {candidate.status}",
+        f"  description    {candidate.description}",
+        f"  source         {candidate.source}",
+        f"  raw_ref        {candidate.raw_ref}",
+        f"  score          {candidate.total} ({candidate.verdict})",
+        f"  next action    {next_action(candidate) or '-'}",
+        f"  first_seen     {candidate.first_seen}",
+        f"  last_scored    {candidate.last_scored}",
+    ]
+
+    lines.append("  plan")
+    if candidate.plan:
+        for key in sorted(candidate.plan):
+            lines.append(f"    {key}: {candidate.plan[key]}")
+    else:
+        lines.append("    (none)")
+
+    lines.append("  offer")
+    if candidate.offer:
+        for key in sorted(candidate.offer):
+            lines.append(f"    {key}: {candidate.offer[key]}")
+    else:
+        lines.append("    (none)")
+
+    lines.append("  outcome")
+    if candidate.outcome:
+        for key in sorted(candidate.outcome):
+            lines.append(f"    {key}: {candidate.outcome[key]}")
+    else:
+        lines.append("    (none)")
+
+    lines.append("  history")
+    if candidate.history:
+        for entry in candidate.history:
+            lines.append(
+                f"    {entry.get('ts', '')}: {entry.get('from', '')} -> "
+                f"{entry.get('to', '')} ({entry.get('actor', '')}) "
+                f"{entry.get('note', '')}".rstrip()
+            )
+    else:
+        lines.append("    (none)")
+
+    return "\n".join(lines)
