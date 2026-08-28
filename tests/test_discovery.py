@@ -58,6 +58,11 @@ class HackerNewsMappingTests(unittest.TestCase):
         self.assertEqual(signal.external_id, "42")
         self.assertEqual(signal.source, "hacker-news")
 
+    def test_map_hn_item_normalizes_unicode_punctuation(self):
+        item = {"id": 1, "title": "Boop – tiny “push”…", "url": "", "text": ""}
+        signal = _map_hn_item(item)
+        self.assertEqual(signal.title, 'Boop - tiny "push"...')
+
     def test_fetch_zero_limit_makes_no_request(self):
         # capped to 0 -> returns immediately without network
         self.assertEqual(HackerNewsSource().fetch(0), [])

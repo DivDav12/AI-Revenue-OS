@@ -89,12 +89,26 @@ HN_MAX_ITEMS = 25
 _USER_AGENT = "AI-Revenue-OS/0.1 (research; contact via repo)"
 
 
+# Unicode punctuation HN titles commonly use -> ASCII equivalent.
+_PUNCT_MAP = {
+    "–": "-", "—": "-", "−": "-",  # en/em dash, minus
+    "‘": "'", "’": "'", "‚": "'", "′": "'",  # single quotes
+    "“": '"', "”": '"', "„": '"', "″": '"',  # double quotes
+    "…": "...", " ": " ",  # ellipsis, non-breaking space
+}
+_PUNCT_TABLE = str.maketrans(_PUNCT_MAP)
+
+
+def _clean_text(value: object) -> str:
+    return str(value).translate(_PUNCT_TABLE).strip()
+
+
 def _map_hn_item(item: dict) -> RawSignal:
     """Pure mapping from a Hacker News item dict to a RawSignal."""
     return RawSignal(
-        title=str(item.get("title", "")).strip(),
-        url=str(item.get("url", "")).strip(),
-        text=str(item.get("text", "")).strip(),
+        title=_clean_text(item.get("title", "")),
+        url=_clean_text(item.get("url", "")),
+        text=_clean_text(item.get("text", "")),
         source="hacker-news",
         external_id=str(item.get("id", "")).strip(),
     )
