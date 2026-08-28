@@ -205,6 +205,8 @@ def _cmd_agent_goal(args) -> int:
         updates["planner"] = args.planner
     if args.proposer is not None:
         updates["proposer"] = args.proposer
+    if args.research is not None:
+        updates["research"] = args.research
     if args.decision_policy is not None:
         updates["decision_policy"] = args.decision_policy
     if args.model is not None:
@@ -631,6 +633,7 @@ def build_parser() -> argparse.ArgumentParser:
     ag_goal.add_argument("--evaluator", choices=("keyword", "llm"), default=None)
     ag_goal.add_argument("--planner", choices=("template", "llm"), default=None)
     ag_goal.add_argument("--proposer", choices=("template", "llm"), default=None)
+    ag_goal.add_argument("--research", choices=("off", "llm"), default=None)
     ag_goal.add_argument("--decision-policy", choices=("rules", "llm"), default=None)
     ag_goal.add_argument("--model", default=None, help="model for the llm workers")
     ag_goal.add_argument("--max-llm-cost-per-action", type=float, default=None)

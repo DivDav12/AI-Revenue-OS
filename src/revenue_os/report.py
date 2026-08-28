@@ -92,6 +92,7 @@ def pipeline_report(
             "next_action": action,
             "age_days": age,
             "stale": age >= STALE_AFTER_DAYS,
+            "researched": cand.research.get("verdict", ""),
         })
 
     candidate_rows = [
@@ -106,6 +107,7 @@ def pipeline_report(
             "plan_needs_budget": bool(cand.plan.get("needs_human_budget")),
             "plan_max_cost": cand.plan.get("max_cost", 0.0),
             "offer": dict(cand.offer),
+            "research": dict(cand.research),
         }
         for cand in candidates
     ]
@@ -166,11 +168,18 @@ def render_text(report: dict) -> str:
     if not queue:
         lines.append("  (nothing awaiting a human)")
     else:
+        any_research = any(i.get("researched") for i in queue)
         for item in queue:
             mark = "! " if item["stale"] else "  "
+            note = ""
+            if any_research and item["status"] == "shortlisted":
+                note = (
+                    f" [researched:{item['researched']}]" if item.get("researched")
+                    else " [not researched]"
+                )
             lines.append(
                 f"{mark}{item['name']} [{item['status']}] ({item['age_days']}d) "
-                f"-> {item['next_action']}"
+                f"-> {item['next_action']}{note}"
             )
 
     lines.append("")
@@ -278,6 +287,13 @@ def render_candidate(candidate: Candidate) -> str:
 
     lines.append("  rationale")
     lines.append(f"    {candidate.rationale}" if candidate.rationale else "    (none)")
+
+    lines.append("  research")
+    if candidate.research:
+        for key in sorted(candidate.research):
+            lines.append(f"    {key}: {candidate.research[key]}")
+    else:
+        lines.append("    (none)")
 
     lines.append("  score breakdown")
     if candidate.breakdown:

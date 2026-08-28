@@ -35,6 +35,7 @@ from .llm_workers import (
     build_evaluator,
     build_planner,
     build_proposer,
+    build_researcher,
     record_llm_spend,
 )
 from .normalize import to_opportunity
@@ -45,7 +46,12 @@ from .sources import FilteredSource, build_source
 from .spend import SpendLedger
 from .store import CandidateStore
 from .validation import plan_validation
-from .workflow import investigate_approved, prepare_launch, run_discovery_cycle
+from .workflow import (
+    investigate_approved,
+    prepare_launch,
+    research_shortlisted,
+    run_discovery_cycle,
+)
 
 _ACTIONS = ("discover", "investigate", "prepare_launch", "stop")
 
@@ -64,6 +70,7 @@ class Goal:
     evaluator: str = "keyword"          # keyword | llm
     planner: str = "template"           # template | llm
     proposer: str = "template"          # template | llm
+    research: str = "off"               # off | llm
     decision_policy: str = "rules"      # rules | llm
     model: str = "claude-sonnet-5"
     max_llm_cost_per_action: float = 0.5
@@ -82,6 +89,7 @@ class Goal:
             "evaluator": self.evaluator,
             "planner": self.planner,
             "proposer": self.proposer,
+            "research": self.research,
             "decision_policy": self.decision_policy,
             "model": self.model,
             "max_llm_cost_per_action": self.max_llm_cost_per_action,
@@ -102,6 +110,7 @@ class Goal:
             evaluator=d.get("evaluator", "keyword"),
             planner=d.get("planner", "template"),
             proposer=d.get("proposer", "template"),
+            research=d.get("research", "off"),
             decision_policy=d.get("decision_policy", "rules"),
             model=d.get("model", "claude-sonnet-5"),
             max_llm_cost_per_action=float(d.get("max_llm_cost_per_action", 0.5)),
@@ -111,7 +120,8 @@ class Goal:
     @property
     def uses_llm(self) -> bool:
         return "llm" in (
-            self.evaluator, self.planner, self.proposer, self.decision_policy
+            self.evaluator, self.planner, self.proposer,
+            self.research, self.decision_policy,
         )
 
 
@@ -201,9 +211,17 @@ def _validated_without_offer(report: dict) -> int:
     )
 
 
+def _unresearched_shortlisted(report: dict) -> int:
+    return sum(
+        1 for c in report.get("candidates", [])
+        if c["status"] == "shortlisted" and not c.get("research")
+    )
+
+
 def decide(
     obs: dict, goal: Goal, *,
-    discovery_exhausted: bool = False, llm_capped: bool = False, policy=None,
+    discovery_exhausted: bool = False, llm_capped: bool = False,
+    research_done: bool = False, policy=None,
 ) -> Decision:
     """Pure: pick the next non-human action from the observed state."""
     report = obs["report"]
@@ -240,6 +258,15 @@ def decide(
             {"validated_without_offer": no_offer},
         )
 
+    if goal.research == "llm" and not research_done:
+        unresearched = _unresearched_shortlisted(report)
+        if unresearched > 0:
+            return Decision(
+                "research",
+                f"{unresearched} shortlisted candidate(s) not yet researched",
+                {"unresearched": unresearched},
+            )
+
     total = report["totals"]["candidates"]
     if not discovery_exhausted:
         if total == 0 or age is None:
@@ -272,6 +299,7 @@ class OperatorAgent:
         self.goal = goal or Goal()
         self._discovery_exhausted = False
         self._llm_capped = False
+        self._research_done = False
 
     # --- state -----------------------------------------------------------
 
@@ -335,6 +363,25 @@ class OperatorAgent:
             if spent:
                 out["llm_cost"] = spent
             return out
+
+        if decision.action == "research":
+            store, _, _ = self._load()
+            try:
+                worker, cache = build_researcher(
+                    mode="llm", store=store, model=g.model,
+                    max_cost_usd=g.max_llm_cost_per_action, refresh=False,
+                    data_dir=self.data_dir,
+                )
+            except ValueError as exc:
+                self._llm_capped = True
+                return {"skipped": str(exc)}
+            noted = research_shortlisted(store, worker)
+            if cache is not None:
+                cache.save()
+            record_llm_spend(self.data_dir, "research", worker)
+            if not noted:
+                self._research_done = True
+            return {"researched": len(noted), "llm_cost": round(worker.meter.cost_usd, 4)}
 
         if decision.action == "investigate":
             store, _, _ = self._load()
@@ -405,6 +452,7 @@ class OperatorAgent:
             self.observe(now), self.goal,
             discovery_exhausted=self._discovery_exhausted,
             llm_capped=self._llm_capped,
+            research_done=self._research_done,
             policy=policy,
         )
         result: dict = {}
@@ -444,6 +492,7 @@ class OperatorAgent:
     ) -> list[AgentStep]:
         self._discovery_exhausted = False
         self._llm_capped = False
+        self._research_done = False
         steps: list[AgentStep] = []
         for _ in range(max(1, max_cycles)):
             step = self.step(now=now, log_noop_stop=log_noop_stop)

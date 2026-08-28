@@ -44,6 +44,18 @@ class CandidateStoreTests(unittest.TestCase):
         self.assertTrue(merged.last_scored)
         self.assertGreaterEqual(merged.last_scored, merged.first_seen)
 
+    def test_research_note_round_trips_and_survives_upsert(self):
+        store = CandidateStore(self.path)
+        c = store.upsert(_cand("gamma"))
+        store.put(replace(c, status="shortlisted", research={"verdict": "caution"}))
+        store.save()
+
+        reloaded = CandidateStore.load(self.path)
+        self.assertEqual(reloaded.get("gamma").research, {"verdict": "caution"})
+        # a re-score keeps the note
+        merged = reloaded.upsert(_cand("gamma", total=3.3))
+        self.assertEqual(merged.research, {"verdict": "caution"})
+
     def test_all_is_ranked_by_total_desc(self):
         store = CandidateStore(self.path)
         store.upsert(_cand("low", total=1.0))

@@ -119,9 +119,18 @@ def _candidate_blocks(candidates: list[dict]) -> str:
                 + (f" &mdash; {_esc(pos)}" if pos else "")
                 + "</p>"
             )
+        research = c.get("research") or {}
+        research_html = ""
+        if research.get("verdict"):
+            research_html = (
+                f"<p><strong>research: {_esc(research['verdict'])}</strong> &mdash; "
+                f"{_esc(research.get('rationale', ''))} "
+                f"<span class='muted'>({_esc(research.get('basis', ''))})</span></p>"
+            )
         blocks += (
-            f"<details><summary>{summary}</summary>{rationale_html}{budget_html}"
-            f"{offer_html}{_breakdown_table(c.get('breakdown', {}))}</details>"
+            f"<details><summary>{summary}</summary>{rationale_html}{research_html}"
+            f"{budget_html}{offer_html}"
+            f"{_breakdown_table(c.get('breakdown', {}))}</details>"
         )
     return blocks
 

@@ -35,6 +35,7 @@ class Candidate:
     plan: dict = field(default_factory=dict)
     outcome: dict = field(default_factory=dict)
     offer: dict = field(default_factory=dict)
+    research: dict = field(default_factory=dict)
     rationale: str = ""
     estimate_source: str = "keyword"
 
@@ -54,6 +55,7 @@ class Candidate:
             "plan": dict(self.plan),
             "outcome": dict(self.outcome),
             "offer": dict(self.offer),
+            "research": dict(self.research),
             "rationale": self.rationale,
             "estimate_source": self.estimate_source,
         }
@@ -75,6 +77,7 @@ class Candidate:
             plan=dict(data.get("plan", {})),
             outcome=dict(data.get("outcome", {})),
             offer=dict(data.get("offer", {})),
+            research=dict(data.get("research", {})),
             rationale=data.get("rationale", ""),
             estimate_source=data.get("estimate_source", "keyword"),
         )

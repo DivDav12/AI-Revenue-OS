@@ -248,3 +248,43 @@ def prepare_launch(store: CandidateStore, proposer=propose_offer) -> list[Candid
         store.put(replace(cand, offer=offer.to_dict()))
     store.save()
     return [c for c in store.all() if c.status == "validated"]
+
+
+def research_shortlisted(store: CandidateStore, worker) -> list[Candidate]:
+    """Dispatch a research task per shortlisted candidate without a note,
+    through the Orchestrator to a ResearchAgent, and attach each note.
+
+    Idempotent: candidates that already have a note are skipped. A failed
+    research leaves that candidate un-noted for a later retry. Returns
+    the candidates researched this call.
+    """
+    from .research import ResearchAgent
+
+    pending = [
+        c for c in store.all() if c.status == "shortlisted" and not c.research
+    ]
+    if not pending:
+        return []
+
+    orchestrator = Orchestrator(registry=AgentRegistry())
+    orchestrator.register(ResearchAgent(name="researcher"))
+    for cand in pending:
+        orchestrator.add_task(Task(
+            objective=f"research: {cand.name}",
+            capability="research",
+            payload={"candidate": cand, "worker": worker},
+        ))
+
+    researched: list[Candidate] = []
+    for result in orchestrator.run_cycle():
+        if result.status != "ok":
+            logger.warning("research failed: %s", result.error)
+            continue
+        name = result.output["candidate_name"]
+        cand = store.get(name)
+        if cand is not None:
+            updated = replace(cand, research=dict(result.output["research"]))
+            store.put(updated)
+            researched.append(updated)
+    store.save()
+    return researched

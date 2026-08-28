@@ -101,6 +101,33 @@ def build_planner(*, mode: str, store, model: str, max_cost_usd: float,
     return planner, cache
 
 
+def build_researcher(*, mode: str, store, model: str, max_cost_usd: float,
+                     refresh: bool, data_dir):
+    """Return (worker, cache). 'off' -> (None, None)."""
+    if mode == "off":
+        return None, None
+
+    from .llm_cache import LlmCache
+    from .llm_normalize import build_client
+    from .research import ResearchWorker, estimate_research_cost_usd
+
+    data_dir = Path(data_dir)
+    pending = [c for c in store.all() if c.status == "shortlisted" and not c.research]
+    cache = LlmCache.load(data_dir / "llm_research_cache.json")
+    est = estimate_research_cost_usd(pending, model, cache=None if refresh else cache)
+    if est > max_cost_usd:
+        raise ValueError(
+            f"estimated research cost ${est} exceeds the ${max_cost_usd} ceiling; "
+            "nothing was researched"
+        )
+    ceiling = budget_gate(data_dir, est, max_cost_usd)
+    worker = ResearchWorker(
+        client=build_client(), model=model, max_cost_usd=ceiling,
+        cache=cache, refresh=refresh,
+    )
+    return worker, cache
+
+
 def build_decider(*, mode: str, model: str, max_cost_usd: float, data_dir):
     """Return an LlmDecisionPolicy, or None for the deterministic 'rules'
     policy. Raises ValueError if the cumulative cap is already exhausted."""
