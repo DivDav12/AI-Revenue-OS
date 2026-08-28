@@ -62,5 +62,6 @@ def to_opportunity(signal) -> Opportunity:
         description=signal.title,
         source=signal.source,
         raw_ref=signal.url or signal.external_id,
+        estimate_source="keyword",
         **estimates,
     )

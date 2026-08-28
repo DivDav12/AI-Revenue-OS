@@ -57,6 +57,8 @@ def pipeline_report(
             "score": cand.total,
             "verdict": cand.verdict,
             "breakdown": dict(cand.breakdown),
+            "estimate_source": cand.estimate_source,
+            "rationale": cand.rationale,
         }
         for cand in candidates
     ]
@@ -138,11 +140,15 @@ def render_candidate(candidate: Candidate) -> str:
         f"  description    {candidate.description}",
         f"  source         {candidate.source}",
         f"  raw_ref        {candidate.raw_ref}",
-        f"  score          {candidate.total} ({candidate.verdict})",
+        f"  score          {candidate.total} ({candidate.verdict}) "
+        f"[{candidate.estimate_source}]",
         f"  next action    {next_action(candidate) or '-'}",
         f"  first_seen     {candidate.first_seen}",
         f"  last_scored    {candidate.last_scored}",
     ]
+
+    lines.append("  rationale")
+    lines.append(f"    {candidate.rationale}" if candidate.rationale else "    (none)")
 
     lines.append("  score breakdown")
     if candidate.breakdown:

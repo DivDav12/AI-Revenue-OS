@@ -35,6 +35,8 @@ class Candidate:
     plan: dict = field(default_factory=dict)
     outcome: dict = field(default_factory=dict)
     offer: dict = field(default_factory=dict)
+    rationale: str = ""
+    estimate_source: str = "keyword"
 
     def to_dict(self) -> dict:
         return {
@@ -52,6 +54,8 @@ class Candidate:
             "plan": dict(self.plan),
             "outcome": dict(self.outcome),
             "offer": dict(self.offer),
+            "rationale": self.rationale,
+            "estimate_source": self.estimate_source,
         }
 
     @classmethod
@@ -71,6 +75,8 @@ class Candidate:
             plan=dict(data.get("plan", {})),
             outcome=dict(data.get("outcome", {})),
             offer=dict(data.get("offer", {})),
+            rationale=data.get("rationale", ""),
+            estimate_source=data.get("estimate_source", "keyword"),
         )
 
 
@@ -143,6 +149,8 @@ class CandidateStore:
             total=candidate.total,
             verdict=candidate.verdict,
             breakdown=dict(candidate.breakdown),
+            rationale=candidate.rationale or existing.rationale,
+            estimate_source=candidate.estimate_source or existing.estimate_source,
             last_scored=ts,
         )
         self._by_name[candidate.name] = merged

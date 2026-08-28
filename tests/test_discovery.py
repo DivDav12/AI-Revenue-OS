@@ -110,6 +110,8 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(opp.source, "src")
         self.assertEqual(opp.raw_ref, "http://u")
         self.assertEqual(opp.description, "A quiet plain report")
+        self.assertEqual(opp.estimate_source, "keyword")
+        self.assertEqual(opp.rationale, "")
 
     def test_keywords_nudge_and_clamp(self):
         signal = RawSignal(title="automation automate no-code api marketplace")

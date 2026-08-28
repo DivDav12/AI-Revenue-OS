@@ -1,14 +1,19 @@
 """Agent base class and two deterministic stub workers.
 
-No LLM or network calls at this stage: workers produce deterministic
-results so the runtime plumbing can be tested.
+Workers are deterministic by default. DiscoveryAgent accepts an
+injectable normalizer so an opt-in LLM path can replace the keyword
+nudger without changing the runtime plumbing.
 """
 
 from __future__ import annotations
 
+import logging
+
 from .messages import Result, Task
 from .normalize import to_opportunity
 from .opportunity import Opportunity, score_opportunity
+
+logger = logging.getLogger(__name__)
 
 
 class Agent:
@@ -111,9 +116,10 @@ class DiscoveryAgent(Agent):
     objective = "Collect external signals and normalize them into opportunities."
     capabilities = ("discover",)
 
-    def __init__(self, source, name: str | None = None) -> None:
+    def __init__(self, source, name: str | None = None, normalizer=to_opportunity) -> None:
         super().__init__(name=name)
         self.source = source
+        self.normalizer = normalizer
 
     def run(self, task: Task) -> Result:
         limit = int(task.payload.get("limit", 10))
@@ -126,7 +132,12 @@ class DiscoveryAgent(Agent):
                 status="error",
                 error=f"source fetch failed: {exc}",
             )
-        opportunities = [to_opportunity(s) for s in signals]
+        opportunities = []
+        for signal in signals:
+            try:
+                opportunities.append(self.normalizer(signal))
+            except Exception as exc:  # one bad normalization must not kill the cycle
+                logger.warning("skipped signal %r: %s", signal.title, exc)
         return Result(
             task_id=task.id,
             agent=self.name,

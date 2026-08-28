@@ -46,6 +46,8 @@ class Opportunity:
     speed_to_first_revenue: float = 0.0
     profit_potential: float = 0.0
     scalability: float = 0.0
+    rationale: str = ""  # short note explaining the estimates (LLM path only)
+    estimate_source: str = "keyword"  # "keyword" | "llm"
 
     def estimates(self) -> dict[str, float]:
         return {name: float(getattr(self, name)) for name in CRITERIA}

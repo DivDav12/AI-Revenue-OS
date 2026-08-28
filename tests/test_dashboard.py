@@ -97,6 +97,18 @@ class RenderHtmlTests(unittest.TestCase):
         self.store.put(Candidate(name="alpha", status="discovered"))
         html = render_html(_report(self.store, self.d), _FIXED_TS)
         self.assertIn("No score breakdown.", html)
+        self.assertIn("No rationale.", html)
+        self.assertIn("[keyword]", html)
+
+    def test_candidate_shows_llm_source_and_rationale(self):
+        self.store.put(Candidate(
+            name="alpha", status="shortlisted", total=3.0, verdict="hold",
+            estimate_source="llm", rationale="niche but real demand",
+        ))
+        html = render_html(_report(self.store, self.d), _FIXED_TS)
+        self.assertIn("[llm]", html)
+        self.assertIn("niche but real demand", html)
+        self.assertNotIn("<script", html)
 
     def test_roi_table_appears_after_payment(self):
         self.store.put(Candidate(name="alpha", status="validated"))

@@ -2,6 +2,7 @@
 
 Read commands:
   run              discovery cycle against a source, then print the report
+                   (--evaluator llm opt-in; keyword heuristic by default)
   report           print the report only (no discovery)
   dashboard        write a static HTML pipeline snapshot (no discovery)
   candidate NAME   print one candidate's full state
@@ -80,6 +81,33 @@ def _discovery_log(data_dir: Path) -> DiscoveryLog:
     return DiscoveryLog.load(data_dir / "discovery_runs.json")
 
 
+def _build_normalizer(args, source):
+    """Return (normalizer, evaluator_name, est_cost_usd).
+
+    Keyword path: the deterministic default. LLM path (opt-in): fetch the
+    signals once to estimate spend, refuse if the estimate exceeds the
+    ceiling, then hand back a metered, ceiling-bounded normalizer.
+    """
+    from .normalize import to_opportunity
+
+    if args.evaluator == "keyword":
+        return to_opportunity, "keyword", 0.0
+
+    from .llm_normalize import LlmNormalizer, build_client, estimate_cost_usd
+
+    signals = source.fetch(args.limit)
+    est = estimate_cost_usd(signals, args.model)
+    if est > args.max_eval_cost:
+        raise ValueError(
+            f"estimated eval cost ${est} exceeds --max-eval-cost "
+            f"${args.max_eval_cost}; nothing was evaluated"
+        )
+    normalizer = LlmNormalizer(
+        client=build_client(), model=args.model, max_cost_usd=args.max_eval_cost
+    )
+    return normalizer, "llm", est
+
+
 def _cmd_run(args) -> int:
     data_dir = _data_dir(args)
     store, revenue_ledger, spend_ledger = _load(data_dir)
@@ -87,6 +115,7 @@ def _cmd_run(args) -> int:
     source = build_source(args.source, args.source_path)
     if args.filter:
         source = FilteredSource(source, is_relevant)
+    normalizer, evaluator, est_cost = _build_normalizer(args, source)
     run_discovery_cycle(
         source,
         store,
@@ -94,7 +123,15 @@ def _cmd_run(args) -> int:
         shortlist_n=args.shortlist,
         min_score=args.min_score,
         log=discovery_log,
+        normalizer=normalizer,
+        evaluator=evaluator,
+        est_cost_usd=est_cost,
     )
+    if evaluator == "llm":
+        meter = getattr(normalizer, "meter", None)
+        actual = meter.cost_usd if meter is not None else 0.0
+        note = " (cost ceiling hit)" if getattr(normalizer, "ceiling_hit", False) else ""
+        print(f"llm evaluator: est ${est_cost}, actual ${actual}{note}")
     print(render_text(
         pipeline_report(store, revenue_ledger, spend_ledger, discovery_log)
     ))
@@ -268,6 +305,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--min-score", type=float, default=0.0, help="drop candidates below this score"
+    )
+    run.add_argument(
+        "--evaluator", choices=("keyword", "llm"), default="keyword",
+        help="how to score signals (default: deterministic keyword heuristic)",
+    )
+    run.add_argument(
+        "--model", default="claude-sonnet-5", help="model for --evaluator llm"
+    )
+    run.add_argument(
+        "--max-eval-cost", type=float, default=1.0,
+        help="USD ceiling for one --evaluator llm run (default 1.00)",
     )
     run.set_defaults(func=_cmd_run)
 

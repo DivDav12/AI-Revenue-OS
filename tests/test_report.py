@@ -140,6 +140,20 @@ class RenderCandidateTests(unittest.TestCase):
         cand = self._scored()
         self.assertEqual(render_candidate(cand), render_candidate(cand))
 
+    def test_shows_estimate_source_and_rationale(self):
+        cand = Candidate(
+            name="c", status="shortlisted", total=3.0, verdict="hold",
+            estimate_source="llm", rationale="clear demand, thin margins",
+        )
+        text = render_candidate(cand)
+        self.assertIn("[llm]", text)
+        self.assertIn("clear demand, thin margins", text)
+
+    def test_empty_rationale_renders_none(self):
+        text = render_candidate(Candidate(name="c", status="discovered"))
+        self.assertIn("rationale", text)
+        self.assertIn("[keyword]", text)
+
 
 if __name__ == "__main__":
     unittest.main()

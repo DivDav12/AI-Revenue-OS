@@ -14,6 +14,7 @@ from . import lifecycle
 from .agent import DiscoveryAgent, EvaluatorAgent
 from .discovery_log import DiscoveryLog
 from .messages import Task
+from .normalize import to_opportunity
 from .opportunity import Opportunity, OpportunityScore
 from .orchestrator import Orchestrator
 from .registry import AgentRegistry
@@ -58,9 +59,9 @@ def run_evaluation(
     return scores
 
 
-def _discover(source, limit: int) -> list[Opportunity]:
+def _discover(source, limit: int, normalizer=to_opportunity) -> list[Opportunity]:
     discovery = Orchestrator(registry=AgentRegistry())
-    discovery.register(DiscoveryAgent(source, name="discovery"))
+    discovery.register(DiscoveryAgent(source, name="discovery", normalizer=normalizer))
     discovery.add_task(
         Task(
             objective="discover opportunities",
@@ -102,6 +103,9 @@ def run_discovery_cycle(
     shortlist_n: int = 3,
     min_score: float = 0.0,
     log: DiscoveryLog | None = None,
+    normalizer=to_opportunity,
+    evaluator: str = "keyword",
+    est_cost_usd: float = 0.0,
 ) -> list[Candidate]:
     """Discover, evaluate, persist candidates, and auto-shortlist the top N.
 
@@ -109,10 +113,11 @@ def run_discovery_cycle(
     persisted. Idempotent: re-runs refresh scores but never downgrade a
     candidate a human has already acted on. Returns all stored candidates.
 
-    When a DiscoveryLog is supplied, one entry recording the run's
-    counts is appended and saved.
+    `normalizer` maps a signal to an Opportunity (default: the keyword
+    heuristic). When a DiscoveryLog is supplied, one entry recording the
+    run's counts and evaluator cost is appended and saved.
     """
-    opportunities = _discover(source, limit)
+    opportunities = _discover(source, limit, normalizer)
     if not opportunities:
         logger.warning("discovery returned no opportunities (source failure or empty)")
     ranked = run_evaluation(opportunities)
@@ -140,6 +145,8 @@ def run_discovery_cycle(
                 total=score.total,
                 verdict=score.verdict,
                 breakdown=score.breakdown,
+                rationale=opp.rationale,
+                estimate_source=opp.estimate_source,
             )
         )
         if existed:
@@ -160,6 +167,7 @@ def run_discovery_cycle(
             shortlisted_count += 1
 
     if log is not None:
+        meter = getattr(normalizer, "meter", None)
         log.add(
             {
                 "ts": now_iso(),
@@ -173,6 +181,10 @@ def run_discovery_cycle(
                 "new": new_count,
                 "refreshed": refreshed_count,
                 "shortlisted": shortlisted_count,
+                "evaluator": evaluator,
+                "est_cost_usd": round(float(est_cost_usd), 4),
+                "actual_cost_usd": round(meter.cost_usd, 4) if meter is not None else 0.0,
+                "cost_ceiling_hit": bool(getattr(normalizer, "ceiling_hit", False)),
             }
         )
         log.save()

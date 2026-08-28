@@ -87,10 +87,16 @@ def _candidate_blocks(candidates: list[dict]) -> str:
     for c in candidates:
         summary = (
             f"{_esc(c['name'])} &mdash; {_esc(c['status'])} &mdash; "
-            f"{_num(c['score'])} ({_esc(c['verdict'])})"
+            f"{_num(c['score'])} ({_esc(c['verdict'])}) "
+            f"[{_esc(c.get('estimate_source', 'keyword'))}]"
+        )
+        rationale = c.get("rationale", "")
+        rationale_html = (
+            f"<p>{_esc(rationale)}</p>" if rationale
+            else "<p class='muted'>No rationale.</p>"
         )
         blocks += (
-            f"<details><summary>{summary}</summary>"
+            f"<details><summary>{summary}</summary>{rationale_html}"
             f"{_breakdown_table(c.get('breakdown', {}))}</details>"
         )
     return blocks
@@ -99,6 +105,7 @@ def _candidate_blocks(candidates: list[dict]) -> str:
 _DISCOVERY_FIELDS = (
     "source", "limit", "fetched", "filtered_out", "dropped_below_score",
     "evaluated", "kept", "new", "refreshed", "shortlisted",
+    "evaluator", "est_cost_usd", "actual_cost_usd", "cost_ceiling_hit",
 )
 
 
