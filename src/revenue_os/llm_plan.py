@@ -20,15 +20,17 @@ from .llm_normalize import (
     CostCeilingExceeded,
     CostMeter,
     DEFAULT_MODEL,
+    UNTRUSTED_NOTE,
     _PRICES,
     _FALLBACK_PRICE,
     _tool_input,
+    wrap_untrusted,
 )
 from .opportunity import CRITERIA
 from .validation import ValidationPlan
 from .store import Candidate, now_iso
 
-_PLAN_PROMPT_VERSION = "1"
+_PLAN_PROMPT_VERSION = "2"
 _MAX_TOKENS = 700
 _MAX_TEXT = 400
 _EFFORTS = ("low", "medium")
@@ -45,6 +47,7 @@ _RUBRIC = (
     "concrete action), success_metric (a number that settles go/no-go), "
     "effort (low or medium), estimated_cost_usd (0 for a free test), "
     "needs_human_budget (true only if estimated_cost_usd > 0)."
+    + UNTRUSTED_NOTE
 )
 
 _TOOL = {
@@ -160,7 +163,10 @@ def plan_validation_llm(candidate: Candidate, *, client, model: str = DEFAULT_MO
         }],
         tools=[_TOOL],
         tool_choice={"type": "tool", "name": "record_plan"},
-        messages=[{"role": "user", "content": _candidate_brief(candidate)}],
+        messages=[{
+            "role": "user",
+            "content": wrap_untrusted(_candidate_brief(candidate)),
+        }],
     )
     if meter is not None:
         meter.add(getattr(response, "usage", None))

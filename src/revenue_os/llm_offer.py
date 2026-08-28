@@ -19,15 +19,17 @@ from .llm_normalize import (
     CostCeilingExceeded,
     CostMeter,
     DEFAULT_MODEL,
+    UNTRUSTED_NOTE,
     _FALLBACK_PRICE,
     _PRICES,
     _tool_input,
+    wrap_untrusted,
 )
 from .llm_plan import _candidate_brief
 from .offer import Offer
 from .store import Candidate, now_iso
 
-_OFFER_PROMPT_VERSION = "1"
+_OFFER_PROMPT_VERSION = "2"
 _MAX_TOKENS = 600
 _MAX_TEXT = 300
 _DELIVERIES = ("digital", "manual", "subscription")
@@ -41,6 +43,7 @@ _RUBRIC = (
     "in USD that is realistic for the delivery type and audience, not "
     "aspirational. Give a one-line call_to_action and a one-line positioning "
     "(who it is for + the pain it removes). Call record_offer once."
+    + UNTRUSTED_NOTE
 )
 
 _TOOL = {
@@ -157,7 +160,10 @@ def propose_offer_llm(candidate: Candidate, *, client, model: str = DEFAULT_MODE
         }],
         tools=[_TOOL],
         tool_choice={"type": "tool", "name": "record_offer"},
-        messages=[{"role": "user", "content": _offer_brief(candidate)}],
+        messages=[{
+            "role": "user",
+            "content": wrap_untrusted(_offer_brief(candidate)),
+        }],
     )
     if meter is not None:
         meter.add(getattr(response, "usage", None))
