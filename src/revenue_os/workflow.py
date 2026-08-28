@@ -7,7 +7,7 @@ collects the Results, and returns the successful scores ranked by total
 
 from __future__ import annotations
 
-from .agent import EvaluatorAgent
+from .agent import DiscoveryAgent, EvaluatorAgent
 from .messages import Task
 from .opportunity import Opportunity, OpportunityScore
 from .orchestrator import Orchestrator
@@ -46,3 +46,33 @@ def run_evaluation(
         )
     scores.sort(key=lambda s: s.total, reverse=True)
     return scores
+
+
+def discover_evaluate_select(
+    source,
+    *,
+    limit: int = 10,
+    top_n: int = 5,
+    orchestrator: Orchestrator | None = None,
+) -> list[OpportunityScore]:
+    """CEO flow: discover signals -> normalize -> evaluate -> rank -> select top_n.
+
+    Selection only flags candidates for further investigation; no action
+    is taken and no financially or legally sensitive step is performed.
+    """
+    discovery = Orchestrator(registry=AgentRegistry())
+    discovery.register(DiscoveryAgent(source, name="discovery"))
+    discovery.add_task(
+        Task(
+            objective="discover opportunities",
+            capability="discover",
+            payload={"limit": limit},
+        )
+    )
+    opportunities: list[Opportunity] = []
+    for result in discovery.run_cycle():
+        if result.status == "ok":
+            opportunities.extend(result.output["opportunities"])
+
+    ranked = run_evaluation(opportunities, orchestrator=orchestrator)
+    return ranked[: max(0, top_n)]

@@ -1,15 +1,42 @@
-"""Wire the Orchestrator with a registry of worker agents and run one cycle."""
+"""Wire the Orchestrator with a registry of agents and run demo cycles."""
 
 from __future__ import annotations
 
 import logging
 
-from .agent import EvaluatorAgent, ReverseAgent, WorkerAgent
+from .agent import DiscoveryAgent, EvaluatorAgent, ReverseAgent, WorkerAgent
 from .messages import Result, Task
-from .opportunity import Opportunity
 from .orchestrator import Orchestrator
 from .registry import AgentRegistry
-from .workflow import run_evaluation
+from .sources import RawSignal, StaticSource
+from .workflow import discover_evaluate_select
+
+_SAMPLE_SIGNALS = [
+    RawSignal(
+        title="Show HN: an open-source no-code automation platform",
+        text="We built a self-serve tool to automate repetitive API workflows.",
+        source="sample",
+        external_id="s1",
+    ),
+    RawSignal(
+        title="Ask HN: how do you find your first paying customers?",
+        text="Bootstrapped founder looking for revenue and pricing advice.",
+        source="sample",
+        external_id="s2",
+    ),
+    RawSignal(
+        title="Launch: a marketplace for reusable document templates",
+        text="MVP is live, free tier plus paid plans.",
+        source="sample",
+        external_id="s3",
+    ),
+    RawSignal(
+        title="A weekend project with no obvious business model",
+        text="Just something I made for fun.",
+        source="sample",
+        external_id="s4",
+    ),
+]
 
 
 def build_orchestrator() -> Orchestrator:
@@ -17,61 +44,29 @@ def build_orchestrator() -> Orchestrator:
     registry.register(WorkerAgent(name="echo-worker"))
     registry.register(ReverseAgent(name="reverse-worker"))
     registry.register(EvaluatorAgent(name="evaluator"))
+    registry.register(
+        DiscoveryAgent(StaticSource(_SAMPLE_SIGNALS), name="discovery")
+    )
     return Orchestrator(registry=registry)
 
 
 def run_once(tasks: list[Task] | None = None) -> list[Result]:
     """Run a single execution cycle over the given (or a default) task."""
     orchestrator = build_orchestrator()
-    default = [Task(objective="M3 smoke test: confirm the runtime cycle works")]
+    default = [Task(objective="M4 smoke test: confirm the runtime cycle works")]
     for task in tasks if tasks is not None else default:
         orchestrator.add_task(task)
     return orchestrator.run_cycle()
 
 
-_SAMPLE_OPPORTUNITIES = [
-    Opportunity(
-        name="niche-newsletter-automation",
-        description="Curated B2B newsletter assembled from public sources",
-        startup_affordability=5,
-        automation_potential=4,
-        demand=3,
-        competition_headroom=3,
-        legal_feasibility=5,
-        speed_to_first_revenue=3,
-        profit_potential=3,
-        scalability=4,
-    ),
-    Opportunity(
-        name="bespoke-consulting",
-        description="One-to-one paid consulting engagements",
-        startup_affordability=4,
-        automation_potential=1,
-        demand=3,
-        competition_headroom=2,
-        legal_feasibility=5,
-        speed_to_first_revenue=4,
-        profit_potential=4,
-        scalability=1,
-    ),
-    Opportunity(
-        name="template-marketplace",
-        description="Self-serve marketplace for reusable document templates",
-        startup_affordability=4,
-        automation_potential=5,
-        demand=4,
-        competition_headroom=2,
-        legal_feasibility=4,
-        speed_to_first_revenue=2,
-        profit_potential=4,
-        scalability=5,
-    ),
-]
-
-
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    ranked = run_evaluation(_SAMPLE_OPPORTUNITIES, orchestrator=build_orchestrator())
-    print("Ranked opportunities:")
-    for rank, score in enumerate(ranked, start=1):
-        print(f"  {rank}. {score.opportunity_name}: {score.total} ({score.verdict})")
+    candidates = discover_evaluate_select(
+        StaticSource(_SAMPLE_SIGNALS), limit=10, top_n=3
+    )
+    print("Candidate opportunities for further investigation:")
+    for rank, score in enumerate(candidates, start=1):
+        print(
+            f"  {rank}. {score.opportunity_name}: "
+            f"{score.total} ({score.verdict})"
+        )

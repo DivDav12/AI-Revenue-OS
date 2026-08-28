@@ -7,6 +7,7 @@ results so the runtime plumbing can be tested.
 from __future__ import annotations
 
 from .messages import Result, Task
+from .normalize import to_opportunity
 from .opportunity import Opportunity, score_opportunity
 
 
@@ -97,6 +98,40 @@ class EvaluatorAgent(Agent):
                 "verdict": score.verdict,
                 "breakdown": score.breakdown,
             },
+        )
+
+
+class DiscoveryAgent(Agent):
+    """Fetches raw signals from a Source and normalizes them to Opportunities.
+
+    limit is read from task.payload['limit'] (default 10).
+    """
+
+    role = "discovery"
+    objective = "Collect external signals and normalize them into opportunities."
+    capabilities = ("discover",)
+
+    def __init__(self, source, name: str | None = None) -> None:
+        super().__init__(name=name)
+        self.source = source
+
+    def run(self, task: Task) -> Result:
+        limit = int(task.payload.get("limit", 10))
+        try:
+            signals = self.source.fetch(limit)
+        except Exception as exc:  # source failure must not kill the cycle
+            return Result(
+                task_id=task.id,
+                agent=self.name,
+                status="error",
+                error=f"source fetch failed: {exc}",
+            )
+        opportunities = [to_opportunity(s) for s in signals]
+        return Result(
+            task_id=task.id,
+            agent=self.name,
+            status="ok",
+            output={"opportunities": opportunities, "count": len(opportunities)},
         )
 
 

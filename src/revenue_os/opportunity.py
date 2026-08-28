@@ -36,6 +36,8 @@ HOLD_AT = 2.5
 class Opportunity:
     name: str
     description: str = ""
+    source: str = ""  # provenance: which discovery source produced this
+    raw_ref: str = ""  # provenance: identifier/url of the originating signal
     startup_affordability: float = 0.0
     automation_potential: float = 0.0
     demand: float = 0.0
