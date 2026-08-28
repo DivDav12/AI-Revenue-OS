@@ -28,47 +28,65 @@ _STYLE = """
   --bg:#070b14; --bg2:#0a1120; --surface:#0d1526; --surface2:#101c30;
   --edge:#1c2c47; --edge-hi:#2a4166; --text:#c9d6ea; --dim:#63779b;
   --glow:#22d3ee; --good:#34d399; --warn:#fbbf24; --bad:#f87171;
+  --grid:rgba(120,160,220,.06);
 }
 @media (prefers-color-scheme: light){
   :root{
     --bg:#eef2f8; --bg2:#e7ecf4; --surface:#ffffff; --surface2:#f4f7fb;
     --edge:#d4ddea; --edge-hi:#b9c7db; --text:#1b2536; --dim:#5b6b85;
     --glow:#0891b2; --good:#0f9d63; --warn:#a06a00; --bad:#d64545;
+    --grid:rgba(30,60,110,.05);
   }
 }
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);
-  font:13px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+body{margin:0;background-color:var(--bg);color:var(--text);
+  font:13px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  background-image:
+    radial-gradient(1100px 560px at 82% -12%,color-mix(in srgb,var(--glow) 12%,transparent),transparent 62%),
+    radial-gradient(820px 520px at -12% 112%,color-mix(in srgb,#a78bfa 10%,transparent),transparent 60%),
+    linear-gradient(var(--grid) 1px,transparent 1px),
+    linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+  background-size:auto,auto,46px 46px,46px 46px;background-attachment:fixed}
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 a{color:var(--glow);text-decoration:none}
 h2{font-size:.68rem;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);
-  margin:0 0 .6rem;font-weight:600}
+  margin:0 0 .7rem;font-weight:600;display:flex;align-items:center;gap:.5rem}
+h2::before{content:"";width:6px;height:6px;flex:none;background:var(--glow);
+  transform:rotate(45deg);box-shadow:0 0 8px var(--glow)}
 p{margin:.35rem 0}
 
-.shell{display:grid;grid-template-columns:180px 1fr;min-height:100vh}
-.rail{background:var(--bg2);border-right:1px solid var(--edge);padding:1rem .7rem;
+.shell{display:grid;grid-template-columns:184px 1fr;min-height:100vh}
+.rail{background:linear-gradient(180deg,var(--bg2),var(--bg));
+  border-right:1px solid var(--edge);padding:1rem .7rem;box-shadow:1px 0 24px -12px var(--glow);
   position:sticky;top:0;height:100vh;overflow:auto}
-.brand{font-size:.72rem;letter-spacing:.2em;text-transform:uppercase;color:var(--glow);
-  margin-bottom:1.4rem;font-weight:700}
+.brand{display:flex;flex-direction:column;gap:.22rem;margin-bottom:1.4rem}
+.brand b{font-size:.72rem;letter-spacing:.2em;text-transform:uppercase;color:var(--glow);
+  font-weight:700}
+.brand-sub{font-size:.56rem;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);
+  font-weight:500}
 .nav a,.nav span{display:flex;align-items:center;gap:.55rem;padding:.4rem .5rem;
   border-radius:6px;color:var(--dim);font-size:.8rem;margin-bottom:.15rem}
-.nav a:hover{background:var(--surface);color:var(--text)}
-.nav span{opacity:.4}
+.nav a:hover{background:var(--surface);color:var(--text);box-shadow:inset 2px 0 0 var(--glow)}
+.nav span{opacity:.38}
 .nav svg{width:14px;height:14px;flex:none}
 
-main{padding:1.1rem 1.3rem 2.5rem;max-width:1500px}
+main{padding:1.1rem 1.3rem 2.5rem;max-width:1520px}
 
 .topbar{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
   gap:.7rem;margin-bottom:1rem}
-.metric{background:var(--surface);border:1px solid var(--edge);border-radius:8px;
-  padding:.7rem .8rem;box-shadow:inset 0 0 24px -12px var(--glow)}
+.metric{position:relative;overflow:hidden;background:var(--surface);
+  border:1px solid var(--edge);border-radius:8px;padding:.7rem .8rem .7rem .95rem;
+  box-shadow:inset 0 0 30px -14px var(--glow)}
+.metric::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;
+  background:var(--glow);opacity:.55}
 .metric .k{font-size:.6rem;letter-spacing:.13em;text-transform:uppercase;color:var(--dim)}
-.metric .v{font-size:1.05rem;font-weight:600;margin-top:.2rem}
+.metric .v{font-size:1.05rem;font-weight:600;margin-top:.2rem;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .metric .s{font-size:.72rem;color:var(--dim);margin-top:.1rem}
 
-.attention{background:linear-gradient(90deg,rgba(251,191,36,.14),transparent);
+.attention{position:relative;background:linear-gradient(90deg,rgba(251,191,36,.16),transparent);
   border:1px solid var(--warn);border-left:3px solid var(--warn);border-radius:8px;
-  padding:.7rem .9rem;margin-bottom:1rem}
+  padding:.7rem .9rem;margin-bottom:1rem;box-shadow:0 0 30px -12px var(--warn)}
 .attention .k{font-size:.62rem;letter-spacing:.13em;text-transform:uppercase;
   color:var(--warn);font-weight:700}
 .attention ul{margin:.35rem 0 0;padding-left:1.1rem}
@@ -76,6 +94,8 @@ main{padding:1.1rem 1.3rem 2.5rem;max-width:1500px}
 
 section{background:var(--surface);border:1px solid var(--edge);border-radius:10px;
   padding:.95rem 1rem;margin-bottom:.9rem}
+#agents{background:linear-gradient(180deg,var(--surface),var(--surface2));
+  border-color:var(--edge-hi);box-shadow:0 0 40px -20px var(--glow)}
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:.9rem}
 .cols>section{margin-bottom:0}
 @media (max-width:1000px){.cols{grid-template-columns:1fr}}
@@ -83,28 +103,44 @@ section{background:var(--surface);border:1px solid var(--edge);border-radius:10p
   .rail{position:static;height:auto;display:flex;flex-wrap:wrap;gap:.3rem}
   .brand{width:100%}}
 
-.agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:.75rem}
-.acard{background:var(--surface2);border:1px solid var(--edge);border-radius:10px;
-  padding:.8rem;position:relative;overflow:hidden}
-.acard::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;background:var(--acc)}
+.agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:.8rem}
+.acard{background:linear-gradient(180deg,var(--surface2),var(--surface));
+  border:1px solid var(--edge);border-radius:11px;padding:.85rem .9rem;
+  position:relative;overflow:hidden;
+  box-shadow:0 0 0 1px rgba(255,255,255,.02) inset}
+.acard::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;
+  background:linear-gradient(180deg,var(--acc),transparent)}
+.acard::after{content:"";position:absolute;top:0;left:0;right:0;height:2px;
+  background:linear-gradient(90deg,transparent,var(--acc),transparent);
+  background-size:220% 100%;opacity:.22}
+.acard.cs-working,.acard.cs-active{
+  box-shadow:0 0 26px -10px var(--acc),0 0 0 1px color-mix(in srgb,var(--acc) 38%,var(--edge)) inset}
+.acard.cs-working::after,.acard.cs-active::after{opacity:.6;animation:scan 2.6s linear infinite}
+.acard.cs-error{box-shadow:0 0 26px -10px var(--bad),
+  0 0 0 1px color-mix(in srgb,var(--bad) 40%,var(--edge)) inset}
+.acard.cs-error::after{background:linear-gradient(90deg,transparent,var(--bad),transparent);opacity:.55}
+@keyframes scan{to{background-position:220% 0}}
 .acard .top{display:flex;align-items:center;gap:.6rem;margin-bottom:.5rem}
-.avatar{width:34px;height:34px;flex:none;border-radius:9px;display:grid;place-items:center;
-  color:var(--acc);border:1px solid var(--edge-hi);
-  background:radial-gradient(circle at 30% 30%,color-mix(in srgb,var(--acc) 22%,transparent),transparent 70%)}
-.avatar svg{width:20px;height:20px}
-.acard .name{font-weight:600;font-size:.86rem}
-.acard .role{font-size:.68rem;color:var(--dim);letter-spacing:.04em;text-transform:uppercase}
-.acard .task{font-size:.78rem;color:var(--text);margin:.25rem 0 .45rem;min-height:1.1rem;
+.avatar{width:38px;height:38px;flex:none;border-radius:10px;display:grid;place-items:center;
+  color:var(--acc);border:1px solid color-mix(in srgb,var(--acc) 40%,var(--edge-hi));
+  background:radial-gradient(circle at 30% 28%,color-mix(in srgb,var(--acc) 26%,transparent),transparent 70%);
+  box-shadow:0 0 18px -6px var(--acc)}
+.avatar svg{width:21px;height:21px}
+.acard .name{font-weight:600;font-size:.87rem}
+.acard .role{font-size:.66rem;color:var(--dim);letter-spacing:.05em;text-transform:uppercase}
+.acard .task{font-size:.78rem;color:var(--text);margin:.3rem 0 .5rem;min-height:1.1rem;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .acard .task.none{color:var(--dim)}
 .acard .meta{display:flex;flex-wrap:wrap;gap:.15rem .8rem;font-size:.68rem;color:var(--dim);
-  border-top:1px solid var(--edge);padding-top:.4rem;margin-top:.1rem}
-.acard .meta b{color:var(--text);font-weight:600}
+  border-top:1px solid var(--edge);padding-top:.45rem;margin-top:.55rem}
+.acard .meta b{color:var(--text);font-weight:600;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 
-.pill{display:inline-flex;align-items:center;gap:.35rem;font-size:.66rem;font-weight:700;
-  letter-spacing:.08em;text-transform:uppercase;padding:.18rem .45rem;border-radius:20px;
-  border:1px solid var(--edge-hi);color:var(--dim)}
-.dot{width:.5rem;height:.5rem;border-radius:50%;background:currentColor;flex:none}
+.pill{display:inline-flex;align-items:center;gap:.35rem;font-size:.64rem;font-weight:700;
+  letter-spacing:.08em;text-transform:uppercase;padding:.18rem .5rem;border-radius:20px;
+  border:1px solid var(--edge-hi);color:var(--dim);background:rgba(0,0,0,.12)}
+.dot{width:.5rem;height:.5rem;border-radius:50%;background:currentColor;flex:none;
+  box-shadow:0 0 6px currentColor}
 .st-working{color:var(--glow);border-color:color-mix(in srgb,var(--glow) 50%,var(--edge))}
 .st-working .dot{animation:pulse 1.6s ease-in-out infinite}
 .st-active{color:var(--good);border-color:color-mix(in srgb,var(--good) 45%,var(--edge))}
@@ -127,7 +163,8 @@ td.low{color:var(--bad);text-align:right;font-weight:600}
 .marker{color:var(--glow);font-weight:700}
 .warn{color:var(--warn)} .bad{color:var(--bad)} .good{color:var(--good)}
 .bar-wrap{background:var(--edge);border-radius:3px;height:.5rem;overflow:hidden}
-.bar{background:var(--glow);height:.5rem}
+.bar{background:linear-gradient(90deg,var(--glow),color-mix(in srgb,var(--glow) 55%,var(--good)));
+  height:.5rem;box-shadow:0 0 10px -2px var(--glow)}
 .feed{max-height:20rem;overflow:auto}
 .progress{margin:.5rem 0}
 .progress .lbl{display:flex;justify-content:space-between;font-size:.72rem;color:var(--dim);
@@ -225,7 +262,7 @@ def _agent_card(*, key, name, role, status, task, meta) -> str:
         f"<span>{k} <b>{v}</b></span>" for k, v in meta if v not in (None, "")
     )
     return (
-        f"<div class='acard' style=\"--acc:{acc}\">"
+        f"<div class='acard cs-{status}' style=\"--acc:{acc}\">"
         f"<div class='top'>{_avatar(key)}"
         f"<div><div class='name'>{_esc(name)}</div>"
         f"<div class='role'>{_esc(role)}</div></div></div>"
@@ -668,7 +705,8 @@ def _sidebar() -> str:
         else:
             items += f"<span>{ic}{_esc(label)}</span>"
     return (
-        "<nav class='rail'><div class='brand'>Revenue&nbsp;OS</div>"
+        "<nav class='rail'><div class='brand'><b>Revenue&nbsp;OS</b>"
+        "<span class='brand-sub'>multi-agent runtime</span></div>"
         f"<div class='nav'>{items}</div></nav>"
     )
 

@@ -168,6 +168,47 @@ class RenderHtmlTests(unittest.TestCase):
                   "LLM spend", "Revenue"):
             self.assertIn(k, html)
 
+    def test_command_center_visual_treatment(self):
+        # HUD backdrop, glow markers, brand subtitle - pure CSS, no data
+        html = render_html(
+            _report(self.store, self.d), _FIXED_TS,
+            agent_log=[{"ts": "t", "action": "discover", "reason": "x"}],
+        )
+        self.assertIn("background-attachment:fixed", html)   # HUD grid backdrop
+        self.assertIn("h2::before", html)                    # glowing section marker
+        self.assertIn("multi-agent runtime", html)           # truthful brand subtitle
+        self.assertIn("@keyframes scan", html)               # active-card scanline
+        self.assertIn("@keyframes pulse", html)
+        # no external resources sneaked in via the new styling
+        self.assertNotIn("http://", html)
+        self.assertNotIn("https://", html)
+        self.assertNotRegex(html, r"src\s*=")
+        self.assertNotIn("url(", html)                       # no external/asset urls
+
+    def test_agent_card_carries_status_state_class(self):
+        base = _report(self.store, self.d)
+        spend = [{"ts": "t", "activity": "research", "model": "m", "api_calls": 1,
+                  "cost_usd": 0.01, "cache_hits": 0, "cache_misses": 1}]
+        log = [{"ts": "t", "action": "research", "reason": "go"}]
+        running = render_html(base, _FIXED_TS, agent_log=log, spend_entries=spend,
+                              session={"ticks": 1, "cycles": 1, "ended_at": None},
+                              goal={"research": "llm"})
+        self.assertIn("class='acard cs-working'", running)
+        idle = render_html(base, _FIXED_TS, agent_log=log)
+        self.assertIn("cs-idle", idle)
+        # the state class must not fabricate progress inside the card
+        card = idle.split("class='acard")[1].split("</div></div>")[0]
+        self.assertNotIn("class='progress'", card)
+
+    def test_visual_pass_keeps_deterministic_output(self):
+        self.store.put(Candidate(name="alpha", status="shortlisted", total=3.1))
+        r = _report(self.store, self.d)
+        log = [{"ts": "t", "action": "discover", "reason": "x"}]
+        self.assertEqual(
+            render_html(r, _FIXED_TS, agent_log=log),
+            render_html(r, _FIXED_TS, agent_log=log),
+        )
+
     def test_agent_cards_reflect_goal_modes(self):
         base = _report(self.store, self.d)
         log = [{"ts": "t", "action": "discover", "reason": "cold start"}]
@@ -177,7 +218,7 @@ class RenderHtmlTests(unittest.TestCase):
             "evaluator": "keyword", "research": "off", "planner": "template",
             "proposer": "template", "decision_policy": "rules", "sources": ["static"],
         })
-        self.assertIn("class='acard'", html)
+        self.assertIn("class='acard cs-", html)
         self.assertIn("operator (CEO)", html)
         self.assertIn("Research Agent", html)
         self.assertIn("mode: keyword", html)
@@ -227,7 +268,7 @@ class RenderHtmlTests(unittest.TestCase):
             goal={"research": "llm"},
         )
         # progress bars only appear in the goal/budget contexts, never inside .acard
-        card = html.split("class='acard'")[1].split("</div></div>")[0]
+        card = html.split("class='acard")[1].split("</div></div>")[0]
         self.assertNotIn("class='progress'", card)
 
     def test_goal_target_progress_is_real(self):
