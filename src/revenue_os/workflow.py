@@ -219,15 +219,22 @@ def investigate_approved(store: CandidateStore, planner=plan_validation) -> list
     return [c for c in store.all() if c.status == "investigating"]
 
 
-def prepare_launch(store: CandidateStore) -> list[Candidate]:
+def prepare_launch(store: CandidateStore, proposer=propose_offer) -> list[Candidate]:
     """Attach a proposed first paid offer to each validated candidate.
 
-    Status is not changed: launching the offer is a human act
-    (revenue.mark_launched). Idempotent. Returns validated candidates.
+    `proposer` maps a candidate to an Offer (default: the template
+    proposer). If it raises, that candidate is left offer-less for a
+    later retry and the rest continue. Status is not changed: launching
+    the offer is a human act (revenue.mark_launched). Idempotent.
     """
     for cand in list(store.all()):
         if cand.status != "validated" or cand.offer:
             continue
-        store.put(replace(cand, offer=propose_offer(cand).to_dict()))
+        try:
+            offer = proposer(cand)
+        except Exception as exc:  # a bad offer must not strand the others
+            logger.warning("could not propose offer for %r: %s", cand.name, exc)
+            continue
+        store.put(replace(cand, offer=offer.to_dict()))
     store.save()
     return [c for c in store.all() if c.status == "validated"]

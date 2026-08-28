@@ -35,6 +35,7 @@ class Offer:
     currency: str = "USD"
     price_is_estimate: bool = True
     created_at: str = ""
+    positioning: str = ""  # one line: who it's for + the pain (LLM path only)
 
     def to_dict(self) -> dict:
         return {
@@ -46,6 +47,7 @@ class Offer:
             "currency": self.currency,
             "price_is_estimate": self.price_is_estimate,
             "created_at": self.created_at,
+            "positioning": self.positioning,
         }
 
 

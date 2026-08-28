@@ -101,9 +101,19 @@ def _candidate_blocks(candidates: list[dict]) -> str:
                 f"<p><strong>validation needs a budget decision: "
                 f"~${_num(c.get('plan_max_cost', 0.0))}</strong></p>"
             )
+        offer = c.get("offer") or {}
+        offer_html = ""
+        if offer.get("what_is_sold"):
+            pos = offer.get("positioning", "")
+            offer_html = (
+                f"<p>Offer: {_esc(offer['what_is_sold'])} &mdash; "
+                f"{_num(offer.get('price', 0))} {_esc(offer.get('currency', 'USD'))}"
+                + (f" &mdash; {_esc(pos)}" if pos else "")
+                + "</p>"
+            )
         blocks += (
             f"<details><summary>{summary}</summary>{rationale_html}{budget_html}"
-            f"{_breakdown_table(c.get('breakdown', {}))}</details>"
+            f"{offer_html}{_breakdown_table(c.get('breakdown', {}))}</details>"
         )
     return blocks
 

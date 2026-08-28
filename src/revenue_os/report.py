@@ -68,6 +68,7 @@ def pipeline_report(
             "rationale": cand.rationale,
             "plan_needs_budget": bool(cand.plan.get("needs_human_budget")),
             "plan_max_cost": cand.plan.get("max_cost", 0.0),
+            "offer": dict(cand.offer),
         }
         for cand in candidates
     ]

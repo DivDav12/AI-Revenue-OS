@@ -12,7 +12,7 @@ Human decision commands (operate on the persistent --data-dir store):
   approve NAME / reject NAME
   investigate       (--planner llm opt-in; template by default)
   outcome NAME {validated|rejected} --metric TEXT
-  prepare-launch
+  prepare-launch    (--proposer llm opt-in; template by default)
   launch NAME
   payment NAME AMOUNT
 
@@ -265,9 +265,51 @@ def _cmd_outcome(args) -> int:
     return 0
 
 
+def _build_proposer(args, store, data_dir: Path):
+    """Return (proposer, cache). Template path: the deterministic default.
+    LLM path (opt-in): estimate spend over the validated candidates,
+    refuse if it exceeds the ceiling, then a metered, cached proposer."""
+    from .offer import propose_offer
+
+    if args.proposer == "template":
+        return propose_offer, None
+
+    from .llm_cache import LlmCache
+    from .llm_normalize import build_client
+    from .llm_offer import LlmOfferProposer, estimate_offer_cost_usd
+
+    pending = [c for c in store.all() if c.status == "validated" and not c.offer]
+    cache = LlmCache.load(data_dir / "llm_offer_cache.json")
+    est = estimate_offer_cost_usd(
+        pending, args.model, cache=None if args.refresh_offer else cache
+    )
+    if est > args.max_offer_cost:
+        raise ValueError(
+            f"estimated offer cost ${est} exceeds --max-offer-cost "
+            f"${args.max_offer_cost}; nothing was proposed"
+        )
+    proposer = LlmOfferProposer(
+        client=build_client(), model=args.model,
+        max_cost_usd=args.max_offer_cost, cache=cache, refresh=args.refresh_offer,
+    )
+    return proposer, cache
+
+
 def _cmd_prepare_launch(args) -> int:
-    store, _, _ = _load(_data_dir(args))
-    validated = prepare_launch(store)
+    data_dir = _data_dir(args)
+    store, _, _ = _load(data_dir)
+    proposer, cache = _build_proposer(args, store, data_dir)
+    validated = prepare_launch(store, proposer=proposer)
+    if cache is not None:
+        cache.save()
+    if args.proposer == "llm":
+        meter = getattr(proposer, "meter", None)
+        actual = meter.cost_usd if meter is not None else 0.0
+        note = " (cost ceiling hit)" if getattr(proposer, "ceiling_hit", False) else ""
+        print(
+            f"llm proposer: actual ${actual}; cache {proposer.cache_hits} hit / "
+            f"{proposer.cache_misses} miss{note}"
+        )
     print(f"prepared: offer attached to {len(validated)} validated candidate(s)")
     return 0
 
@@ -436,9 +478,23 @@ def build_parser() -> argparse.ArgumentParser:
     outcome.add_argument("--metric", required=True, help="observed metric value")
     outcome.set_defaults(func=_cmd_outcome)
 
-    sub.add_parser(
+    prep = sub.add_parser(
         "prepare-launch", parents=[common], help="attach offers to validated candidates"
-    ).set_defaults(func=_cmd_prepare_launch)
+    )
+    prep.add_argument(
+        "--proposer", choices=("template", "llm"), default="template",
+        help="how to draft the first offer (default: deterministic template)",
+    )
+    prep.add_argument("--model", default="claude-sonnet-5", help="model for --proposer llm")
+    prep.add_argument(
+        "--max-offer-cost", type=float, default=0.5,
+        help="USD ceiling for one --proposer llm run (default 0.50)",
+    )
+    prep.add_argument(
+        "--refresh-offer", action="store_true",
+        help="ignore cached llm offers and re-call the API",
+    )
+    prep.set_defaults(func=_cmd_prepare_launch)
 
     launch = sub.add_parser("launch", parents=[common, actor], help="mark an offer live")
     launch.add_argument("name")
