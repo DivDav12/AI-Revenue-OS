@@ -27,6 +27,8 @@ class Task:
     capability: str | None = None  # optional routing hint for the registry
     id: str = field(default_factory=_new_id)
     created_at: datetime = field(default_factory=_now)
+    parent_id: str | None = None  # the task that spawned this one (None = root)
+    depth: int = 0
 
 
 @dataclass(frozen=True)
@@ -40,3 +42,4 @@ class Result:
     error: str | None = None
     id: str = field(default_factory=_new_id)
     created_at: datetime = field(default_factory=_now)
+    follow_ups: tuple = ()  # Tasks the agent wants spawned; the orchestrator enqueues them
