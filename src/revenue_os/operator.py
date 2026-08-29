@@ -59,11 +59,13 @@ from .workflow import (
     prepare_launch,
     research_shortlisted,
     run_discovery_cycle,
+    package_deliverables,
     write_copy_for_validated,
 )
 
 _ACTIONS = ("discover", "research", "analyze_competition", "analyze_revenue",
-            "analyze_trends", "investigate", "prepare_launch", "write_copy", "stop")
+            "analyze_trends", "investigate", "prepare_launch", "write_copy",
+            "package_deliverable", "stop")
 _TREND_MIN_CANDIDATES = 3
 
 
@@ -79,6 +81,7 @@ class Goal:
     discovery_stale_days: int = STALE_AFTER_DAYS
     trend_hunter: bool = False           # opt-in deterministic trend analysis
     revenue_analyst: bool = False        # opt-in deterministic portfolio ROI read
+    content_creator: bool = False        # opt-in deterministic landing-page packager
     # opt-in LLM leaf workers (deterministic by default)
     evaluator: str = "keyword"          # keyword | llm
     planner: str = "template"           # template | llm
@@ -103,6 +106,7 @@ class Goal:
             "discovery_stale_days": self.discovery_stale_days,
             "trend_hunter": self.trend_hunter,
             "revenue_analyst": self.revenue_analyst,
+            "content_creator": self.content_creator,
             "evaluator": self.evaluator,
             "planner": self.planner,
             "proposer": self.proposer,
@@ -128,6 +132,7 @@ class Goal:
             discovery_stale_days=int(d.get("discovery_stale_days", STALE_AFTER_DAYS)),
             trend_hunter=bool(d.get("trend_hunter", False)),
             revenue_analyst=bool(d.get("revenue_analyst", False)),
+            content_creator=bool(d.get("content_creator", False)),
             evaluator=d.get("evaluator", "keyword"),
             planner=d.get("planner", "template"),
             proposer=d.get("proposer", "template"),
@@ -265,6 +270,14 @@ def _needs_copy(report: dict) -> int:
     )
 
 
+def _needs_packaging(report: dict) -> int:
+    return sum(
+        1 for c in report.get("candidates", [])
+        if c["status"] == "validated" and c.get("offer")
+        and not c.get("deliverable")
+    )
+
+
 def _has_revenue_or_spend(report: dict) -> bool:
     counts = report["status_counts"]
     if counts.get("launched", 0) or counts.get("earning", 0):
@@ -277,8 +290,8 @@ def decide(
     obs: dict, goal: Goal, *,
     discovery_exhausted: bool = False, llm_capped: bool = False,
     research_done: bool = False, competition_done: bool = False,
-    copy_done: bool = False, revenue_done: bool = False,
-    trend_done: bool = False, policy=None,
+    copy_done: bool = False, package_done: bool = False,
+    revenue_done: bool = False, trend_done: bool = False, policy=None,
 ) -> Decision:
     """Pure: pick the next non-human action from the observed state."""
     report = obs["report"]
@@ -322,6 +335,15 @@ def decide(
                 "write_copy",
                 f"{needs_copy} validated candidate(s) need launch copy",
                 {"needs_copy": needs_copy},
+            )
+
+    if goal.content_creator and not package_done:
+        needs_pkg = _needs_packaging(report)
+        if needs_pkg > 0:
+            return Decision(
+                "package_deliverable",
+                f"{needs_pkg} validated candidate(s) need a landing page",
+                {"needs_packaging": needs_pkg},
             )
 
     if goal.research == "llm" and not research_done:
@@ -390,6 +412,7 @@ class OperatorAgent:
         self._competition_done = False
         self._copy_done = False
         self._revenue_done = False
+        self._package_done = False
         self._trend_done = False
 
     # --- state -----------------------------------------------------------
@@ -586,6 +609,14 @@ class OperatorAgent:
             return {"drafted": len(drafted),
                     "llm_cost": round(worker.meter.cost_usd, 4)}
 
+        if decision.action == "package_deliverable":
+            store, _, _ = self._load()
+            packaged = package_deliverables(store, self.data_dir, sink=tlog.record)
+            tlog.save()
+            if not packaged:
+                self._package_done = True
+            return {"packaged": len(packaged)}
+
         if decision.action == "investigate":
             store, _, _ = self._load()
             planner, cache = plan_validation, None
@@ -659,6 +690,7 @@ class OperatorAgent:
             competition_done=self._competition_done,
             copy_done=self._copy_done,
             revenue_done=self._revenue_done,
+            package_done=self._package_done,
             trend_done=self._trend_done,
             policy=policy,
         )
@@ -703,6 +735,7 @@ class OperatorAgent:
         self._competition_done = False
         self._copy_done = False
         self._revenue_done = False
+        self._package_done = False
         self._trend_done = False
         steps: list[AgentStep] = []
         for _ in range(max(1, max_cycles)):

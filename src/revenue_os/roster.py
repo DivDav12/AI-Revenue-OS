@@ -53,8 +53,8 @@ AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec("supplier_finder", "Supplier Finder", "discovery", "Sourcing feasibility",
               "find_suppliers", node="discovery"),
     # --- build cluster --------------------------------------------------
-    AgentSpec("content_creator", "Content Creator", "build", "Launch content",
-              "create_content", node="offer"),
+    AgentSpec("content_creator", "Content Creator", "build", "Launch page",
+              "package_deliverable", node="content", status="live"),
     AgentSpec("copywriter", "Copywriter AI", "build", "Launch copy",
               "write_copy", node="copywriter", mode_field="copywriter",
               on_value="llm", off_value="off", spend_activity="copy",

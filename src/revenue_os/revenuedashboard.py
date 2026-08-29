@@ -282,6 +282,8 @@ _AVATARS = {
                        '<circle cx="12" cy="12" r="2"/>'),
     "copywriter": _svg('<path d="M4 20h16"/><path d="m14 4 6 6-9 9H5v-6z"/>'),
     "analyst": _svg('<path d="M4 20h16"/><path d="M7 16v-5M12 16V8M17 16v-3"/>'),
+    "content": _svg('<rect x="5" y="3" width="14" height="18" rx="1.5"/>'
+                    '<path d="M9 8h6M9 12h6M9 16h3"/>'),
     "generic": _svg('<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2"/>'),
 }
 _ACCENT = {
@@ -289,7 +291,7 @@ _ACCENT = {
     "researcher": "#34d399", "planner": "#fbbf24", "offer": "#f472b6",
     "decision": "#f87171", "finder": "#5eead4", "trendhunter": "#c084fc",
     "competitor": "#fb923c", "copywriter": "#facc15", "analyst": "#4ade80",
-    "generic": "#94a3b8",
+    "content": "#38bdf8", "generic": "#94a3b8",
 }
 
 # llm_spend activity  ->  (node key, display name, role, Goal field, llm-mode value)
@@ -358,6 +360,7 @@ _MAP_POS = {
     "finder":      (650, 400),
     "competitor":  (650, 560),
     "copywriter":  (150, 560),
+    "content":     (250, 660),
     "analyst":     (650, 660),
     "decision":    (120, 368),
     "operator":    (400, 358),
@@ -493,6 +496,19 @@ def _agent_map(agent_log, spend_entries, goal, session, report,
         task=("portfolio analysed" if ana
               else ("enabled" if goal.get("revenue_analyst") else "off")),
         meta=[("runs", len(ana))],
+    )
+
+    pkg = task_by_node.get("content", [])
+    if goal.get("content_creator"):
+        c_status = "working" if (running and pkg) else ("active" if pkg else "idle")
+    else:
+        c_status = "disabled"
+    nodes["content"] = dict(
+        key="content", name="Content Creator", role="Launch page",
+        status=c_status,
+        task=("landing page packaged" if pkg
+              else ("enabled" if goal.get("content_creator") else "off")),
+        meta=[("runs", len(pkg))],
     )
 
     # --- configurable workers -------------------------------------
@@ -728,6 +744,7 @@ _ACT_AGENT = {
     "discover": "discovery", "investigate": "planner", "analyze_trends": "trendhunter",
     "prepare_launch": "offer", "research": "researcher",
     "analyze_competition": "competitor", "write_copy": "copywriter",
+    "package_deliverable": "content",
     "analyze_revenue": "analyst", "stop": "operator",
 }
 
@@ -736,6 +753,7 @@ _TASK_AGENT_NODE = {
     "market_scanner": "discovery", "evaluator": "evaluator",
     "opportunity_finder": "finder", "product_researcher": "researcher",
     "competitor_analyzer": "competitor", "copywriter": "copywriter",
+    "content_creator": "content",
     "revenue_analyst": "analyst", "trend_hunter": "trendhunter",
 }
 
@@ -1013,6 +1031,13 @@ def _candidates(candidates: list[dict]) -> str:
                 f"<span class='muted'>&mdash; CTA: {_esc(draft.get('primary_cta', ''))} "
                 f"({_esc(draft.get('basis', ''))})</span></p>"
             )
+        deliv = c.get("deliverable") or {}
+        deliv_html = ""
+        if deliv.get("dir"):
+            deliv_html = (
+                f"<p><b>deliverable:</b> <span class='mono'>{_esc(deliv['dir'])}/"
+                f"landing.html</span> <span class='muted'>(not published)</span></p>"
+            )
         budget = ""
         if c.get("plan_needs_budget"):
             budget = (
@@ -1030,7 +1055,7 @@ def _candidates(candidates: list[dict]) -> str:
             )
         blocks += (
             f"<details><summary>{summary}</summary>{rat}{res}{cmp_html}"
-            f"{draft_html}{budget}{off}"
+            f"{draft_html}{deliv_html}{budget}{off}"
             f"{_breakdown(c.get('breakdown', {}))}</details>"
         )
     return blocks

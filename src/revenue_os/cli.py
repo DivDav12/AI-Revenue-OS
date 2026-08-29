@@ -216,6 +216,8 @@ def _cmd_agent_goal(args) -> int:
         updates["trend_hunter"] = args.trend_hunter
     if args.revenue_analyst is not None:
         updates["revenue_analyst"] = args.revenue_analyst
+    if args.content_creator is not None:
+        updates["content_creator"] = args.content_creator
     if args.decision_policy is not None:
         updates["decision_policy"] = args.decision_policy
     if args.model is not None:
@@ -703,6 +705,10 @@ def build_parser() -> argparse.ArgumentParser:
     ag_goal.add_argument(
         "--revenue-analyst", action=argparse.BooleanOptionalAction, default=None,
         help="deterministic portfolio ROI analysis over the ledgers",
+    )
+    ag_goal.add_argument(
+        "--content-creator", action=argparse.BooleanOptionalAction, default=None,
+        help="deterministic landing-page packager for validated offers",
     )
     ag_goal.add_argument("--decision-policy", choices=("rules", "llm"), default=None)
     ag_goal.add_argument("--model", default=None, help="model for the llm workers")

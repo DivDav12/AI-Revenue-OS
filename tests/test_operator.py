@@ -102,6 +102,27 @@ class DecideTests(unittest.TestCase):
         self.assertEqual(decide(nothing, Goal(revenue_analyst=True, shortlist_n=3)).action,
                          "stop")
 
+    def test_package_deliverable_needs_offer_and_opt_in(self):
+        with_offer = [{"status": "validated", "offer": {"price": 9}}]
+        g = Goal(content_creator=True)
+        self.assertEqual(
+            decide(_obs(counts={"validated": 1}, candidates=with_offer, age=0), g).action,
+            "package_deliverable",
+        )
+        # opt-in off -> never
+        self.assertNotEqual(
+            decide(_obs(counts={"validated": 1}, candidates=with_offer, age=0),
+                   Goal()).action,
+            "package_deliverable",
+        )
+        # already packaged -> not again
+        done = [{"status": "validated", "offer": {"price": 9},
+                 "deliverable": {"dir": "deliverables/x"}}]
+        self.assertNotEqual(
+            decide(_obs(counts={"validated": 1}, candidates=done, age=0), g).action,
+            "package_deliverable",
+        )
+
     def test_write_copy_needs_an_offer_and_the_opt_in(self):
         with_offer = [{"status": "validated", "offer": {"price": 9}}]
         no_offer = [{"status": "validated", "offer": {}}]
@@ -250,6 +271,38 @@ class OperatorAgentTests(unittest.TestCase):
         steps = OperatorAgent(self.d, Goal()).run()
         self.assertNotIn("analyze_revenue", [s.decision.action for s in steps])
         self.assertFalse((self.d / "revenue_analysis.json").exists())
+
+    def test_content_creator_packages_a_landing_page_no_gate_no_spend(self):
+        import json
+        from revenue_os.store import Candidate
+        from revenue_os.task_log import TaskLog
+
+        store = CandidateStore(self.d / "candidates.json")
+        store.put(Candidate(
+            name="win", status="validated", description="a platform",
+            offer={"what_is_sold": "a platform", "price": 29.0, "currency": "USD",
+                   "call_to_action": "Join the waitlist"},
+            plan={"success_metric": "25 signups in 2 weeks"},
+        ))
+        store.save()
+        steps = OperatorAgent(self.d, Goal(content_creator=True)).run()
+        actions = [s.decision.action for s in steps]
+        self.assertIn("package_deliverable", actions)
+        self.assertEqual(actions.count("package_deliverable"), 1)   # _package_done
+        page = self.d / "deliverables" / "win" / "landing.html"
+        self.assertTrue(page.exists())
+        self.assertIn("WAITLIST FORM PLACEHOLDER", page.read_text(encoding="utf-8"))
+        self.assertFalse((self.d / "llm_spend.json").exists())      # deterministic
+        agents = {e["agent"] for e in TaskLog.load(self.d / "task_log.json").entries()}
+        self.assertIn("content_creator", agents)
+        self.assertEqual(
+            CandidateStore.load(self.d / "candidates.json").get("win").status,
+            "validated",                                           # gate not crossed
+        )
+
+    def test_content_creator_off_by_default(self):
+        steps = OperatorAgent(self.d, Goal()).run()
+        self.assertNotIn("package_deliverable", [s.decision.action for s in steps])
 
     def test_human_gated_capability_is_never_auto_executed(self):
         from revenue_os.operator import Decision

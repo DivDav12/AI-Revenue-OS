@@ -409,3 +409,59 @@ def write_copy_for_validated(store: CandidateStore, worker, *,
             drafted.append(updated)
     store.save()
     return drafted
+
+
+def package_deliverables(store: CandidateStore, data_dir, *,
+                         sink=None) -> list[Candidate]:
+    """Dispatch a package_deliverable task per validated candidate that
+    has an offer and no deliverable, write the two files under
+    <data_dir>/deliverables/<name>/, and attach a `deliverable` note.
+
+    Deterministic, idempotent, failure-isolated. Crosses no gate -
+    status is unchanged and nothing is published.
+    """
+    from pathlib import Path
+
+    from .deliverable import DeliverablePackagerAgent
+
+    data_dir = Path(data_dir)
+    pending = [
+        c for c in store.all()
+        if c.status == "validated" and c.offer and not c.deliverable
+    ]
+    if not pending:
+        return []
+
+    orchestrator = Orchestrator(registry=AgentRegistry(), sink=sink)
+    orchestrator.register(DeliverablePackagerAgent(name="content_creator"))
+    for cand in pending:
+        orchestrator.add_task(Task(
+            objective=f"package: {cand.name}",
+            capability="package_deliverable",
+            payload={
+                "candidate": {"name": cand.name, "description": cand.description},
+                "offer": dict(cand.offer),
+                "draft": dict(cand.launch_draft),
+                "plan": dict(cand.plan),
+            },
+        ))
+
+    packaged: list[Candidate] = []
+    for result in orchestrator.run_cycle():
+        if result.status != "ok":
+            logger.warning("packaging failed: %s", result.error)
+            continue
+        cand = store.get(result.output["candidate_name"])
+        if cand is None:
+            continue
+        out_dir = data_dir / "deliverables" / cand.name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "landing.html").write_text(
+            result.output["landing_html"], encoding="utf-8")
+        (out_dir / "README.txt").write_text(
+            result.output["readme"], encoding="utf-8")
+        updated = replace(cand, deliverable=dict(result.output["deliverable"]))
+        store.put(updated)
+        packaged.append(updated)
+    store.save()
+    return packaged

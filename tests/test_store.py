@@ -80,6 +80,18 @@ class CandidateStoreTests(unittest.TestCase):
         merged = reloaded.upsert(_cand("eps", total=5.0))
         self.assertEqual(merged.launch_draft, {"headline": "Buy this"})
 
+    def test_deliverable_round_trips_and_survives_upsert(self):
+        store = CandidateStore(self.path)
+        c = store.upsert(_cand("zeta"))
+        store.put(replace(c, status="validated",
+                          deliverable={"dir": "deliverables/zeta"}))
+        store.save()
+
+        reloaded = CandidateStore.load(self.path)
+        self.assertEqual(reloaded.get("zeta").deliverable, {"dir": "deliverables/zeta"})
+        merged = reloaded.upsert(_cand("zeta", total=6.0))
+        self.assertEqual(merged.deliverable, {"dir": "deliverables/zeta"})
+
     def test_all_is_ranked_by_total_desc(self):
         store = CandidateStore(self.path)
         store.upsert(_cand("low", total=1.0))

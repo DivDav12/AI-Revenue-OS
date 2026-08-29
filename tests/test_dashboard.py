@@ -358,6 +358,28 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertIn(">win<", html)
         self.assertNotIn("://", html)
 
+    def test_content_creator_node_lineage_and_candidate_line(self):
+        self.store.put(Candidate(
+            name="alpha", status="validated", total=3.0, verdict="hold",
+            offer={"what_is_sold": "x", "price": 29.0},
+            deliverable={"dir": "deliverables/alpha", "files": ["landing.html"]},
+        ))
+        task_log = [
+            {"ts": "1", "task_id": "p1", "parent_id": None, "depth": 0,
+             "capability": "package_deliverable", "agent": "content_creator",
+             "status": "ok", "summary": {"candidate_name": "alpha"}},
+        ]
+        html = render_html(
+            _report(self.store, self.d), _FIXED_TS,
+            agent_log=[{"ts": "0", "action": "package_deliverable", "reason": "x"}],
+            task_log=task_log, goal={"content_creator": True},
+        )
+        self.assertIn("Content Creator", html)                     # map node
+        self.assertIn("x1='400' y1='358' x2='250' y2='660'", html)  # operator -> content
+        self.assertIn("deliverables/alpha/landing.html", html)     # candidate details
+        self.assertIn("(not published)", html)
+        self.assertNotIn("://", html)
+
     def test_trends_panel_real_or_empty(self):
         empty = render_html(_report(self.store, self.d), _FIXED_TS)
         self.assertIn("No trend analysis yet.", empty)

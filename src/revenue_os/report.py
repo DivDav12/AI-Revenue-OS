@@ -110,6 +110,7 @@ def pipeline_report(
             "research": dict(cand.research),
             "competition": dict(cand.competition),
             "launch_draft": dict(cand.launch_draft),
+            "deliverable": dict(cand.deliverable),
         }
         for cand in candidates
     ]
