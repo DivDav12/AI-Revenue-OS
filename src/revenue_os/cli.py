@@ -40,7 +40,7 @@ import sys
 from pathlib import Path
 
 from .approval import record_decision
-from .dashboard import render_html
+from .revenuedashboard import render_html
 from .discovery_log import DiscoveryLog
 from .llm_spend import LlmSpendLog
 from .llm_workers import (

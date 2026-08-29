@@ -6,7 +6,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from revenue_os import cli
-from revenue_os.dashboard import render_html
+from revenue_os.revenuedashboard import render_html
 from revenue_os.report import pipeline_report
 from revenue_os.revenue import RevenueLedger, mark_launched, record_payment
 from revenue_os.spend import SpendLedger
