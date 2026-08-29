@@ -77,7 +77,22 @@ class _FakeClient:
 
     def create(self, **kwargs):
         self.calls += 1
-        return _Resp(kwargs["tool_choice"]["name"], self.input_tokens)
+        tc = kwargs.get("tool_choice") or {}
+        if tc.get("type") == "auto":
+            # web-grounded call: pick the record tool from `tools`, add sources,
+            # and return a web_search_tool_result block plus the record call.
+            record = next(t["name"] for t in kwargs["tools"]
+                          if t.get("name", "").startswith("record"))
+            payload = {**_PAYLOADS[record],
+                       "sources": [{"url": "https://ex.com/a", "title": "A"}]}
+            search = type("S", (), {"type": "web_search_tool_result",
+                                    "content": [{"u": 1}]})()
+            block = type("B", (), {"type": "tool_use", "name": record,
+                                   "input": payload})()
+            return type("R", (), {"content": [search, block],
+                                  "usage": _Usage(self.input_tokens),
+                                  "stop_reason": "end_turn"})()
+        return _Resp(tc["name"], self.input_tokens)
 
 
 def _now():
@@ -205,6 +220,20 @@ class OperatorLlmTests(unittest.TestCase):
         self.assertTrue(all(c.research == {} for c in store.all()))
         self.assertFalse((self.d / "llm_spend.json").exists())
 
+    def test_research_web_grounds_notes_with_sources_and_records_searches(self):
+        goal = Goal(research="web")
+        with mock.patch("revenue_os.llm_normalize.build_client", return_value=_FakeClient()):
+            OperatorAgent(self.d, goal).run()
+        store = CandidateStore.load(self.d / "candidates.json")
+        noted = [c for c in store.all() if c.research.get("verdict")]
+        self.assertTrue(noted)
+        for c in noted:
+            self.assertIn("web search", c.research["basis"])
+            self.assertTrue(c.research["sources"])
+        entry = next(e for e in self._spend() if e["activity"] == "research")
+        self.assertGreater(entry["searches"], 0)
+        self.assertGreater(entry["cost_usd"], 0.0)
+
     def test_competitor_analyzer_notes_shortlisted_and_records_spend(self):
         goal = Goal(competition="llm")
         with mock.patch("revenue_os.llm_normalize.build_client", return_value=_FakeClient()):
@@ -317,12 +346,14 @@ class AgentGoalCliTests(unittest.TestCase):
 
     def test_agent_goal_sets_competition_and_copywriter(self):
         with tempfile.TemporaryDirectory() as d:
-            code, _ = _run(["agent-goal", "--competition", "llm",
+            code, _ = _run(["agent-goal", "--competition", "web",
+                            "--research", "web",
                             "--copywriter", "llm", "--revenue-analyst",
                             "--content-creator", "--data-dir", d])
             self.assertEqual(code, 0)
             g = load_goal(d)
-            self.assertEqual(g.competition, "llm")
+            self.assertEqual(g.research, "web")
+            self.assertEqual(g.competition, "web")
             self.assertEqual(g.copywriter, "llm")
             self.assertTrue(g.revenue_analyst)
             self.assertTrue(g.content_creator)

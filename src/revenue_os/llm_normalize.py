@@ -64,6 +64,9 @@ _PRICES: dict[str, tuple[float, float]] = {
 }
 _FALLBACK_PRICE = (5.0, 25.0)
 
+# flat charge per web_search server-tool use (verify against current pricing)
+SEARCH_PRICE_USD = 0.01
+
 _CRITERION_HELP = {
     "startup_affordability": "cheap to start (5 = almost no upfront cost)",
     "automation_potential": "runs with little ongoing human effort",
@@ -107,6 +110,7 @@ class CostMeter:
     model: str
     input_tokens: int = 0
     output_tokens: int = 0
+    searches: int = 0
 
     def add(self, usage) -> None:
         if usage is None:
@@ -116,11 +120,17 @@ class CostMeter:
             self.input_tokens += int(getattr(usage, attr, 0) or 0)
         self.output_tokens += int(getattr(usage, "output_tokens", 0) or 0)
 
+    def add_searches(self, n: int) -> None:
+        self.searches += max(0, int(n))
+
     @property
     def cost_usd(self) -> float:
         in_rate, out_rate = _PRICES.get(self.model, _FALLBACK_PRICE)
         return round(
-            self.input_tokens / 1e6 * in_rate + self.output_tokens / 1e6 * out_rate, 4
+            self.input_tokens / 1e6 * in_rate
+            + self.output_tokens / 1e6 * out_rate
+            + self.searches * SEARCH_PRICE_USD,
+            4,
         )
 
 
@@ -170,6 +180,64 @@ def _tool_input(response, tool_name: str = "record_scores") -> dict:
                 raw = json.loads(raw)
             return dict(raw)
     raise ValueError(f"llm response had no {tool_name} tool call")
+
+
+def web_search_tool(*, max_uses: int = 4, blocked_domains=None) -> dict:
+    tool = {"type": "web_search_20260209", "name": "web_search", "max_uses": max_uses}
+    if blocked_domains:
+        tool["blocked_domains"] = list(blocked_domains)
+    return tool
+
+
+def _count_searches(response) -> tuple[int, bool]:
+    """Return (searches_seen, any_error). A web_search_tool_result block whose
+    .content is a list is a success; an object with error_code is an error."""
+    seen = errored = 0
+    for block in getattr(response, "content", []) or []:
+        if getattr(block, "type", None) != "web_search_tool_result":
+            continue
+        seen += 1
+        content = getattr(block, "content", None)
+        if not isinstance(content, list):
+            errored += 1
+    return seen, bool(errored)
+
+
+def grounded_tool_call(client, model, *, system, brief, tools, record_name,
+                       meter=None, max_pause_resumes: int = 3) -> tuple[dict, int, bool]:
+    """One Claude call with web_search + a forced-shape record tool available
+    (tool_choice auto). Resumes across pause_turn. Returns
+    (record_tool_input, searches_seen, any_search_error). Server-tool errors
+    do NOT raise - a partial result is still returned."""
+    messages = [{"role": "user", "content": wrap_untrusted(brief)}]
+    searches = 0
+    any_error = False
+    for _ in range(max_pause_resumes + 1):
+        response = client.messages.create(
+            model=model,
+            max_tokens=1400,
+            system=[{
+                "type": "text", "text": system + UNTRUSTED_NOTE,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            tools=tools,
+            tool_choice={"type": "auto"},
+            messages=messages,
+        )
+        if meter is not None:
+            meter.add(getattr(response, "usage", None))
+        s, err = _count_searches(response)
+        searches += s
+        any_error = any_error or err
+        if getattr(response, "stop_reason", None) == "pause_turn":
+            messages.append({"role": "assistant", "content": response.content})
+            continue
+        if meter is not None:
+            meter.add_searches(searches)
+        return _tool_input(response, record_name), searches, any_error
+    if meter is not None:
+        meter.add_searches(searches)
+    raise ValueError("web-grounded call did not finish within the pause-turn limit")
 
 
 def _validate_scores(data: dict) -> dict[str, float]:

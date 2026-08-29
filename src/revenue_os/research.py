@@ -20,10 +20,13 @@ from .llm_normalize import (
     CostCeilingExceeded,
     CostMeter,
     DEFAULT_MODEL,
+    SEARCH_PRICE_USD,
     UNTRUSTED_NOTE,
     _FALLBACK_PRICE,
     _PRICES,
     _tool_input,
+    grounded_tool_call,
+    web_search_tool,
     wrap_untrusted,
 )
 from .llm_plan import _candidate_brief
@@ -34,6 +37,8 @@ _RESEARCH_PROMPT_VERSION = "1"
 _MAX_TOKENS = 700
 _MAX_TEXT = 400
 _VERDICTS = ("proceed", "caution", "avoid")
+_MAX_SEARCHES = 4
+_BLOCKED_DOMAINS = ("pinterest.com", "quora.com")
 
 _RUBRIC = (
     "You research a revenue opportunity a solo operator is considering. "
@@ -47,6 +52,29 @@ _RUBRIC = (
     "verdict: proceed, caution, or avoid.\n"
     "Call record_research once with a one-sentence rationale."
 )
+
+_WEB_RUBRIC = (
+    "You research a revenue opportunity a solo operator is considering. "
+    "Search the web to check who serves this need, how they price it, and "
+    "whether there is real demand. Then:\n"
+    "competition: who else serves this need and how crowded it looks.\n"
+    "demand_evidence: what suggests real willingness to pay (or that it is "
+    "thin).\n"
+    "legal_flags: regulatory, IP, terms-of-service, or data-privacy concerns "
+    "- or 'none apparent'.\n"
+    "verdict: proceed, caution, or avoid.\n"
+    "Call record_research once with a one-sentence rationale and a sources "
+    "array (url + title) for every page you relied on."
+)
+
+_SOURCE_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object", "additionalProperties": False,
+        "required": ["url", "title"],
+        "properties": {"url": {"type": "string"}, "title": {"type": "string"}},
+    },
+}
 
 _TOOL = {
     "name": "record_research",
@@ -66,48 +94,81 @@ _TOOL = {
     },
 }
 
+_WEB_TOOL = {
+    **_TOOL,
+    "input_schema": {
+        **_TOOL["input_schema"],
+        "required": _TOOL["input_schema"]["required"] + ["sources"],
+        "properties": {**_TOOL["input_schema"]["properties"],
+                       "sources": _SOURCE_SCHEMA},
+    },
+}
 
-def research_cache_key(candidate: Candidate, model: str) -> str:
+
+def research_cache_key(candidate: Candidate, model: str, mode: str = "llm") -> str:
     raw = "\n".join([
-        "research", _RESEARCH_PROMPT_VERSION, model, candidate.name,
+        "research", _RESEARCH_PROMPT_VERSION, mode, model, candidate.name,
         candidate.description, _candidate_brief(candidate),
     ])
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def estimate_research_cost_usd(candidates, model: str, cache=None) -> float:
+def estimate_research_cost_usd(candidates, model: str, cache=None,
+                               mode: str = "llm") -> float:
     in_rate, out_rate = _PRICES.get(model, _FALLBACK_PRICE)
-    rubric_tokens = len(_RUBRIC) // 4
+    rubric_tokens = len(_RUBRIC if mode == "llm" else _WEB_RUBRIC) // 4
+    web = mode == "web"
     total_in = total_out = 0
+    fees = 0.0
     for cand in candidates:
-        if cache is not None and cache.get(research_cache_key(cand, model)) is not None:
+        if cache is not None and cache.get(
+                research_cache_key(cand, model, mode)) is not None:
             continue
-        total_in += rubric_tokens + len(_candidate_brief(cand)) // 4 + 40
+        per_in = rubric_tokens + len(_candidate_brief(cand)) // 4 + 40
+        total_in += int(per_in * (2.5 if web else 1))   # injected result tokens
         total_out += 350
-    return round(total_in / 1e6 * in_rate + total_out / 1e6 * out_rate, 4)
+        fees += _MAX_SEARCHES * SEARCH_PRICE_USD if web else 0.0
+    return round(
+        total_in / 1e6 * in_rate + total_out / 1e6 * out_rate + fees, 4)
 
 
 def _clean(value: str) -> str:
     return str(value).strip()[:_MAX_TEXT]
 
 
-def _note_from_data(data: dict, model: str) -> dict:
+def _clean_sources(raw) -> list[dict]:
+    out = []
+    for item in raw or []:
+        url = str(item.get("url", "")).strip()
+        title = str(item.get("title", "")).strip()
+        if "." in url and title:
+            out.append({"url": url[:300], "title": title[:_MAX_TEXT]})
+    return out
+
+
+def _note_from_data(data: dict, model: str, *, basis: str | None = None) -> dict:
     verdict = str(data.get("verdict", "")).strip().lower()
     if verdict not in _VERDICTS:
         raise ValueError(f"research verdict {verdict!r} not in {_VERDICTS}")
     for key in ("competition", "demand_evidence", "legal_flags", "rationale"):
         if not str(data.get(key, "")).strip():
             raise ValueError(f"research note {key!r} is empty")
-    return {
+    note = {
         "competition": _clean(data["competition"]),
         "demand_evidence": _clean(data["demand_evidence"]),
         "legal_flags": _clean(data["legal_flags"]),
         "verdict": verdict,
         "rationale": _clean(data["rationale"]),
-        "basis": "model knowledge, no web",
+        "basis": basis or "model knowledge, no web",
         "model": model,
         "researched_at": now_iso(),
     }
+    if basis and basis.startswith("web search"):
+        sources = _clean_sources(data.get("sources"))
+        if not sources:
+            raise ValueError("web research note has no usable sources")
+        note["sources"] = sources
+    return note
 
 
 def research_candidate_llm(candidate: Candidate, *, client, model: str = DEFAULT_MODEL,
@@ -134,6 +195,25 @@ def research_candidate_llm(candidate: Candidate, *, client, model: str = DEFAULT
     return _note_from_data(_tool_input(response, "record_research"), model)
 
 
+def research_candidate_web(candidate: Candidate, *, client, model: str = DEFAULT_MODEL,
+                           meter=None, max_searches: int = _MAX_SEARCHES,
+                           blocked_domains=_BLOCKED_DOMAINS) -> dict:
+    """Produce one research note grounded in real web search, with a sources
+    list. Server-tool errors do not raise - a partial note is returned."""
+    data, searches, any_error = grounded_tool_call(
+        client, model,
+        system=_WEB_RUBRIC,
+        brief=_candidate_brief(candidate),
+        tools=[web_search_tool(max_uses=max_searches, blocked_domains=blocked_domains),
+               _WEB_TOOL],
+        record_name="record_research",
+        meter=meter,
+    )
+    suffix = " (partial)" if any_error else ""
+    return _note_from_data(
+        data, model, basis=f"web search{suffix}, {searches} sources")
+
+
 @dataclass
 class ResearchWorker:
     """Callable candidate -> note that reuses cached notes, meters spend
@@ -146,6 +226,7 @@ class ResearchWorker:
     meter: CostMeter = field(default=None)
     cache: object = None
     refresh: bool = False
+    mode: str = "llm"            # "llm" | "web"
     ceiling_hit: bool = False
     cache_hits: int = 0
     cache_misses: int = 0
@@ -155,7 +236,7 @@ class ResearchWorker:
             self.meter = CostMeter(self.model)
 
     def __call__(self, candidate: Candidate) -> dict:
-        key = research_cache_key(candidate, self.model)
+        key = research_cache_key(candidate, self.model, self.mode)
         if self.cache is not None and not self.refresh:
             hit = self.cache.get(key)
             if hit is not None:
@@ -168,9 +249,8 @@ class ResearchWorker:
                 f"research cost ${self.meter.cost_usd} reached ceiling "
                 f"${self.max_cost_usd}"
             )
-        note = research_candidate_llm(
-            candidate, client=self.client, model=self.model, meter=self.meter
-        )
+        fn = research_candidate_web if self.mode == "web" else research_candidate_llm
+        note = fn(candidate, client=self.client, model=self.model, meter=self.meter)
         self.cache_misses += 1
         if self.cache is not None:
             self.cache.put(key, {"note": note, "model": self.model})

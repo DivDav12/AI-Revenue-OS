@@ -299,8 +299,8 @@ _ACCENT = {
 # internal steps not yet promoted to named roster agents.
 _WORKERS = (
     ("evaluate", "evaluator", "Evaluator", "Scoring",         "evaluator",       "llm"),
-    ("research", "researcher", "Product Researcher", "Due diligence", "research",     "llm"),
-    ("competition", "competitor", "Competitor Analyzer", "Competition read", "competition", "llm"),
+    ("research", "researcher", "Product Researcher", "Due diligence", "research",     ("llm", "web")),
+    ("competition", "competitor", "Competitor Analyzer", "Competition read", "competition", ("llm", "web")),
     ("plan",     "planner",    "Validation Planner", "Validation plan", "planner",    "llm"),
     ("offer",    "offer",      "Offer Builder", "First offer",    "proposer",         "llm"),
     ("copy",     "copywriter", "Copywriter AI", "Launch copy",    "copywriter",       "llm"),
@@ -513,6 +513,7 @@ def _agent_map(agent_log, spend_entries, goal, session, report,
 
     # --- configurable workers -------------------------------------
     for activity, key, name, role, gkey, on_val in _WORKERS:
+        on_vals = on_val if isinstance(on_val, tuple) else (on_val,)
         entries = by_act.get(activity, [])
         runs = len(entries)
         mode = goal.get(gkey)
@@ -523,7 +524,7 @@ def _agent_map(agent_log, spend_entries, goal, session, report,
             status = "working" if running else "active"
         elif mode == "off":
             status = "disabled"
-        elif mode is not None and mode != on_val:
+        elif mode is not None and mode not in on_vals:
             status = "deterministic"
         else:
             status = "idle"
@@ -531,14 +532,17 @@ def _agent_map(agent_log, spend_entries, goal, session, report,
         cost = round(sum(float(e.get("cost_usd", 0.0)) for e in entries), 4)
         hits = sum(int(e.get("cache_hits", 0)) for e in entries)
         misses = sum(int(e.get("cache_misses", 0)) for e in entries)
+        searches = sum(int(e.get("searches", 0)) for e in entries)
         task = f"mode: {_esc(mode)}" if mode is not None else ""
         if runs:
             task += f" &mdash; {calls} call(s)"
         meta = [("runs", runs)]
         if runs:
             meta += [("cost", f"${_num(cost)}"), ("cache", f"{hits}/{hits + misses}")]
+        if searches:
+            meta.append(("searches", searches))
         if mode is not None:
-            meta.append(("enabled", "yes" if mode == on_val else "no"))
+            meta.append(("enabled", "yes" if mode in on_vals else "no"))
         nodes[key] = dict(key=key, name=name, role=role,
                           status=status, task=task, meta=meta)
 
@@ -641,7 +645,10 @@ def _topbar(report, session, agent_log, spend_entries, goal) -> str:
     beyond = counts["validated"] + counts["launched"] + counts["earning"]
     tv = goal.get("target_validated")
     goal_v = f"{beyond} / {tv} validated" if tv else "continuous discovery"
-    llm_on = [n for a, k, n, r, g, o in _WORKERS if goal.get(g) == o]
+    llm_on = [
+        n for a, k, n, r, g, o in _WORKERS
+        if goal.get(g) in (o if isinstance(o, tuple) else (o,))
+    ]
     if goal.get("evaluator") == "llm" and "Evaluator" not in llm_on:
         pass
     goal_s = ("LLM: " + ", ".join(llm_on)) if llm_on else "deterministic workers"
@@ -922,10 +929,12 @@ def _spend(spend: dict | None) -> str:
             f"<td style='width:55%'><div class='bar-wrap'>"
             f"<div class='bar' style='width:{pct}%'></div></div></td></tr>"
         )
+    searches = spend.get("total_searches", 0)
+    search_txt = f" &middot; {_num(searches)} web search(es)" if searches else ""
     return (
         f"<p>total <b>${_num(spend['total_cost_usd'])}</b> &middot; "
         f"{_num(spend['runs'])} run(s) &middot; "
-        f"{_num(spend['total_api_calls'])} api call(s)</p>{budget}"
+        f"{_num(spend['total_api_calls'])} api call(s){search_txt}</p>{budget}"
         f"<table><tr><th>activity</th><th>cost</th><th></th></tr>{rows}</table>"
     )
 
@@ -994,6 +1003,19 @@ def _breakdown(breakdown: dict) -> str:
     return f"<table><tr><th>criterion</th><th>score</th></tr>{rows}</table>"
 
 
+def _sources(sources) -> str:
+    """Render a web-note's sources as scheme-stripped host + title text
+    (no live links, so the no-'://' invariant holds)."""
+    if not sources:
+        return ""
+    items = "".join(
+        f"<li><span class='mono'>{_esc(str(s.get('url', '')).split('://')[-1][:60])}</span> "
+        f"&mdash; {_esc(s.get('title', ''))}</li>"
+        for s in sources[:6]
+    )
+    return f"<ul class='muted' style='font-size:.72rem'>{items}</ul>"
+
+
 def _candidates(candidates: list[dict]) -> str:
     if not candidates:
         return "<p class='muted'>No candidates.</p>"
@@ -1014,6 +1036,7 @@ def _candidates(candidates: list[dict]) -> str:
                 f"<p><b>research: {_esc(research['verdict'])}</b> &mdash; "
                 f"{_esc(research.get('rationale', ''))} "
                 f"<span class='muted'>({_esc(research.get('basis', ''))})</span></p>"
+                + _sources(research.get("sources"))
             )
         comp = c.get("competition") or {}
         cmp_html = ""
@@ -1022,6 +1045,7 @@ def _candidates(candidates: list[dict]) -> str:
                 f"<p><b>competition: {_esc(comp['verdict'])}</b> &mdash; "
                 f"{_esc(comp.get('rationale', ''))} "
                 f"<span class='muted'>({_esc(comp.get('basis', ''))})</span></p>"
+                + _sources(comp.get("sources"))
             )
         draft = c.get("launch_draft") or {}
         draft_html = ""

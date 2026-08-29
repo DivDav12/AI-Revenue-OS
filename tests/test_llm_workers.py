@@ -6,9 +6,11 @@ from unittest import mock
 from revenue_os.llm_spend import LlmSpendLog
 from revenue_os.llm_workers import (
     budget_gate,
+    build_competitor_analyzer,
     build_evaluator,
     build_planner,
     build_proposer,
+    build_researcher,
 )
 from revenue_os.opportunity import CRITERIA
 from revenue_os.sources import RawSignal, StaticSource
@@ -110,6 +112,27 @@ class LlmModeTests(unittest.TestCase):
         log.save()
         with self.assertRaisesRegex(ValueError, "cumulative cap"):
             budget_gate(self.d, 0.01, 0.5)
+
+    def test_research_web_mode_sets_worker_mode_and_costs_more(self):
+        store = CandidateStore(Path(self.d) / "c.json")
+        store.put(Candidate(name="a", description="x" * 200, status="shortlisted"))
+        with mock.patch("revenue_os.llm_normalize.build_client",
+                        return_value=_FakeClient()):
+            w_llm, _ = build_researcher(mode="llm", store=store,
+                                       model="claude-sonnet-5", max_cost_usd=0.5,
+                                       refresh=False, data_dir=self.d)
+            w_web, _ = build_researcher(mode="web", store=store,
+                                       model="claude-sonnet-5", max_cost_usd=0.5,
+                                       refresh=False, data_dir=self.d)
+        self.assertEqual(w_llm.mode, "llm")
+        self.assertEqual(w_web.mode, "web")
+        # a web run whose estimate blows the per-action ceiling is refused
+        with mock.patch("revenue_os.llm_normalize.build_client",
+                        return_value=_FakeClient()):
+            with self.assertRaises(ValueError):
+                build_competitor_analyzer(mode="web", store=store,
+                                          model="claude-sonnet-5", max_cost_usd=1e-9,
+                                          refresh=False, data_dir=self.d)
 
     def test_build_planner_llm(self):
         store = CandidateStore(Path(self.d) / "c.json")

@@ -122,6 +122,23 @@ class LlmSpendLogTests(unittest.TestCase):
         self.assertIn("competition", acts)
         self.assertIn("copy", acts)
 
+    def test_searches_recorded_and_summed(self):
+        from revenue_os.llm_normalize import CostMeter
+
+        class _W:
+            model = "m"
+            cache_hits = cache_misses = 0
+            ceiling_hit = False
+            meter = CostMeter("m", searches=3)
+
+        log = LlmSpendLog.load(self.path)
+        e = entry_from("research", _W())
+        self.assertEqual(e["searches"], 3)
+        log.add(e)
+        log.add({"activity": "research", "cost_usd": 0.0, "searches": 2})
+        log.save()
+        self.assertEqual(LlmSpendLog.load(self.path).summary()["total_searches"], 5)
+
     def test_corrupt_and_non_list_raise(self):
         self.path.write_text("{nope", encoding="utf-8")
         with self.assertRaises(ValueError):

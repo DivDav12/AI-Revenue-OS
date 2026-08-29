@@ -86,8 +86,8 @@ class Goal:
     evaluator: str = "keyword"          # keyword | llm
     planner: str = "template"           # template | llm
     proposer: str = "template"          # template | llm
-    research: str = "off"               # off | llm
-    competition: str = "off"            # off | llm
+    research: str = "off"               # off | llm | web
+    competition: str = "off"            # off | llm | web
     copywriter: str = "off"             # off | llm
     decision_policy: str = "rules"      # rules | llm
     model: str = "claude-sonnet-5"
@@ -147,10 +147,11 @@ class Goal:
 
     @property
     def uses_llm(self) -> bool:
-        return "llm" in (
-            self.evaluator, self.planner, self.proposer,
-            self.research, self.competition, self.copywriter,
-            self.decision_policy,
+        return (
+            "llm" in (self.evaluator, self.planner, self.proposer,
+                      self.copywriter, self.decision_policy)
+            or self.research in ("llm", "web")
+            or self.competition in ("llm", "web")
         )
 
 
@@ -346,7 +347,7 @@ def decide(
                 {"needs_packaging": needs_pkg},
             )
 
-    if goal.research == "llm" and not research_done:
+    if goal.research in ("llm", "web") and not research_done:
         unresearched = _unresearched_shortlisted(report)
         if unresearched > 0:
             return Decision(
@@ -355,7 +356,7 @@ def decide(
                 {"unresearched": unresearched},
             )
 
-    if goal.competition == "llm" and not competition_done:
+    if goal.competition in ("llm", "web") and not competition_done:
         uncompeted = _uncompeted_shortlisted(report)
         if uncompeted > 0:
             return Decision(
@@ -548,7 +549,7 @@ class OperatorAgent:
             store, _, _ = self._load()
             try:
                 worker, cache = build_researcher(
-                    mode="llm", store=store, model=g.model,
+                    mode=g.research, store=store, model=g.model,
                     max_cost_usd=g.max_llm_cost_per_action, refresh=False,
                     data_dir=self.data_dir,
                 )
@@ -569,7 +570,7 @@ class OperatorAgent:
             store, _, _ = self._load()
             try:
                 worker, cache = build_competitor_analyzer(
-                    mode="llm", store=store, model=g.model,
+                    mode=g.competition, store=store, model=g.model,
                     max_cost_usd=g.max_llm_cost_per_action, refresh=False,
                     data_dir=self.data_dir,
                 )

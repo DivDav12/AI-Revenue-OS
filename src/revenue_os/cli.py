@@ -695,8 +695,8 @@ def build_parser() -> argparse.ArgumentParser:
     ag_goal.add_argument("--evaluator", choices=("keyword", "llm"), default=None)
     ag_goal.add_argument("--planner", choices=("template", "llm"), default=None)
     ag_goal.add_argument("--proposer", choices=("template", "llm"), default=None)
-    ag_goal.add_argument("--research", choices=("off", "llm"), default=None)
-    ag_goal.add_argument("--competition", choices=("off", "llm"), default=None)
+    ag_goal.add_argument("--research", choices=("off", "llm", "web"), default=None)
+    ag_goal.add_argument("--competition", choices=("off", "llm", "web"), default=None)
     ag_goal.add_argument("--copywriter", choices=("off", "llm"), default=None)
     ag_goal.add_argument(
         "--trend-hunter", action=argparse.BooleanOptionalAction, default=None,

@@ -39,6 +39,7 @@ def entry_from(activity: str, worker) -> dict:
         "cache_hits": int(getattr(worker, "cache_hits", 0)),
         "cache_misses": int(getattr(worker, "cache_misses", 0)),
         "ceiling_hit": bool(getattr(worker, "ceiling_hit", False)),
+        "searches": int(getattr(meter, "searches", 0)),
     }
 
 
@@ -82,11 +83,12 @@ class LlmSpendLog:
 
     def summary(self) -> dict:
         by_activity = {a: 0.0 for a in _ACTIVITIES}
-        total_cost = total_calls = 0.0
+        total_cost = total_calls = total_searches = 0.0
         for e in self._entries:
             cost = float(e.get("cost_usd", 0.0))
             total_cost += cost
             total_calls += int(e.get("api_calls", 0))
+            total_searches += int(e.get("searches", 0))
             act = e.get("activity")
             if act in by_activity:
                 by_activity[act] = round(by_activity[act] + cost, 4)
@@ -94,5 +96,6 @@ class LlmSpendLog:
             "runs": len(self._entries),
             "total_cost_usd": round(total_cost, 4),
             "total_api_calls": int(total_calls),
+            "total_searches": int(total_searches),
             "by_activity": by_activity,
         }

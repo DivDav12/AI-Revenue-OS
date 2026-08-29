@@ -358,6 +358,23 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertIn(">win<", html)
         self.assertNotIn("://", html)
 
+    def test_web_grounded_notes_render_sources_scheme_stripped(self):
+        self.store.put(Candidate(
+            name="alpha", status="shortlisted", total=3.0, verdict="hold",
+            research={"verdict": "caution", "rationale": "crowded",
+                      "basis": "web search, 2 sources",
+                      "sources": [{"url": "https://zapier.com/pricing",
+                                   "title": "Zapier Pricing"}]},
+        ))
+        html = render_html(_report(self.store, self.d), _FIXED_TS,
+                           goal={"research": "web"})
+        self.assertIn("web search, 2 sources", html)
+        self.assertIn("zapier.com/pricing", html)
+        self.assertIn("Zapier Pricing", html)
+        self.assertNotIn("://", html)                 # scheme stripped
+        # the Product Researcher node shows web mode as enabled
+        self.assertIn("mode: web", html)
+
     def test_content_creator_node_lineage_and_candidate_line(self):
         self.store.put(Candidate(
             name="alpha", status="validated", total=3.0, verdict="hold",
