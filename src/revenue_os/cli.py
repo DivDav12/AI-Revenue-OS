@@ -4,6 +4,8 @@ Read commands:
   run              discovery cycle against a source, then print the report
                    (--evaluator llm opt-in; keyword heuristic by default)
   report           print the report only (no discovery)
+  discover-opportunities   find public "how do I get my first customer" posts
+                           (deterministic scoring; never posts or contacts anyone)
   digest [-q]      one-line summary of what needs the human
   agent-run        operator agent: one loop to a fixed point (also the cron primitive)
   agent-loop       operator agent: tick / sleep / repeat, bounded and resumable
@@ -147,6 +149,49 @@ def _cmd_run(args) -> int:
         store, revenue_ledger, spend_ledger, discovery_log,
         _llm_spend_log(data_dir), _llm_budget(data_dir),
     )))
+    return 0
+
+
+def _cmd_discover_opportunities(args) -> int:
+    from .acquisition import SEARCH_QUERIES, AcquisitionStore
+    from .acquisition_sources import build_acquisition_source
+    from .workflow import discover_acquisition_opportunities
+
+    data_dir = _data_dir(args)
+    source = build_acquisition_source(args.source, args.source_path)
+    queries = tuple(args.query) if args.query else SEARCH_QUERIES
+
+    store = AcquisitionStore.load(data_dir / "acquisition.json")
+    if args.dry_run:
+        store.save = lambda: None  # read existing (for dedup view) but never write
+
+    r = discover_acquisition_opportunities(
+        store, source, queries=queries, limit=args.limit,
+        min_score=args.min_score, politeness_delay=args.delay,
+    )
+
+    leads = r["leads"]
+    if args.json:
+        print(json.dumps(leads, indent=2))
+    else:
+        for d in leads:
+            print(f"  [{d['fit_score']:3}] {d['buying_intent']:6} "
+                  f"promo:{d['promo_allowed']:8} {d['platform']:16} "
+                  f"{d['title'][:70]}")
+            print(f"        {d['url']}")
+    for d in r["dropped"]:
+        print(f"  dropped: {d['title']} ({', '.join(d['reasons'])})")
+    for e in r["query_errors"]:
+        print(f"  query error {e['query']!r}: {e['error']}")
+    for src_name, err in sorted(set(getattr(source, "errors", []))):
+        print(f"  source unavailable: {src_name} ({err})")
+    tag = "(dry-run, nothing persisted) " if args.dry_run else ""
+    print(f"{tag}considered {r['considered']} - no match {r['no_match']} - "
+          f"collapsed {r['collapsed']} - dropped {len(r['dropped'])} - "
+          f"new {r['new']} - duplicates {r['duplicates']} - "
+          f"{len(leads)} in store")
+    print("Review each thread's own rules before replying. This tool never "
+          "posts or contacts anyone.")
     return 0
 
 
@@ -879,6 +924,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="reweight the criterion mean from recorded validation outcomes",
     )
     run.set_defaults(func=_cmd_run)
+
+    disco = sub.add_parser(
+        "discover-opportunities", parents=[common],
+        help="find public posts asking how to get their first paying customers",
+    )
+    disco.add_argument(
+        "--source", default="hn-algolia",
+        choices=("hn-algolia", "reddit", "both", "file", "static"),
+        help="public search source (default: hn-algolia; 'file'/'static' are offline)",
+    )
+    disco.add_argument("--source-path", default=None,
+                       help="JSON record file for --source file")
+    disco.add_argument("--query", action="append", default=None, metavar="TEXT",
+                       help="search query; repeat for several (default: built-in set)")
+    disco.add_argument("--limit", type=int, default=15, help="hits per query (max 50)")
+    disco.add_argument("--min-score", type=int, default=0,
+                       help="drop leads scoring below this (0-100)")
+    disco.add_argument("--delay", type=float, default=1.0,
+                       help="seconds between queries (politeness; default 1.0)")
+    disco.add_argument("--dry-run", action="store_true",
+                       help="fetch, score and print, but persist nothing")
+    disco.add_argument("--json", action="store_true", help="machine-readable output")
+    disco.set_defaults(func=_cmd_discover_opportunities)
 
     sub.add_parser("report", parents=[common], help="print the report only").set_defaults(
         func=_cmd_report

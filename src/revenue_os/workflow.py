@@ -467,6 +467,72 @@ def package_deliverables(store: CandidateStore, data_dir, *,
     return packaged
 
 
+def discover_acquisition_opportunities(store, source, *, queries, limit=15,
+                                      min_score=0, politeness_delay=1.0,
+                                      sink=None):
+    """Run each query against `source`, score the real posts it returns,
+    and persist the new leads (dedup by canonical_url).
+
+    Deterministic scoring, no LLM. Contacts no one. A query whose fetch
+    raises is recorded in `query_errors` and the rest continue. Returns a
+    summary dict; `leads` is the full store, ranked.
+    """
+    import time
+
+    from .acquisition import AcquisitionAgent
+
+    records: list = []
+    query_errors: list[dict] = []
+    for i, query in enumerate(queries):
+        if i and politeness_delay:
+            time.sleep(politeness_delay)
+        try:
+            records.extend(source.search(query, limit))
+        except Exception as exc:  # one bad fetch must not kill the run
+            logger.warning("acquisition search failed for %r: %s", query, exc)
+            query_errors.append({"query": query, "error": str(exc)})
+
+    orchestrator = Orchestrator(registry=AgentRegistry(), sink=sink)
+    orchestrator.register(AcquisitionAgent(name="acquisition_scout"))
+    orchestrator.add_task(Task(
+        objective="discover acquisition opportunities",
+        capability="discover_acquisition",
+        payload={"records": records, "min_score": min_score},
+    ))
+
+    scored: list[dict] = []
+    dropped: list[dict] = []
+    considered = collapsed = no_match = 0
+    for result in orchestrator.run_cycle():
+        if result.status != "ok":
+            logger.warning("acquisition scoring failed: %s", result.error)
+            continue
+        scored = result.output["leads"]
+        dropped = result.output["dropped"]
+        considered = result.output["considered"]
+        collapsed = result.output["collapsed"]
+        no_match = result.output["no_match"]
+
+    new = duplicates = 0
+    for lead in scored:
+        if store.add(lead):
+            new += 1
+        else:
+            duplicates += 1
+    store.save()
+
+    return {
+        "leads": store.ranked(),
+        "considered": considered,
+        "no_match": no_match,
+        "collapsed": collapsed,
+        "new": new,
+        "duplicates": duplicates,
+        "dropped": dropped,
+        "query_errors": query_errors,
+    }
+
+
 def draft_launch_plan(intake_store, revenue_ledger, worker, order_id: str, *,
                       sink=None):
     """Draft the Customer Launch Plan for ONE paid, human-reviewed intake.

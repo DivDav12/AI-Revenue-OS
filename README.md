@@ -1,6 +1,35 @@
 # AI-Revenue-OS
 Autonomous multi-agent AI revenue ecosystem
 
+## Acquisition Agent (`discover-opportunities`)
+
+Finds **public** posts where someone is explicitly asking how to get their
+first paying customers/clients/users - potential buyers of the Customer
+Launch Plan.
+
+```
+python -m revenue_os discover-opportunities --data-dir data \
+  [--source hn-algolia|reddit|both|file|static] [--query "phrase" ...] \
+  [--limit 15] [--min-score 0] [--dry-run] [--json]
+```
+
+- `acquisition_sources.py` isolates the I/O: `hn-algolia` and `reddit` hit
+  free, keyless public search APIs; `file`/`static` are offline. Default
+  source: `hn-algolia`.
+- `acquisition.py` scores each **real** post deterministically (no LLM, no
+  cost): intent-phrase weights + title bonus + recency -> `fit_score`
+  0-100, `buying_intent`, and an advisory `promo_allowed`
+  (`no|caution|likely|unknown`) with the reason.
+- Every stored field is copied verbatim from the API record or computed
+  from it - nothing is synthesised (missing author/timestamp stay empty).
+  Quality checks drop leads with no real URL, no title, a placeholder
+  host, or no intent match.
+- Leads are stored in `data/acquisition.json`, de-duplicated by canonical
+  URL, ranked by `fit_score`. Re-runs add only new threads.
+
+**It never posts, replies, or contacts anyone.** `promo_allowed` is a
+conservative hint; always read the community's own rules before replying.
+
 ## PayPal
 
 Read-only integration (`src/revenue_os/paypal.py`): it books payments PayPal
