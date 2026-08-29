@@ -318,11 +318,13 @@ class AgentGoalCliTests(unittest.TestCase):
     def test_agent_goal_sets_competition_and_copywriter(self):
         with tempfile.TemporaryDirectory() as d:
             code, _ = _run(["agent-goal", "--competition", "llm",
-                            "--copywriter", "llm", "--data-dir", d])
+                            "--copywriter", "llm", "--revenue-analyst",
+                            "--data-dir", d])
             self.assertEqual(code, 0)
             g = load_goal(d)
             self.assertEqual(g.competition, "llm")
             self.assertEqual(g.copywriter, "llm")
+            self.assertTrue(g.revenue_analyst)
 
 
 if __name__ == "__main__":

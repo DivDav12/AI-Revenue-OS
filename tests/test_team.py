@@ -58,10 +58,12 @@ class TeamTests(unittest.TestCase):
         self.assertEqual(
             names,
             {"evaluator", "opportunity_finder", "product_researcher",
-             "competitor_analyzer", "copywriter", "trend_hunter"},
+             "competitor_analyzer", "copywriter", "revenue_analyst",
+             "trend_hunter"},
         )
         for cap, name in (("analyze_competition", "competitor_analyzer"),
-                          ("write_copy", "copywriter")):
+                          ("write_copy", "copywriter"),
+                          ("analyze_revenue", "revenue_analyst")):
             self.assertEqual(
                 team.registry.find_for(_T(objective="x", capability=cap)).name, name
             )

@@ -227,8 +227,8 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertIn("class='node'", html)
         self.assertIn("class='wires'", html)
         # deterministic role positions (operator centre, discovery up top)
-        self.assertIn("left:50.0%;top:55.94%", html)   # operator
-        self.assertIn("left:50.0%;top:10.94%", html)   # discovery
+        self.assertIn("left:50.0%;top:51.14%", html)   # operator
+        self.assertIn("left:50.0%;top:10.0%", html)    # discovery
         # real links present
         self.assertIn("marker-end='url(#wa)'", html)
         # discover -> operator/discovery/evaluator lines exist; investigate did
@@ -326,6 +326,36 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertIn("Copywriter AI", html)                      # map node
         self.assertIn("x1='400' y1='358' x2='150' y2='560'", html)  # operator -> copywriter
         self.assertIn("Ship it in a weekend", html)               # candidate details
+        self.assertNotIn("://", html)
+
+    def test_revenue_analysis_panel_and_node_and_lineage(self):
+        empty = render_html(_report(self.store, self.d), _FIXED_TS)
+        self.assertIn("No revenue analysis yet.", empty)
+        task_log = [
+            {"ts": "1", "task_id": "r1", "parent_id": None, "depth": 0,
+             "capability": "analyze_revenue", "agent": "revenue_analyst",
+             "status": "ok", "summary": {}},
+        ]
+        html = render_html(
+            _report(self.store, self.d), _FIXED_TS,
+            agent_log=[{"ts": "0", "action": "analyze_revenue", "reason": "x"}],
+            task_log=task_log, goal={"revenue_analyst": True},
+            revenue_analysis={
+                "ts": "T",
+                "portfolio": {"revenue": 120.0, "spent": 10.0, "net": 110.0,
+                              "roi_ratio": 11.0, "launched": 1, "earning": 0},
+                "per_candidate": [{"name": "win", "status": "launched",
+                                   "revenue": 120.0, "spent": 10.0, "net": 110.0,
+                                   "roi_ratio": 11.0}],
+                "best": {"name": "win", "net": 110.0}, "worst": None,
+                "spend_efficiency": 11.0, "outcome_signal": "not enough outcomes yet",
+                "readout": "Portfolio: $120.0 revenue, $10.0 spent, $110.0 net.",
+            },
+        )
+        self.assertIn("Revenue Analyst", html)                          # map node
+        self.assertIn("x1='400' y1='358' x2='650' y2='660'", html)      # operator -> analyst
+        self.assertIn("Portfolio: $120.0 revenue", html)                # panel readout
+        self.assertIn(">win<", html)
         self.assertNotIn("://", html)
 
     def test_trends_panel_real_or_empty(self):

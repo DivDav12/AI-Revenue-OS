@@ -89,6 +89,19 @@ class DecideTests(unittest.TestCase):
             decide(obs, Goal(), discovery_exhausted=True).action, "stop"
         )
 
+    def test_analyze_revenue_needs_the_opt_in_and_real_revenue_or_spend(self):
+        g = Goal(revenue_analyst=True)
+        launched = _obs(counts={"launched": 1}, total=1, age=0,
+                        queue=[{"next_action": "record payment", "stale": False}])
+        self.assertEqual(decide(launched, g).action, "analyze_revenue")
+        # opt-in off -> never
+        self.assertNotEqual(decide(launched, Goal()).action, "analyze_revenue")
+        # nothing launched/earning and no spend -> not triggered
+        nothing = _obs(counts={"shortlisted": 3}, total=3, age=0,
+                       queue=[{"next_action": "approve or reject", "stale": False}])
+        self.assertEqual(decide(nothing, Goal(revenue_analyst=True, shortlist_n=3)).action,
+                         "stop")
+
     def test_write_copy_needs_an_offer_and_the_opt_in(self):
         with_offer = [{"status": "validated", "offer": {"price": 9}}]
         no_offer = [{"status": "validated", "offer": {}}]
@@ -201,6 +214,42 @@ class OperatorAgentTests(unittest.TestCase):
         self.assertNotIn("analyze_trends",
                          [s.decision.action for s in steps])
         self.assertFalse((self.d / "trend_report.json").exists())
+
+    def test_revenue_analyst_writes_report_crosses_no_gate_no_spend(self):
+        import json
+        from revenue_os.revenue import RevenueLedger, mark_launched, record_payment
+        from revenue_os.store import Candidate
+        from revenue_os.task_log import TaskLog
+
+        store = CandidateStore(self.d / "candidates.json")
+        store.put(Candidate(name="win", status="validated", offer={"price": 49.0}))
+        store.save()
+        mark_launched(store, "win", actor="h")
+        rev = RevenueLedger.load(self.d / "revenue.json")
+        record_payment(store, rev, "win", 120.0, actor="h")
+
+        steps = OperatorAgent(self.d, Goal(revenue_analyst=True)).run()
+        actions = [s.decision.action for s in steps]
+        self.assertIn("analyze_revenue", actions)
+        self.assertEqual(actions.count("analyze_revenue"), 1)     # _revenue_done
+        report = json.loads((self.d / "revenue_analysis.json").read_text())
+        self.assertEqual(report["portfolio"]["revenue"], 120.0)
+        self.assertEqual(report["best"]["name"], "win")
+        # deterministic -> no llm spend entry
+        self.assertFalse((self.d / "llm_spend.json").exists())
+        # task log carries the lineage
+        agents = {e["agent"] for e in TaskLog.load(self.d / "task_log.json").entries()}
+        self.assertIn("revenue_analyst", agents)
+        # gate: the candidate is where the human left it (a payment -> earning)
+        self.assertEqual(
+            CandidateStore.load(self.d / "candidates.json").get("win").status,
+            "earning",
+        )
+
+    def test_revenue_analyst_off_by_default(self):
+        steps = OperatorAgent(self.d, Goal()).run()
+        self.assertNotIn("analyze_revenue", [s.decision.action for s in steps])
+        self.assertFalse((self.d / "revenue_analysis.json").exists())
 
     def test_human_gated_capability_is_never_auto_executed(self):
         from revenue_os.operator import Decision

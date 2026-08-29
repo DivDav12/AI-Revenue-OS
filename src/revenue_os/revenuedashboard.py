@@ -103,7 +103,7 @@ section{background:var(--surface);border:1px solid var(--edge);border-radius:10p
   .rail{position:static;height:auto;display:flex;flex-wrap:wrap;gap:.3rem}
   .brand{width:100%}}
 
-.amap{position:relative;width:100%;max-width:960px;aspect-ratio:5/4;margin:.4rem auto 1.4rem;
+.amap{position:relative;width:100%;max-width:960px;aspect-ratio:8/7;margin:.4rem auto 1.4rem;
   overflow:visible}
 .wires{position:absolute;inset:0;width:100%;height:100%;overflow:visible;z-index:1}
 .wires line{stroke:var(--edge-hi);stroke-width:2;stroke-dasharray:5 6;opacity:.75}
@@ -259,13 +259,15 @@ _AVATARS = {
     "competitor": _svg('<circle cx="12" cy="12" r="8"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>'
                        '<circle cx="12" cy="12" r="2"/>'),
     "copywriter": _svg('<path d="M4 20h16"/><path d="m14 4 6 6-9 9H5v-6z"/>'),
+    "analyst": _svg('<path d="M4 20h16"/><path d="M7 16v-5M12 16V8M17 16v-3"/>'),
     "generic": _svg('<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2"/>'),
 }
 _ACCENT = {
     "operator": "#22d3ee", "discovery": "#38bdf8", "evaluator": "#a78bfa",
     "researcher": "#34d399", "planner": "#fbbf24", "offer": "#f472b6",
     "decision": "#f87171", "finder": "#5eead4", "trendhunter": "#c084fc",
-    "competitor": "#fb923c", "copywriter": "#facc15", "generic": "#94a3b8",
+    "competitor": "#fb923c", "copywriter": "#facc15", "analyst": "#4ade80",
+    "generic": "#94a3b8",
 }
 
 # llm_spend activity  ->  (node key, display name, role, Goal field, llm-mode value)
@@ -325,7 +327,7 @@ def _agent_card(*, key, name, role, status, task, meta) -> str:
 # (5:4 so the SVG wire layer scales uniformly with the positioned nodes)
 # ---------------------------------------------------------------------------
 
-_MAP_W, _MAP_H = 800, 640
+_MAP_W, _MAP_H = 800, 700
 _MAP_POS = {
     "discovery":   (400, 70),
     "researcher":  (150, 232),
@@ -334,6 +336,7 @@ _MAP_POS = {
     "finder":      (650, 400),
     "competitor":  (650, 560),
     "copywriter":  (150, 560),
+    "analyst":     (650, 660),
     "decision":    (120, 368),
     "operator":    (400, 358),
     "planner":     (400, 486),
@@ -349,7 +352,7 @@ def _pct(role: str) -> tuple[float, float]:
 def _wires(edges: list[tuple[str, str]], last_edge, edge_counts=None) -> str:
     if not edges:
         wires = (
-            "<svg viewBox='0 0 800 640' class='wires' preserveAspectRatio='xMidYMid meet'"
+            "<svg viewBox='0 0 800 700' class='wires' preserveAspectRatio='xMidYMid meet'"
             " aria-hidden='true'></svg>"
             "<div class='standby'>No active task links"
             "<span>Agents are standing by.</span></div>"
@@ -378,7 +381,7 @@ def _wires(edges: list[tuple[str, str]], last_edge, edge_counts=None) -> str:
         chip = (f"<div class='taskchip' style='left:{mx}%;top:{my}%'>"
                 f"{_esc(label)}</div>")
     return (
-        "<svg viewBox='0 0 800 640' class='wires' preserveAspectRatio='xMidYMid meet'"
+        "<svg viewBox='0 0 800 700' class='wires' preserveAspectRatio='xMidYMid meet'"
         " aria-hidden='true'>"
         "<defs><marker id='wa' viewBox='0 0 10 10' refX='8' refY='5' markerWidth='5'"
         " markerHeight='5' orient='auto'><path d='M0 0 L10 5 L0 10 z'/></marker></defs>"
@@ -455,6 +458,19 @@ def _agent_map(agent_log, spend_entries, goal, session, report,
               f"{last_trend.get('sources', 0)} source(s)" if trends
               else ("enabled" if goal.get("trend_hunter") else "off")),
         meta=[("runs", len(trends))],
+    )
+
+    ana = task_by_node.get("analyst", [])
+    if goal.get("revenue_analyst"):
+        a_status = "working" if (running and ana) else ("active" if ana else "idle")
+    else:
+        a_status = "disabled"
+    nodes["analyst"] = dict(
+        key="analyst", name="Revenue Analyst", role="ROI analysis",
+        status=a_status,
+        task=("portfolio analysed" if ana
+              else ("enabled" if goal.get("revenue_analyst") else "off")),
+        meta=[("runs", len(ana))],
     )
 
     # --- configurable workers -------------------------------------
@@ -647,7 +663,7 @@ _ACT_AGENT = {
     "discover": "discovery", "investigate": "planner", "analyze_trends": "trendhunter",
     "prepare_launch": "offer", "research": "researcher",
     "analyze_competition": "competitor", "write_copy": "copywriter",
-    "stop": "operator",
+    "analyze_revenue": "analyst", "stop": "operator",
 }
 
 # task_log agent name  ->  map node key
@@ -655,7 +671,7 @@ _TASK_AGENT_NODE = {
     "market_scanner": "discovery", "evaluator": "evaluator",
     "opportunity_finder": "finder", "product_researcher": "researcher",
     "competitor_analyzer": "competitor", "copywriter": "copywriter",
-    "trend_hunter": "trendhunter",
+    "revenue_analyst": "analyst", "trend_hunter": "trendhunter",
 }
 
 
@@ -752,6 +768,34 @@ def _trends(trend: dict | None) -> str:
         f"{_num(trend.get('runs', 0))} run(s)</p>"
         f"<p>sources: {srcs or '&mdash;'}</p>"
         f"<table><tr><th>keyword</th><th>n</th></tr>{kws}</table>"
+    )
+
+
+def _revenue_analysis(a: dict | None) -> str:
+    if not a:
+        return "<p class='muted'>No revenue analysis yet.</p>"
+    p = a.get("portfolio", {})
+    rows = "".join(
+        f"<tr><td>{_esc(r['name'])}</td><td>{_esc(r['status'])}</td>"
+        f"<td class='num'>{_num(r['revenue'])}</td>"
+        f"<td class='num'>{_num(r['spent'])}</td>"
+        f"<td class='num'>{_num(r['net'])}</td></tr>"
+        for r in a.get("per_candidate", [])
+    ) or "<tr><td class='muted' colspan='5'>no candidates with revenue or spend</td></tr>"
+    best = a.get("best")
+    worst = a.get("worst")
+    return (
+        f"<p class='muted mono'>{_esc(a.get('ts', ''))}</p>"
+        f"<p>{_esc(a.get('readout', ''))}</p>"
+        f"<p class='muted'>portfolio net <b>{_num(p.get('net', 0))}</b>"
+        + (f" &middot; efficiency {_num(a['spend_efficiency'])}"
+           if a.get('spend_efficiency') is not None else "")
+        + (f" &middot; best {_esc(best['name'])} (${_num(best['net'])})" if best else "")
+        + (f" &middot; worst {_esc(worst['name'])} (${_num(worst['net'])})" if worst else "")
+        + "</p>"
+        f"<p class='muted'>outcome signal: {_esc(a.get('outcome_signal', ''))}</p>"
+        f"<table><tr><th>candidate</th><th>status</th><th>revenue</th>"
+        f"<th>spent</th><th>net</th></tr>{rows}</table>"
     )
 
 
@@ -996,7 +1040,8 @@ def render_html(report: dict, generated_at: str, *,
                 spend_entries: list[dict] | None = None,
                 goal: dict | None = None,
                 task_log: list[dict] | None = None,
-                trend: dict | None = None) -> str:
+                trend: dict | None = None,
+                revenue_analysis: dict | None = None) -> str:
     """Build the full standalone command-center HTML document."""
     queue = report["action_queue"]
     body = (
@@ -1033,6 +1078,8 @@ def render_html(report: dict, generated_at: str, *,
         + _last_discovery(report.get("last_discovery")) + "</section>"
         + "<section><h2>Revenue / ROI</h2>"
         + _roi(report["roi"], report, goal) + "</section>"
+        + "<section><h2>Revenue analysis</h2>"
+        + _revenue_analysis(revenue_analysis) + "</section>"
         + "<section><h2>Candidates</h2>"
         + _candidates(report.get("candidates", [])) + "</section>"
         + "</main>"

@@ -17,6 +17,7 @@ from .opportunity_finder import OpportunityFinderAgent
 from .orchestrator import Orchestrator
 from .registry import AgentRegistry
 from .research import ResearchAgent
+from .revenue_analyst import RevenueAnalystAgent
 from .trend import TrendHunterAgent
 
 # roster id -> registered agent name (kept in sync with roster.py nodes)
@@ -26,6 +27,7 @@ OPPORTUNITY_FINDER = "opportunity_finder"
 PRODUCT_RESEARCHER = "product_researcher"
 COMPETITOR_ANALYZER = "competitor_analyzer"
 COPYWRITER = "copywriter"
+REVENUE_ANALYST = "revenue_analyst"
 TREND_HUNTER = "trend_hunter"
 
 
@@ -42,5 +44,6 @@ def build_team(*, source=None, normalizer=to_opportunity, sink=None) -> Orchestr
     registry.register(ResearchAgent(name=PRODUCT_RESEARCHER))
     registry.register(CompetitorAnalyzerAgent(name=COMPETITOR_ANALYZER))
     registry.register(CopywriterAgent(name=COPYWRITER))
+    registry.register(RevenueAnalystAgent(name=REVENUE_ANALYST))
     registry.register(TrendHunterAgent(name=TREND_HUNTER))
     return Orchestrator(registry=registry, sink=sink)

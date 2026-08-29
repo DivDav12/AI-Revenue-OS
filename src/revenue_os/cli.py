@@ -213,6 +213,8 @@ def _cmd_agent_goal(args) -> int:
         updates["copywriter"] = args.copywriter
     if args.trend_hunter is not None:
         updates["trend_hunter"] = args.trend_hunter
+    if args.revenue_analyst is not None:
+        updates["revenue_analyst"] = args.revenue_analyst
     if args.decision_policy is not None:
         updates["decision_policy"] = args.decision_policy
     if args.model is not None:
@@ -373,8 +375,10 @@ def _write_dashboard(data_dir: Path, out: Path | None = None) -> Path:
         store, revenue_ledger, spend_ledger,
         _discovery_log(data_dir), _llm_spend_log(data_dir), _llm_budget(data_dir),
     )
-    trend_path = data_dir / "trend_report.json"
-    trend = json.loads(trend_path.read_text(encoding="utf-8")) if trend_path.exists() else None
+    def _load_json(name):
+        p = data_dir / name
+        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
+
     html = render_html(
         report, generated_at=now_iso(),
         agent_log=AgentLog.load(data_dir / "agent_log.json").entries(),
@@ -382,7 +386,8 @@ def _write_dashboard(data_dir: Path, out: Path | None = None) -> Path:
         spend_entries=_llm_spend_log(data_dir).entries(),
         goal=load_goal(data_dir).to_dict(),
         task_log=load_task_log(data_dir).entries(),
-        trend=trend,
+        trend=_load_json("trend_report.json"),
+        revenue_analysis=_load_json("revenue_analysis.json"),
     )
     out = out or data_dir / "dashboard.html"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -674,6 +679,10 @@ def build_parser() -> argparse.ArgumentParser:
     ag_goal.add_argument(
         "--trend-hunter", action=argparse.BooleanOptionalAction, default=None,
         help="deterministic trend analysis over the candidate corpus",
+    )
+    ag_goal.add_argument(
+        "--revenue-analyst", action=argparse.BooleanOptionalAction, default=None,
+        help="deterministic portfolio ROI analysis over the ledgers",
     )
     ag_goal.add_argument("--decision-policy", choices=("rules", "llm"), default=None)
     ag_goal.add_argument("--model", default=None, help="model for the llm workers")

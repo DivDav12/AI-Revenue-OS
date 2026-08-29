@@ -62,8 +62,8 @@ from .workflow import (
     write_copy_for_validated,
 )
 
-_ACTIONS = ("discover", "research", "analyze_competition", "analyze_trends",
-            "investigate", "prepare_launch", "write_copy", "stop")
+_ACTIONS = ("discover", "research", "analyze_competition", "analyze_revenue",
+            "analyze_trends", "investigate", "prepare_launch", "write_copy", "stop")
 _TREND_MIN_CANDIDATES = 3
 
 
@@ -78,6 +78,7 @@ class Goal:
     target_validated: int | None = None
     discovery_stale_days: int = STALE_AFTER_DAYS
     trend_hunter: bool = False           # opt-in deterministic trend analysis
+    revenue_analyst: bool = False        # opt-in deterministic portfolio ROI read
     # opt-in LLM leaf workers (deterministic by default)
     evaluator: str = "keyword"          # keyword | llm
     planner: str = "template"           # template | llm
@@ -101,6 +102,7 @@ class Goal:
             "target_validated": self.target_validated,
             "discovery_stale_days": self.discovery_stale_days,
             "trend_hunter": self.trend_hunter,
+            "revenue_analyst": self.revenue_analyst,
             "evaluator": self.evaluator,
             "planner": self.planner,
             "proposer": self.proposer,
@@ -125,6 +127,7 @@ class Goal:
             target_validated=d.get("target_validated"),
             discovery_stale_days=int(d.get("discovery_stale_days", STALE_AFTER_DAYS)),
             trend_hunter=bool(d.get("trend_hunter", False)),
+            revenue_analyst=bool(d.get("revenue_analyst", False)),
             evaluator=d.get("evaluator", "keyword"),
             planner=d.get("planner", "template"),
             proposer=d.get("proposer", "template"),
@@ -262,11 +265,20 @@ def _needs_copy(report: dict) -> int:
     )
 
 
+def _has_revenue_or_spend(report: dict) -> bool:
+    counts = report["status_counts"]
+    if counts.get("launched", 0) or counts.get("earning", 0):
+        return True
+    roi = report.get("roi") or {}
+    return bool(roi.get("grand_spent", 0.0)) or bool(roi.get("grand_revenue", 0.0))
+
+
 def decide(
     obs: dict, goal: Goal, *,
     discovery_exhausted: bool = False, llm_capped: bool = False,
     research_done: bool = False, competition_done: bool = False,
-    copy_done: bool = False, trend_done: bool = False, policy=None,
+    copy_done: bool = False, revenue_done: bool = False,
+    trend_done: bool = False, policy=None,
 ) -> Decision:
     """Pure: pick the next non-human action from the observed state."""
     report = obs["report"]
@@ -330,6 +342,12 @@ def decide(
                 {"uncompeted": uncompeted},
             )
 
+    if goal.revenue_analyst and not revenue_done and _has_revenue_or_spend(report):
+        return Decision(
+            "analyze_revenue",
+            "portfolio has recorded revenue or spend to analyse",
+        )
+
     total = report["totals"]["candidates"]
     if not discovery_exhausted:
         if total == 0 or age is None:
@@ -371,6 +389,7 @@ class OperatorAgent:
         self._research_done = False
         self._competition_done = False
         self._copy_done = False
+        self._revenue_done = False
         self._trend_done = False
 
     # --- state -----------------------------------------------------------
@@ -475,6 +494,32 @@ class OperatorAgent:
             return {"keywords": len(report.get("keywords", [])),
                     "sources": len(report.get("sources", {})),
                     "candidates": report.get("count", 0)}
+
+        if decision.action == "analyze_revenue":
+            obs_report = self.observe().get("report")
+            team = build_team(sink=tlog.record)
+            team.add_task(Task(
+                objective="analyze revenue",
+                capability="analyze_revenue",
+                payload={
+                    "roi": obs_report["roi"],
+                    "outcomes": obs_report.get("outcomes", {}),
+                    "candidates": obs_report.get("candidates", []),
+                },
+            ))
+            analysis = team.run_cycle()[0].output
+            tlog.save()
+            _atomic_write(
+                self.data_dir / "revenue_analysis.json",
+                json.dumps(
+                    {**analysis, "ts": datetime.now(timezone.utc).isoformat()},
+                    indent=2,
+                ),
+            )
+            self._revenue_done = True
+            p = analysis["portfolio"]
+            return {"revenue": p["revenue"], "net": p["net"],
+                    "candidates": len(analysis["per_candidate"])}
 
         if decision.action == "research":
             store, _, _ = self._load()
@@ -613,6 +658,7 @@ class OperatorAgent:
             research_done=self._research_done,
             competition_done=self._competition_done,
             copy_done=self._copy_done,
+            revenue_done=self._revenue_done,
             trend_done=self._trend_done,
             policy=policy,
         )
@@ -656,6 +702,7 @@ class OperatorAgent:
         self._research_done = False
         self._competition_done = False
         self._copy_done = False
+        self._revenue_done = False
         self._trend_done = False
         steps: list[AgentStep] = []
         for _ in range(max(1, max_cycles)):

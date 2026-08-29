@@ -80,7 +80,7 @@ AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec("profit_master", "Profit Master", "revenue", "Margin control",
               "manage_profit", node="evaluator"),
     AgentSpec("revenue_analyst", "Revenue Analyst", "revenue", "ROI analysis",
-              "analyze_revenue", node="evaluator"),
+              "analyze_revenue", node="analyst", status="live"),
     # --- support / quality cluster ---------------------------------
     AgentSpec("customer_support", "Customer Support", "support", "Customer help",
               "support_customers", node="generic"),
