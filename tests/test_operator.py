@@ -89,6 +89,30 @@ class DecideTests(unittest.TestCase):
             decide(obs, Goal(), discovery_exhausted=True).action, "stop"
         )
 
+    def test_write_copy_needs_an_offer_and_the_opt_in(self):
+        with_offer = [{"status": "validated", "offer": {"price": 9}}]
+        no_offer = [{"status": "validated", "offer": {}}]
+        g = Goal(copywriter="llm")
+        self.assertEqual(
+            decide(_obs(counts={"validated": 1}, candidates=with_offer, age=0), g).action,
+            "write_copy",
+        )
+        self.assertEqual(
+            decide(_obs(counts={"validated": 1}, candidates=no_offer, age=0), g).action,
+            "prepare_launch",
+        )
+        self.assertNotEqual(
+            decide(_obs(counts={"validated": 1}, candidates=with_offer, age=0),
+                   Goal()).action,
+            "write_copy",
+        )
+        drafted = [{"status": "validated", "offer": {"price": 9},
+                    "launch_draft": {"headline": "h"}}]
+        self.assertNotEqual(
+            decide(_obs(counts={"validated": 1}, candidates=drafted, age=0), g).action,
+            "write_copy",
+        )
+
 
 class OperatorAgentTests(unittest.TestCase):
     def setUp(self):

@@ -51,21 +51,20 @@ class TeamTests(unittest.TestCase):
             self.assertEqual(out.agent, "opportunity_finder")
             self.assertEqual(len(out.output["shortlist"]), 2)
 
-    def test_team_registers_the_five_discovery_agents(self):
+    def test_team_registers_the_live_agents(self):
         from revenue_os.messages import Task as _T
         team = build_team()
         names = {a.name for a in team.registry.agents}
         self.assertEqual(
             names,
             {"evaluator", "opportunity_finder", "product_researcher",
-             "competitor_analyzer", "trend_hunter"},
+             "competitor_analyzer", "copywriter", "trend_hunter"},
         )
-        self.assertEqual(
-            team.registry.find_for(
-                _T(objective="c", capability="analyze_competition")
-            ).name,
-            "competitor_analyzer",
-        )
+        for cap, name in (("analyze_competition", "competitor_analyzer"),
+                          ("write_copy", "copywriter")):
+            self.assertEqual(
+                team.registry.find_for(_T(objective="x", capability=cap)).name, name
+            )
 
     def test_no_then_keeps_discovery_inert(self):
         team = build_team(source=build_source("static"))

@@ -18,11 +18,11 @@ class RosterTests(unittest.TestCase):
         self.assertEqual(len({a.id for a in roster.AGENTS}), 21)
         self.assertEqual(len({a.capability for a in roster.AGENTS}), 21)
 
-    def test_live_agents_are_the_implemented_discovery_workers(self):
+    def test_live_agents_are_the_implemented_workers(self):
         self.assertEqual(
             {a.id for a in roster.live()},
             {"market_scanner", "opportunity_finder", "product_researcher",
-             "competitor_analyzer", "trend_hunter"},
+             "competitor_analyzer", "trend_hunter", "copywriter"},
         )
         for a in roster.planned():
             self.assertEqual(a.status, "planned")
@@ -33,6 +33,7 @@ class RosterTests(unittest.TestCase):
         self.assertEqual(roster.by_capability("analyze_trends").id, "trend_hunter")
         self.assertEqual(roster.by_capability("analyze_competition").id,
                          "competitor_analyzer")
+        self.assertEqual(roster.by_capability("write_copy").id, "copywriter")
         self.assertIsNone(roster.get("nope"))
 
     def test_money_touching_clusters_are_human_gated(self):

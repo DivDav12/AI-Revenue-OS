@@ -113,12 +113,14 @@ class LlmSpendLogTests(unittest.TestCase):
         self.assertEqual(s["by_activity"]["plan"], 0.0)
         self.assertEqual(s["by_activity"]["competition"], 0.0)
 
-    def test_competition_is_a_valid_activity(self):
+    def test_competition_and_copy_are_valid_activities(self):
         log = LlmSpendLog.load(self.path)
         log.add(entry_from("competition", _FakeWorker()))
+        log.add(entry_from("copy", _FakeWorker()))
         log.save()
-        self.assertIn("competition",
-                      {e["activity"] for e in LlmSpendLog.load(self.path).entries()})
+        acts = {e["activity"] for e in LlmSpendLog.load(self.path).entries()}
+        self.assertIn("competition", acts)
+        self.assertIn("copy", acts)
 
     def test_corrupt_and_non_list_raise(self):
         self.path.write_text("{nope", encoding="utf-8")

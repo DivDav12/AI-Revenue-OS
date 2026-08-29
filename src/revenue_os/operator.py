@@ -32,6 +32,7 @@ from .llm_spend import LlmSpendLog
 from .decide_llm import summarize_for_decision
 from .llm_workers import (
     build_competitor_analyzer,
+    build_copywriter,
     build_decider,
     build_evaluator,
     build_planner,
@@ -58,10 +59,11 @@ from .workflow import (
     prepare_launch,
     research_shortlisted,
     run_discovery_cycle,
+    write_copy_for_validated,
 )
 
 _ACTIONS = ("discover", "research", "analyze_competition", "analyze_trends",
-            "investigate", "prepare_launch", "stop")
+            "investigate", "prepare_launch", "write_copy", "stop")
 _TREND_MIN_CANDIDATES = 3
 
 
@@ -82,6 +84,7 @@ class Goal:
     proposer: str = "template"          # template | llm
     research: str = "off"               # off | llm
     competition: str = "off"            # off | llm
+    copywriter: str = "off"             # off | llm
     decision_policy: str = "rules"      # rules | llm
     model: str = "claude-sonnet-5"
     max_llm_cost_per_action: float = 0.5
@@ -103,6 +106,7 @@ class Goal:
             "proposer": self.proposer,
             "research": self.research,
             "competition": self.competition,
+            "copywriter": self.copywriter,
             "decision_policy": self.decision_policy,
             "model": self.model,
             "max_llm_cost_per_action": self.max_llm_cost_per_action,
@@ -126,6 +130,7 @@ class Goal:
             proposer=d.get("proposer", "template"),
             research=d.get("research", "off"),
             competition=d.get("competition", "off"),
+            copywriter=d.get("copywriter", "off"),
             decision_policy=d.get("decision_policy", "rules"),
             model=d.get("model", "claude-sonnet-5"),
             max_llm_cost_per_action=float(d.get("max_llm_cost_per_action", 0.5)),
@@ -136,7 +141,8 @@ class Goal:
     def uses_llm(self) -> bool:
         return "llm" in (
             self.evaluator, self.planner, self.proposer,
-            self.research, self.competition, self.decision_policy,
+            self.research, self.competition, self.copywriter,
+            self.decision_policy,
         )
 
 
@@ -248,11 +254,19 @@ def _uncompeted_shortlisted(report: dict) -> int:
     )
 
 
+def _needs_copy(report: dict) -> int:
+    return sum(
+        1 for c in report.get("candidates", [])
+        if c["status"] == "validated" and c.get("offer")
+        and not c.get("launch_draft")
+    )
+
+
 def decide(
     obs: dict, goal: Goal, *,
     discovery_exhausted: bool = False, llm_capped: bool = False,
     research_done: bool = False, competition_done: bool = False,
-    trend_done: bool = False, policy=None,
+    copy_done: bool = False, trend_done: bool = False, policy=None,
 ) -> Decision:
     """Pure: pick the next non-human action from the observed state."""
     report = obs["report"]
@@ -288,6 +302,15 @@ def decide(
             f"{no_offer} validated candidate(s) without an offer",
             {"validated_without_offer": no_offer},
         )
+
+    if goal.copywriter == "llm" and not copy_done:
+        needs_copy = _needs_copy(report)
+        if needs_copy > 0:
+            return Decision(
+                "write_copy",
+                f"{needs_copy} validated candidate(s) need launch copy",
+                {"needs_copy": needs_copy},
+            )
 
     if goal.research == "llm" and not research_done:
         unresearched = _unresearched_shortlisted(report)
@@ -347,6 +370,7 @@ class OperatorAgent:
         self._llm_capped = False
         self._research_done = False
         self._competition_done = False
+        self._copy_done = False
         self._trend_done = False
 
     # --- state -----------------------------------------------------------
@@ -495,6 +519,28 @@ class OperatorAgent:
             return {"analyzed": len(analysed),
                     "llm_cost": round(worker.meter.cost_usd, 4)}
 
+        if decision.action == "write_copy":
+            store, _, _ = self._load()
+            try:
+                worker, cache = build_copywriter(
+                    mode="llm", store=store, model=g.model,
+                    max_cost_usd=g.max_llm_cost_per_action, refresh=False,
+                    data_dir=self.data_dir,
+                )
+            except ValueError as exc:
+                self._llm_capped = True
+                tlog.save()
+                return {"skipped": str(exc)}
+            drafted = write_copy_for_validated(store, worker, sink=tlog.record)
+            if cache is not None:
+                cache.save()
+            tlog.save()
+            record_llm_spend(self.data_dir, "copy", worker)
+            if not drafted:
+                self._copy_done = True
+            return {"drafted": len(drafted),
+                    "llm_cost": round(worker.meter.cost_usd, 4)}
+
         if decision.action == "investigate":
             store, _, _ = self._load()
             planner, cache = plan_validation, None
@@ -566,6 +612,7 @@ class OperatorAgent:
             llm_capped=self._llm_capped,
             research_done=self._research_done,
             competition_done=self._competition_done,
+            copy_done=self._copy_done,
             trend_done=self._trend_done,
             policy=policy,
         )
@@ -608,6 +655,7 @@ class OperatorAgent:
         self._llm_capped = False
         self._research_done = False
         self._competition_done = False
+        self._copy_done = False
         self._trend_done = False
         steps: list[AgentStep] = []
         for _ in range(max(1, max_cycles)):

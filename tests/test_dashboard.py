@@ -306,6 +306,28 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertIn("competition: crowded", html)         # candidate details
         self.assertNotIn("://", html)
 
+    def test_copywriter_node_and_lineage_and_headline(self):
+        self.store.put(Candidate(
+            name="alpha", status="validated", total=3.0, verdict="hold",
+            offer={"what_is_sold": "x", "price": 49.0},
+            launch_draft={"headline": "Ship it in a weekend",
+                          "primary_cta": "Buy now", "basis": "model draft, not published"},
+        ))
+        task_log = [
+            {"ts": "1", "task_id": "k1", "parent_id": None, "depth": 0,
+             "capability": "write_copy", "agent": "copywriter",
+             "status": "ok", "summary": {"candidate_name": "alpha"}},
+        ]
+        html = render_html(
+            _report(self.store, self.d), _FIXED_TS,
+            agent_log=[{"ts": "0", "action": "write_copy", "reason": "x"}],
+            task_log=task_log, goal={"copywriter": "llm"},
+        )
+        self.assertIn("Copywriter AI", html)                      # map node
+        self.assertIn("x1='400' y1='358' x2='150' y2='560'", html)  # operator -> copywriter
+        self.assertIn("Ship it in a weekend", html)               # candidate details
+        self.assertNotIn("://", html)
+
     def test_trends_panel_real_or_empty(self):
         empty = render_html(_report(self.store, self.d), _FIXED_TS)
         self.assertIn("No trend analysis yet.", empty)

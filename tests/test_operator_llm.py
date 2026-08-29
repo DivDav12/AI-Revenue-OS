@@ -35,6 +35,15 @@ _PAYLOADS = {
         "differentiation_angle": "vertical templates", "saturation": "high",
         "verdict": "crowded", "rationale": "mature category",
     },
+    "record_launch_copy": {
+        "headline": "Ship it in a weekend", "subheadline": "for solo builders",
+        "body": "one\n\ntwo\n\nthree", "primary_cta": "Buy now and download instantly.",
+        "faq": [
+            {"question": "price?", "answer": "$49"},
+            {"question": "delivery?", "answer": "instant download"},
+            {"question": "refund?", "answer": "yes, 14 days"},
+        ],
+    },
 }
 
 
@@ -222,6 +231,36 @@ class OperatorLlmTests(unittest.TestCase):
         store = CandidateStore.load(self.d / "candidates.json")
         self.assertTrue(all(c.competition == {} for c in store.all()))
 
+    def test_copywriter_drafts_validated_offer_and_crosses_no_gate(self):
+        goal = Goal(evaluator="llm", proposer="llm", copywriter="llm")
+        with mock.patch("revenue_os.llm_normalize.build_client", return_value=_FakeClient()):
+            OperatorAgent(self.d, goal).run()
+            store = CandidateStore.load(self.d / "candidates.json")
+            name = next(c.name for c in store.all() if c.status == "shortlisted")
+            record_decision(store, name, "approve", approver="h")
+            OperatorAgent(self.d, goal).run()
+            store = CandidateStore.load(self.d / "candidates.json")
+            record_validation_outcome(store, name, "validated",
+                                      metric_value="ok", actor="h")
+            steps = OperatorAgent(self.d, goal).run()
+        c = CandidateStore.load(self.d / "candidates.json").get(name)
+        self.assertEqual(c.status, "validated")            # gate not crossed
+        self.assertTrue(c.offer)
+        self.assertEqual(c.launch_draft["headline"], "Ship it in a weekend")
+        self.assertEqual(len(c.launch_draft["faq"]), 3)
+        actions = [s.decision.action for s in steps]
+        self.assertIn("write_copy", actions)
+        self.assertEqual(actions.count("write_copy"), 1)   # _copy_done stops it
+        self.assertIn("copy", {e["activity"] for e in self._spend()})
+        import json
+        tl = json.loads((self.d / "task_log.json").read_text())
+        self.assertIn("copywriter", {e["agent"] for e in tl})
+
+    def test_copywriter_default_off(self):
+        OperatorAgent(self.d, Goal()).run()
+        store = CandidateStore.load(self.d / "candidates.json")
+        self.assertTrue(all(c.launch_draft == {} for c in store.all()))
+
     def test_research_cap_exhaustion_stops(self):
         log = LlmSpendLog(self.d / "llm_spend.json")
         log.add({"activity": "research", "cost_usd": 5.0, "api_calls": 1})
@@ -276,11 +315,14 @@ class AgentGoalCliTests(unittest.TestCase):
             self.assertEqual(g.planner, "llm")
             self.assertEqual(g.model, "claude-opus-5")
 
-    def test_agent_goal_sets_competition(self):
+    def test_agent_goal_sets_competition_and_copywriter(self):
         with tempfile.TemporaryDirectory() as d:
-            code, _ = _run(["agent-goal", "--competition", "llm", "--data-dir", d])
+            code, _ = _run(["agent-goal", "--competition", "llm",
+                            "--copywriter", "llm", "--data-dir", d])
             self.assertEqual(code, 0)
-            self.assertEqual(load_goal(d).competition, "llm")
+            g = load_goal(d)
+            self.assertEqual(g.competition, "llm")
+            self.assertEqual(g.copywriter, "llm")
 
 
 if __name__ == "__main__":

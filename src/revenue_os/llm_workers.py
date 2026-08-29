@@ -157,6 +157,36 @@ def build_competitor_analyzer(*, mode: str, store, model: str, max_cost_usd: flo
     return worker, cache
 
 
+def build_copywriter(*, mode: str, store, model: str, max_cost_usd: float,
+                     refresh: bool, data_dir):
+    """Return (worker, cache). 'off' -> (None, None)."""
+    if mode == "off":
+        return None, None
+
+    from .llm_cache import LlmCache
+    from .llm_normalize import build_client
+    from .copywriter import CopywriterWorker, estimate_copy_cost_usd
+
+    data_dir = Path(data_dir)
+    pairs = [
+        (c, dict(c.offer)) for c in store.all()
+        if c.status == "validated" and c.offer and not c.launch_draft
+    ]
+    cache = LlmCache.load(data_dir / "llm_copy_cache.json")
+    est = estimate_copy_cost_usd(pairs, model, cache=None if refresh else cache)
+    if est > max_cost_usd:
+        raise ValueError(
+            f"estimated copy cost ${est} exceeds the ${max_cost_usd} ceiling; "
+            "nothing was drafted"
+        )
+    ceiling = budget_gate(data_dir, est, max_cost_usd)
+    worker = CopywriterWorker(
+        client=build_client(), model=model, max_cost_usd=ceiling,
+        cache=cache, refresh=refresh,
+    )
+    return worker, cache
+
+
 def build_decider(*, mode: str, model: str, max_cost_usd: float, data_dir):
     """Return an LlmDecisionPolicy, or None for the deterministic 'rules'
     policy. Raises ValueError if the cumulative cap is already exhausted."""

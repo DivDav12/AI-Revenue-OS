@@ -366,3 +366,46 @@ def analyze_competition_shortlisted(store: CandidateStore, worker, *,
             analysed.append(updated)
     store.save()
     return analysed
+
+
+def write_copy_for_validated(store: CandidateStore, worker, *,
+                             sink=None) -> list[Candidate]:
+    """Dispatch a write_copy task per validated candidate that has an
+    offer and no launch draft, through the Orchestrator to a
+    CopywriterAgent, and attach each draft.
+
+    Idempotent: candidates that already have a draft are skipped. A failed
+    draft leaves that candidate un-drafted for a later retry. `sink` (a
+    TaskLog.record) receives each dispatched task. Returns the candidates
+    drafted this call. Crosses no gate - status is unchanged.
+    """
+    from .copywriter import CopywriterAgent
+
+    pending = [
+        c for c in store.all()
+        if c.status == "validated" and c.offer and not c.launch_draft
+    ]
+    if not pending:
+        return []
+
+    orchestrator = Orchestrator(registry=AgentRegistry(), sink=sink)
+    orchestrator.register(CopywriterAgent(name="copywriter"))
+    for cand in pending:
+        orchestrator.add_task(Task(
+            objective=f"copy: {cand.name}",
+            capability="write_copy",
+            payload={"candidate": cand, "offer": dict(cand.offer), "worker": worker},
+        ))
+
+    drafted: list[Candidate] = []
+    for result in orchestrator.run_cycle():
+        if result.status != "ok":
+            logger.warning("copywriting failed: %s", result.error)
+            continue
+        cand = store.get(result.output["candidate_name"])
+        if cand is not None:
+            updated = replace(cand, launch_draft=dict(result.output["launch_draft"]))
+            store.put(updated)
+            drafted.append(updated)
+    store.save()
+    return drafted

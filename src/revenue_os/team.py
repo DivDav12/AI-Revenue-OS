@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from .agent import DiscoveryAgent, EvaluatorAgent
 from .competition import CompetitorAnalyzerAgent
+from .copywriter import CopywriterAgent
 from .normalize import to_opportunity
 from .opportunity_finder import OpportunityFinderAgent
 from .orchestrator import Orchestrator
@@ -24,6 +25,7 @@ EVALUATOR = "evaluator"
 OPPORTUNITY_FINDER = "opportunity_finder"
 PRODUCT_RESEARCHER = "product_researcher"
 COMPETITOR_ANALYZER = "competitor_analyzer"
+COPYWRITER = "copywriter"
 TREND_HUNTER = "trend_hunter"
 
 
@@ -39,5 +41,6 @@ def build_team(*, source=None, normalizer=to_opportunity, sink=None) -> Orchestr
     registry.register(OpportunityFinderAgent(name=OPPORTUNITY_FINDER))
     registry.register(ResearchAgent(name=PRODUCT_RESEARCHER))
     registry.register(CompetitorAnalyzerAgent(name=COMPETITOR_ANALYZER))
+    registry.register(CopywriterAgent(name=COPYWRITER))
     registry.register(TrendHunterAgent(name=TREND_HUNTER))
     return Orchestrator(registry=registry, sink=sink)

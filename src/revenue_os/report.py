@@ -109,6 +109,7 @@ def pipeline_report(
             "offer": dict(cand.offer),
             "research": dict(cand.research),
             "competition": dict(cand.competition),
+            "launch_draft": dict(cand.launch_draft),
         }
         for cand in candidates
     ]
@@ -300,6 +301,13 @@ def render_candidate(candidate: Candidate) -> str:
     if candidate.competition:
         for key in sorted(candidate.competition):
             lines.append(f"    {key}: {candidate.competition[key]}")
+    else:
+        lines.append("    (none)")
+
+    lines.append("  launch copy")
+    if candidate.launch_draft:
+        lines.append(f"    headline: {candidate.launch_draft.get('headline', '')}")
+        lines.append(f"    cta: {candidate.launch_draft.get('primary_cta', '')}")
     else:
         lines.append("    (none)")
 
