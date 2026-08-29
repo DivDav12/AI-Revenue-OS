@@ -204,6 +204,7 @@ def _intake_form(candidate: str, *, form_action: str, form_id: str,
         f"<input type='hidden' name='candidate' value='{_esc(candidate)}'>\n"
         "<input type='hidden' name='order_id' value=''>\n"
         "<input type='hidden' name='capture_id' value=''>\n"
+        "<input type='hidden' name='lead_id' value=''>\n"
         + render_intake_fields()
         + f"\n<button type='submit'>{_esc(submit)}</button>\n</form>\n"
     )
@@ -278,6 +279,9 @@ def render_checkout_html(candidate: dict, offer: dict, *,
         "      if (form) {\n"
         "        form.querySelector(\"[name='order_id']\").value = data.orderID;\n"
         "        form.querySelector(\"[name='capture_id']\").value = cap;\n"
+        "        var lf = form.querySelector(\"[name='lead_id']\");\n"
+        "        if (lf) lf.value = (new URLSearchParams(location.search).get('lead')"
+        " || '').replace(/[^A-Za-z0-9_-]/g, '');\n"
         "        document.getElementById('intake').classList.remove('hidden');\n"
         "        document.getElementById('intake').scrollIntoView();\n"
         "        box.innerHTML = 'Payment received (order <code>' + oid + '</code>)."
@@ -353,7 +357,7 @@ def render_checkout_html(candidate: dict, offer: dict, *,
 _INTAKE_FILL_SCRIPT = (
     "(function(){\n"
     "  var q = new URLSearchParams(location.search);\n"
-    "  var map = {order: 'order_id', capture: 'capture_id'};\n"
+    "  var map = {order: 'order_id', capture: 'capture_id', lead: 'lead_id'};\n"
     "  Object.keys(map).forEach(function(k){\n"
     "    var v = (q.get(k) || '').replace(/[^A-Za-z0-9_-]/g, '');\n"
     "    var el = document.querySelector(\"[name='\" + map[k] + \"']\");\n"

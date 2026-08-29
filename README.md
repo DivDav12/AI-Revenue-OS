@@ -105,6 +105,60 @@ canonical URL. A re-found lead is *merged* - the better score wins, the
 `promo_allowed` is a conservative hint - always read the community's own
 rules first.
 
+## Autopilot (`autopilot`) + pre-sale budget cap
+
+`autopilot` is a thin orchestrator (no daemon) that runs **one funnel
+cycle per invocation** and stops at every human gate. It reuses the
+existing components - it adds no parallel system.
+
+```
+python -m revenue_os autopilot start   --data-dir data [--allow-web] [--max-age-days 14] [--limit 15]
+python -m revenue_os autopilot cycle   --data-dir data           # one cycle, same as start
+python -m revenue_os autopilot status  --data-dir data [--json]  # capital / leads / sales / cost, no secrets
+python -m revenue_os autopilot pause   --data-dir data --reason "..."
+python -m revenue_os autopilot resume  --data-dir data
+python -m revenue_os autopilot stop    --data-dir data           # state preserved, `start` resumes
+```
+
+One cycle does, in order: **free discovery** (`discover-free` sources,
+$0) -> **rank + qualify** -> **prepare outreach briefs** for high/medium
+quality leads (draft only) -> **PayPal check** (books any captured
+payment) -> **intake/plan funnel status**. Every step that needs a human
+is emitted as a `HUMAN: ...` action; the system never posts, messages, or
+spends past the cap. State lives in `data/autopilot.json` and survives a
+restart (`start` resumes, no duplicated work).
+
+**Pre-sale hard budget cap** (`src/revenue_os/budget.py`). Before the
+first real sale the system may spend **at most EUR 3.00 total**
+(`PRESALE_CAP_USD = 3.20`, metered in USD via the existing
+`LlmSpendLog`). `budget.guard()` runs *before* every paid LLM call inside
+`budget_gate`; if `recorded_spend + estimate > cap` it raises
+`BudgetBlocked` and nothing is spent - no auto-override, no fallback to
+another paid API. The reserved **EUR 17.00** growth capital stays locked
+until `RevenueLedger.total() > 0`; the first booked sale flips
+`presale_active` to `False` and releases it (it is still never spent
+automatically). `autopilot status -> capital` shows the full picture.
+
+## Outreach brief (`outreach-brief <lead-id>`)
+
+```
+python -m revenue_os outreach-brief <lead-id> --data-dir data [--checkout-url URL] [--json]
+```
+
+Turns one qualified lead into a **draft** answer plan: the lead's own
+words (verbatim), why it is relevant, a help-first answer angle, generic
+talking points, the community's self-promotion policy, and an *optional*
+last-line CTA with a tracked checkout link (`?lead=<id>`). It makes no
+claim about the lead's business beyond their own text, and it **never
+posts** - a human rewrites and publishes. Drafts persist in
+`data/outreach.json` (`draft` -> `approved` -> `posted` / `skipped`).
+
+**Lead -> sale tracking.** The tracked link carries `?lead=<id>`; the
+generated `checkout.html` / `intake.html` copy it into a hidden
+`lead_id` field, and `intake-import` stores it on the intake entry. This
+is additive - the PayPal `custom_id` (candidate name) and the payment
+capture-id gate are unchanged.
+
 ## PayPal
 
 Read-only integration (`src/revenue_os/paypal.py`): it books payments PayPal

@@ -8,6 +8,8 @@ Read commands:
                            to get first customers (free sources; --source web optional)
   discover-free            same, but ONLY free keyless sources ($0, no Anthropic)
   top-opportunities        the human-review shortlist, ranked by final_score
+  outreach-brief ID        prepare a human-review outreach draft for one lead (never posts)
+  autopilot start|status|pause|resume|stop   one orchestrator, EUR 3 pre-sale cap
   review-opportunity ID --approve|--reject   record a human verdict (no contact)
   digest [-q]      one-line summary of what needs the human
   agent-run        operator agent: one loop to a fixed point (also the cron primitive)
@@ -391,6 +393,106 @@ def _cmd_review_opportunity(args) -> int:
     if args.approve:
         print("   Confirmed as a relevant opportunity. This does NOT post, "
               "contact, or message anyone.")
+    return 0
+
+
+def _cmd_outreach_brief(args) -> int:
+    from .acquisition import AcquisitionStore
+    from .outreach import DEFAULT_CHECKOUT_URL, OutreachStore, outreach_brief
+
+    data_dir = _data_dir(args)
+    store = AcquisitionStore.load(data_dir / "acquisition.json")
+    lead = store.by_id(args.lead_id)
+    if lead is None:
+        raise ValueError(f"no single lead matches id {args.lead_id!r}")
+    brief = outreach_brief(lead, checkout_url=args.checkout_url or DEFAULT_CHECKOUT_URL)
+    briefs = OutreachStore.load(data_dir / "outreach.json")
+    briefs.put(brief)
+    briefs.save()
+
+    if args.json:
+        print(json.dumps(brief, indent=2))
+        return 0
+    b = brief
+    print(f"OUTREACH BRIEF  (lead {b['lead_id']}, quality {b['prospect_quality']}, "
+          f"{b['age_bucket']})")
+    print(f"  URL:      {b['url']}")
+    print(f"  Platform: {b['platform']}   Promo policy: {b['promo_allowed']}")
+    print(f"\n  THEIR WORDS:\n    {b['their_words']}")
+    print("\n  WHY RELEVANT:")
+    for w in b["why_relevant"]:
+        print(f"    - {w}")
+    print(f"\n  ANSWER ANGLE:\n    {b['answer_angle']}")
+    print("\n  TALKING POINTS (generic - adapt to their post):")
+    for p in b["talking_points"]:
+        print(f"    - {p}")
+    print(f"\n  {b['help_first']}")
+    print(f"\n  OPTIONAL CTA (last line, after you've actually helped):\n    {b['optional_cta']}")
+    print(f"\n  COMMUNITY RULES: {b['promo_note']}")
+    print(f"\n  {b['human_approval']}")
+    print(f"  {b['no_fabrication_note']}")
+    return 0
+
+
+def _cmd_autopilot(args) -> int:
+    from . import autopilot as ap
+
+    data_dir = _data_dir(args)
+    action = args.action
+    if action == "pause":
+        ap.pause(data_dir, args.reason or "manual pause")
+        print("AUTOPILOT PAUSED")
+        return 0
+    if action == "resume":
+        ap.resume(data_dir)
+        print("AUTOPILOT RESUMED")
+        return 0
+    if action == "stop":
+        ap.stop(data_dir)
+        print("AUTOPILOT STOPPED (state preserved - `autopilot start` resumes)")
+        return 0
+    if action == "status":
+        print(json.dumps(ap.status(data_dir), indent=2))
+        return 0
+
+    # start / cycle
+    r = ap.run_cycle(data_dir, allow_web=args.allow_web,
+                     max_age_days=args.max_age_days, limit=args.limit,
+                     politeness_delay=args.delay, checkout_url=args.checkout_url)
+    if "skipped" in r:
+        print(f"AUTOPILOT: {r['skipped']}")
+        return 0
+    if args.json:
+        print(json.dumps(r, indent=2))
+        return 0
+    cap = r["spend"]
+    print("AUTOPILOT CYCLE COMPLETE")
+    print(f"  Pre-sale: {'ACTIVE' if cap['presale_active'] else 'OFF (a real sale exists)'}"
+          f"   spent ${cap['external_spent_usd']:.2f} / ${cap['presale_cap_usd']:.2f}"
+          f"   (EUR {cap['presale_cap_eur']:.2f} cap)")
+    d = r.get("discovery", {})
+    if "scored" in d:
+        print(f"  Discovery: {d['scored']} scored, {d['new']} new, "
+              f"web cost ${d.get('web_cost_usd', 0)}")
+        for n, s in sorted(d.get("sources_status", {}).items()):
+            print(f"    source {n}: {s}")
+    o = r.get("outreach", {})
+    print(f"  Outreach: {o.get('prepared', 0)} briefs prepared, "
+          f"{o.get('awaiting_post', 0)} awaiting a human post")
+    p = r.get("payment", {})
+    print(f"  Payment: {'ok' if p.get('ok') else p.get('note', 'skipped')}"
+          + (f" - {len(p.get('booked', []))} new" if p.get("ok") else ""))
+    if r.get("sale"):
+        print("  *** NEW SALE BOOKED - pre-sale mode is now OFF ***")
+    for note in r.get("notes", []):
+        print(f"  NOTE: {note}")
+    print("\n  HUMAN ACTION QUEUE:")
+    if not r["actions"]:
+        print(f"    (none) {r.get('idle', '')}")
+    for a in r["actions"]:
+        print(f"    - {a}")
+    print("\n  The autopilot never posts, messages, emails, or spends past the "
+          "EUR 3.00 pre-sale cap.")
     return 0
 
 
@@ -1196,6 +1298,34 @@ def build_parser() -> argparse.ArgumentParser:
     revo.add_argument("--reject", action="store_true",
                       help="human marks this as not relevant")
     revo.set_defaults(func=_cmd_review_opportunity)
+
+    obrief = sub.add_parser(
+        "outreach-brief", parents=[common],
+        help="prepare a human-review outreach draft for one lead (never posts)",
+    )
+    obrief.add_argument("lead_id", help="lead id (or a unique prefix)")
+    obrief.add_argument("--checkout-url", default=None,
+                        help="checkout URL for the tracked link (default: the live one)")
+    obrief.add_argument("--json", action="store_true")
+    obrief.set_defaults(func=_cmd_outreach_brief)
+
+    apilot = sub.add_parser(
+        "autopilot", parents=[common],
+        help="one orchestrator: discover -> brief -> payment -> plan -> delivery, "
+             "stopping at every human gate; enforces the EUR 3.00 pre-sale cap",
+    )
+    apilot.add_argument("action",
+                        choices=("start", "cycle", "status", "pause", "resume", "stop"))
+    apilot.add_argument("--allow-web", action="store_true",
+                        help="allow the paid Anthropic web-search source (budget-gated)")
+    apilot.add_argument("--max-age-days", type=int, default=14)
+    apilot.add_argument("--limit", type=int, default=15)
+    apilot.add_argument("--delay", type=float, default=1.0)
+    apilot.add_argument("--checkout-url", default=None,
+                        help="set/override the checkout URL (persisted in autopilot state)")
+    apilot.add_argument("--reason", default=None, help="pause reason")
+    apilot.add_argument("--json", action="store_true")
+    apilot.set_defaults(func=_cmd_autopilot)
 
     sub.add_parser("report", parents=[common], help="print the report only").set_defaults(
         func=_cmd_report

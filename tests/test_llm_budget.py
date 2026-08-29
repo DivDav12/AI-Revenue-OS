@@ -59,6 +59,17 @@ def _seed_spend(data_dir, total_cost):
     log.save()
 
 
+def _seed_sale(data_dir):
+    """A booked sale disables the EUR 3.00 pre-sale hard cap, so these
+    tests exercise the llm_budget cumulative cap in isolation."""
+    from revenue_os.revenue import RevenueLedger
+    led = RevenueLedger(Path(data_dir) / "revenue.json")
+    led.add({"candidate_name": "x", "amount": 29.9, "currency": "EUR",
+             "received_at": "2026-01-01T00:00:00+00:00", "actor": "test",
+             "ref": "paypal:seed"})
+    led.save()
+
+
 class LlmBudgetFileTests(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
@@ -94,6 +105,7 @@ class BudgetGateCliTests(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
         self.data = self._dir.name
+        _seed_sale(self.data)   # test the cumulative cap post-sale
 
     def tearDown(self):
         self._dir.cleanup()

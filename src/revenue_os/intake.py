@@ -83,7 +83,7 @@ class IntakeStore:
 
     def add(self, order_id: str, candidate: str, fields: dict, *,
             capture_id: str = "", source: str = "import",
-            submitted_at: str | None = None) -> dict:
+            submitted_at: str | None = None, lead_id: str = "") -> dict:
         oid = str(order_id).strip()
         if not oid:
             raise ValueError("order_id is required")
@@ -94,6 +94,7 @@ class IntakeStore:
         entry = {
             "order_id": oid,
             "capture_id": str(capture_id).strip(),
+            "lead_id": str(lead_id or "").strip(),   # acquisition-lead -> sale link
             "candidate": str(candidate),
             "submitted_at": submitted_at or now_iso(),
             "imported_at": now_iso(),
@@ -221,7 +222,8 @@ def import_submissions(intake: IntakeStore, ledger: RevenueLedger,
         fields = row["fields"] if isinstance(row.get("fields"), dict) else row
         try:
             entry = intake.add(oid, owner, fields, capture_id=cap,
-                               submitted_at=_row_get(row, "submitted_at") or None)
+                               submitted_at=_row_get(row, "submitted_at") or None,
+                               lead_id=_row_get(row, "lead_id", "lead"))
         except ValueError as exc:
             skipped.append({"row": i, "order_id": oid, "reason": str(exc)})
             continue

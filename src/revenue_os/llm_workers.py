@@ -31,8 +31,13 @@ def record_llm_spend(data_dir, activity: str, worker) -> None:
 
 def budget_gate(data_dir, est: float, per_run_ceiling: float) -> float:
     """Refuse if recorded LLM spend + this run's estimate exceeds the
-    cumulative cap; otherwise return the effective per-run ceiling
-    (never more than what is left under the cap)."""
+    cumulative cap OR the pre-sale hard limit (EUR 3.00 total before the
+    first real sale); otherwise return the effective per-run ceiling
+    (never more than what is left under either cap)."""
+    from .budget import guard, presale_active, presale_remaining_usd
+
+    guard(data_dir, est)   # BudgetBlocked (a ValueError) before the first sale
+
     cap = llm_budget(data_dir).cap
     spent = llm_spend_log(data_dir).summary()["total_cost_usd"]
     remaining = round(cap - spent, 4)
@@ -41,7 +46,10 @@ def budget_gate(data_dir, est: float, per_run_ceiling: float) -> float:
             f"recorded LLM spend ${spent} + estimated ${est} exceeds the "
             f"cumulative cap ${cap}; raise it with `llm-budget <amount>`"
         )
-    return min(per_run_ceiling, remaining)
+    ceiling = min(per_run_ceiling, remaining)
+    if presale_active(data_dir):
+        ceiling = min(ceiling, presale_remaining_usd(data_dir))
+    return ceiling
 
 
 def build_evaluator(*, mode: str, source, limit: int, model: str,

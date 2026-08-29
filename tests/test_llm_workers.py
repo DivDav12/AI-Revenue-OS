@@ -107,6 +107,13 @@ class LlmModeTests(unittest.TestCase):
                 )
 
     def test_cumulative_cap_refuses(self):
+        # a booked sale disables the EUR 3 pre-sale cap; test the llm_budget one
+        from revenue_os.revenue import RevenueLedger
+        led = RevenueLedger(Path(self.d) / "revenue.json")
+        led.add({"candidate_name": "x", "amount": 29.9, "currency": "EUR",
+                 "received_at": "2026-01-01T00:00:00+00:00", "actor": "t",
+                 "ref": "paypal:seed"})
+        led.save()
         log = LlmSpendLog(Path(self.d) / "llm_spend.json")
         log.add({"activity": "evaluate", "cost_usd": 5.0, "api_calls": 1})
         log.save()
