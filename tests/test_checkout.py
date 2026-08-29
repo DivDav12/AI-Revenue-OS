@@ -110,6 +110,39 @@ class RenderTests(unittest.TestCase):
         self.assertIn("action='https://formprovider.example/f/abc'", h)
         self.assertNotIn("REPLACE_WITH_YOUR_FORM_ENDPOINT", h)
 
+    def test_business_email_appears_when_given(self):
+        h = render_checkout_html(_CAND, _OFFER, client_id=_CLIENT_ID,
+                                 business_email="divdav12support@gmail.com")
+        # the "form failed" fallback names the address
+        self.assertIn("to divdav12support@gmail.com.", h)
+        # footer contact + post-payment JS suffix
+        self.assertIn("Contact: divdav12support@gmail.com.", h)
+        self.assertIn("Questions: divdav12support@gmail.com.", h)
+        self.assertNotIn("the address that sold you this plan", h)
+
+    def test_generic_wording_without_business_email(self):
+        h = render_checkout_html(_CAND, _OFFER, client_id=_CLIENT_ID)
+        self.assertIn("the address that sold you this plan", h)
+        self.assertNotIn("Contact:", h)
+
+    def test_bogus_business_email_is_ignored(self):
+        h = render_checkout_html(_CAND, _OFFER, client_id=_CLIENT_ID,
+                                 business_email="not an email <x>")
+        self.assertIn("the address that sold you this plan", h)
+        self.assertNotIn("not an email", h)
+        # still only paypal as an external origin
+        origins = set(re.findall(r'https?://[a-z0-9.\-]+', h))
+        self.assertEqual(origins, {"https://www.paypal.com"})
+
+    def test_standalone_intake_page_shows_business_email(self):
+        h = render_intake_html(_CAND["name"],
+                               form_action="https://formprovider.example/f/abc",
+                               business_email="divdav12support@gmail.com")
+        self.assertIn("to divdav12support@gmail.com.", h)
+        # the email is not a URL - external origins unchanged
+        origins = set(re.findall(r'https?://[a-z0-9.\-/]+', h))
+        self.assertEqual(origins, {"https://formprovider.example/f/abc"})
+
     def test_standalone_intake_page(self):
         h = render_intake_html(_CAND["name"],
                                form_action="https://formprovider.example/f/abc")
@@ -205,6 +238,30 @@ class CliTests(unittest.TestCase):
         self.assertEqual(got.offer["includes"],
                          ["Ideal customer profile", "14-day action plan"])
         self.assertIn("3 business days", got.offer["delivery_note"])
+
+    def test_business_email_flag_lands_on_both_pages(self):
+        rc = self._run(_CAND["name"], "--price", "29.90",
+                       "--business-email", "divdav12support@gmail.com")
+        self.assertEqual(rc, 0)
+        d = self.d / "deliverables" / _CAND["name"]
+        for fn in ("checkout.html", "intake.html"):
+            html = (d / fn).read_text(encoding="utf-8")
+            self.assertIn("divdav12support@gmail.com", html)
+
+    def test_business_email_from_env(self):
+        import os
+        old = os.environ.get("BUSINESS_EMAIL")
+        os.environ["BUSINESS_EMAIL"] = "divdav12support@gmail.com"
+        try:
+            self._run(_CAND["name"], "--price", "29.90")
+        finally:
+            if old is None:
+                os.environ.pop("BUSINESS_EMAIL", None)
+            else:
+                os.environ["BUSINESS_EMAIL"] = old
+        html = (self.d / "deliverables" / _CAND["name"] / "checkout.html").read_text(
+            encoding="utf-8")
+        self.assertIn("Contact: divdav12support@gmail.com.", html)
 
     def test_reuses_stored_offer_without_price(self):
         self._run(_CAND["name"], "--price", "29.90")

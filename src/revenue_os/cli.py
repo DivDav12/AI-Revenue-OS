@@ -930,10 +930,12 @@ def _cmd_build_checkout(args) -> int:
         raise ValueError("no offer on this candidate; pass --price to create one")
 
     form_action = (args.form_action or "").strip()
+    business_email = (args.business_email
+                      or os.environ.get("BUSINESS_EMAIL", "")).strip()
     html = render_checkout_html(
         {"name": cand.name, "description": cand.description}, offer,
         client_id=client_id, currency=offer.get("currency") or args.currency,
-        form_action=form_action,
+        form_action=form_action, business_email=business_email,
     )
     out = (Path(args.out) if args.out
            else data_dir / "deliverables" / cand.name / "checkout.html")
@@ -942,7 +944,8 @@ def _cmd_build_checkout(args) -> int:
     intake_path = out.parent / "intake.html"
     intake_path.write_text(
         render_intake_html(cand.name, form_action=form_action,
-                           product=offer.get("what_is_sold") or cand.name),
+                           product=offer.get("what_is_sold") or cand.name,
+                           business_email=business_email),
         encoding="utf-8",
     )
     print(f"wrote {out}")
@@ -952,6 +955,9 @@ def _cmd_build_checkout(args) -> int:
     if not form_action:
         print("NOTE: form endpoint not set - pass --form-action <url> so the "
               "intake form submits somewhere (both pages show a placeholder).")
+    if not business_email:
+        print("NOTE: BUSINESS_EMAIL not set - pages show the generic "
+              "\"the address that sold you this plan\" wording.")
     print(
         f"after a real payment: `revenue_os paypal-sync`, then "
         f"`revenue_os intake-import <export.json>`"
@@ -1566,6 +1572,9 @@ def build_parser() -> argparse.ArgumentParser:
     bc.add_argument("--form-action", default=None, metavar="URL",
                     help="endpoint the post-payment intake form POSTs to "
                          "(a form provider; a placeholder is shown if omitted)")
+    bc.add_argument("--business-email", default=None, metavar="ADDR",
+                    help="contact address shown on the pages "
+                         "(default: $BUSINESS_EMAIL; generic wording if unset)")
     bc.add_argument("--out", default=None,
                     help="output path (default: <data-dir>/deliverables/<name>/checkout.html)")
     bc.set_defaults(func=_cmd_build_checkout)

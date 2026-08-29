@@ -197,7 +197,15 @@ candidate name. Booking still requires the candidate to be `launched` or
 in). Pass `--form-action <url>` to point the form at a form provider
 (Formspree, Getform, Netlify Forms, a Google Apps Script -- your choice); a
 visible placeholder is shown if you omit it. Revenue OS runs no server and
-holds no form secrets.
+holds no form secrets. Make sure the form provider delivers submissions to
+your **business email** -- that is a provider-side account setting, not a
+repo setting.
+
+Pass `--business-email <addr>` (or set `BUSINESS_EMAIL` in `.env`) to print
+a real contact address on both pages -- the page footer, the post-payment
+message, and the "if the form does not send" fallback. Without it the pages
+use the generic "the address that sold you this plan" wording. This is
+unrelated to PayPal.
 
 Flow: buyer pays -> submits the form -> you export the submissions from the
 provider as **CSV or JSON** -> `revenue_os intake-import <export.csv>`

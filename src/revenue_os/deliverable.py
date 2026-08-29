@@ -14,6 +14,7 @@ pre-launch demand test.
 from __future__ import annotations
 
 import json
+import re
 from html import escape
 from urllib.parse import quote
 
@@ -30,6 +31,23 @@ _INTAKE_REQUIRED = {"name", "email", "sells"}
 
 def _esc(v: object) -> str:
     return escape(str(v), quote=True)
+
+
+_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+
+
+def _clean_email(v: object) -> str:
+    """A plain business email or "" - never trusted verbatim into markup."""
+    s = str(v or "").strip()
+    return s if _EMAIL_RE.match(s) else ""
+
+
+def _intake_fallback_note(business_email: str) -> str:
+    """The 'if the form does not send' line on the intake pages."""
+    who = _esc(business_email) if business_email \
+        else "the address that sold you this plan"
+    return ("<p class='intake-note'>If the form does not send, email your "
+            f"answers and your PayPal order ID to {who}.</p>\n")
 
 
 def _js(v: object) -> str:
@@ -212,7 +230,7 @@ def _intake_form(candidate: str, *, form_action: str, form_id: str,
 
 def render_checkout_html(candidate: dict, offer: dict, *,
                          client_id: str, currency: str = "EUR",
-                         form_action: str = "") -> str:
+                         form_action: str = "", business_email: str = "") -> str:
     """A real one-item PayPal checkout page for a human-priced offer.
 
     Self-contained except the PayPal JS SDK. The order it creates sets
@@ -234,6 +252,7 @@ def render_checkout_html(candidate: dict, offer: dict, *,
         raise ValueError("offer price must be positive")
 
     currency = (offer.get("currency") or currency or "EUR").upper()
+    business_email = _clean_email(business_email)
     amount = f"{price:.2f}"
     what = str(offer.get("what_is_sold") or candidate.get("description") or name)
     positioning = str(offer.get("positioning") or "")
@@ -254,6 +273,8 @@ def render_checkout_html(candidate: dict, offer: dict, *,
     js_amount = _js(amount)
     js_currency = _js(currency)
     js_desc = _js(what[:127])
+    # validated to a plain email charset above - safe in the JS string literal
+    contact_suffix = f" Questions: {business_email}." if business_email else ""
 
     script = (
         "paypal.Buttons({\n"
@@ -289,7 +310,7 @@ def render_checkout_html(candidate: dict, offer: dict, *,
         "      } else {\n"
         "        box.innerHTML = 'Payment received. Your order ID is <code>' + oid +"
         " '</code>. You will be contacted at your PayPal email to arrange"
-        " delivery.';\n"
+        f" delivery.{contact_suffix}';\n"
         "      }\n"
         "    });\n"
         "  },\n"
@@ -341,13 +362,14 @@ def render_checkout_html(candidate: dict, offer: dict, *,
         "we can build your personalised plan. Fields marked * are required.</p>\n"
         + _intake_form(name, form_action=form_action, form_id="intake-form",
                        submit="Send my details")
-        + "<p class='intake-note'>If the form does not send, email your answers "
-        "and your PayPal order ID to the address that sold you this plan.</p>\n"
-        "</div>\n"
+        + _intake_fallback_note(business_email)
+        + "</div>\n"
         "<p class='terms'>Payment is handled entirely by PayPal. If the plan "
         "cannot be delivered, the payment is refunded in full via PayPal.</p>\n"
         f"<div class='foot'>Sold by the operator of this page. Order reference: "
-        f"<code>{_esc(name)}</code>.</div>\n"
+        f"<code>{_esc(name)}</code>."
+        + (f" Contact: {_esc(business_email)}." if business_email else "")
+        + "</div>\n"
         "</div>\n"
         f"<script>\n{script}\n</script>\n"
         "</body>\n</html>\n"
@@ -368,7 +390,8 @@ _INTAKE_FILL_SCRIPT = (
 
 
 def render_intake_html(candidate: str, *, form_action: str = "",
-                       product: str = "Customer Launch Plan") -> str:
+                       product: str = "Customer Launch Plan",
+                       business_email: str = "") -> str:
     """Standalone intake form for a buyer who already paid.
 
     The order / capture id come from the query string
@@ -378,6 +401,7 @@ def render_intake_html(candidate: str, *, form_action: str = "",
     """
     if not str(candidate).strip():
         raise ValueError("candidate is required")
+    business_email = _clean_email(business_email)
     return (
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
@@ -388,9 +412,8 @@ def render_intake_html(candidate: str, *, form_action: str = "",
         "build your personalised plan. Fields marked * are required.</p>\n"
         + _intake_form(candidate, form_action=form_action, form_id="intake-form",
                        submit="Send my details")
-        + "<p class='intake-note'>If the form does not send, email your answers "
-        "and your PayPal order ID to the address that sold you this plan.</p>\n"
-        "</div>\n"
+        + _intake_fallback_note(business_email)
+        + "</div>\n"
         f"<script>\n{_INTAKE_FILL_SCRIPT}\n</script>\n"
         "</body>\n</html>\n"
     )
