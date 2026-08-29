@@ -22,7 +22,7 @@ Human decision commands (operate on the persistent --data-dir store):
   prepare-launch    (--proposer llm opt-in; template by default)
   launch NAME
   build-checkout NAME --price N [--currency EUR]   write a real PayPal checkout page
-  intake-import FILE      store buyer intake rows that match a booked payment
+  intake-import FILE      store buyer intake rows (JSON or CSV) that match a booked payment
   intake-list / intake-show ORDER_ID / intake-review ORDER_ID
   draft-launch-plan ORDER_ID   draft the Customer Launch Plan (web-grounded LLM)
   plan-approve ORDER_ID / plan-render ORDER_ID   human gate, then Markdown
@@ -639,18 +639,14 @@ def _intake_store(data_dir: Path):
 
 
 def _cmd_intake_import(args) -> int:
-    from .intake import import_submissions
+    from .intake import import_submissions, read_submissions
 
     data_dir = _data_dir(args)
     _, revenue_ledger, _ = _load(data_dir)
-    raw = json.loads(Path(args.file).read_text(encoding="utf-8"))
-    if isinstance(raw, dict):
-        raw = raw.get("submissions") or raw.get("data") or [raw]
-    if not isinstance(raw, list):
-        raise ValueError("expected a JSON list of submissions (or {submissions:[...]})")
+    rows = read_submissions(Path(args.file))
 
     intake = _intake_store(data_dir)
-    r = import_submissions(intake, revenue_ledger, raw, candidate=args.candidate)
+    r = import_submissions(intake, revenue_ledger, rows, candidate=args.candidate)
     for e in r["stored"]:
         print(f"  stored: {e['order_id']} -> {e['candidate']} ({e['fields']['email']})")
     for s in r["skipped"]:
@@ -1131,7 +1127,7 @@ def build_parser() -> argparse.ArgumentParser:
         "intake-import", parents=[common],
         help="store buyer intake submissions that match a booked PayPal payment",
     )
-    ii.add_argument("file", help="JSON export from the form provider")
+    ii.add_argument("file", help="JSON or CSV export from the form provider")
     ii.add_argument("--candidate", default=None,
                     help="candidate name if a row does not carry one")
     ii.set_defaults(func=_cmd_intake_import)

@@ -15,6 +15,7 @@ or share it.
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 import tempfile
@@ -150,6 +151,39 @@ def _row_get(row: dict, *names: str) -> str:
         if row.get(n):
             return str(row[n]).strip()
     return ""
+
+
+def read_submissions(path: str | Path) -> list[dict]:
+    """Parse a form-provider export into a list of row dicts.
+
+    `.csv` -> csv.DictReader (Formspree / Getform / Netlify all export
+    CSV); rows that are entirely blank are dropped and unnamed extra
+    columns ignored. Any other extension -> JSON: a list, or
+    {submissions|data: [...]}, or a single object.
+
+    This only parses. Every row still goes through import_submissions(),
+    so the field validation and the capture_id / booked-payment gate are
+    identical for CSV and JSON.
+    """
+    path = Path(path)
+    if path.suffix.lower() == ".csv":
+        with path.open(encoding="utf-8-sig", newline="") as fh:
+            out: list[dict] = []
+            for row in csv.DictReader(fh):
+                clean = {k: ("" if v is None else v)
+                         for k, v in row.items() if k is not None}
+                if any(str(v).strip() for v in clean.values()):
+                    out.append(clean)
+            return out
+
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(raw, dict):
+        raw = raw.get("submissions") or raw.get("data") or [raw]
+    if not isinstance(raw, list):
+        raise ValueError(
+            "expected a .csv file or a JSON list of submissions "
+            "(or {submissions:[...]})")
+    return raw
 
 
 def import_submissions(intake: IntakeStore, ledger: RevenueLedger,

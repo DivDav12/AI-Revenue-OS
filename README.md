@@ -41,10 +41,12 @@ in). Pass `--form-action <url>` to point the form at a form provider
 visible placeholder is shown if you omit it. Revenue OS runs no server and
 holds no form secrets.
 
-Flow: buyer pays -> submits the form -> you export the submissions as JSON
-from the provider -> `revenue_os intake-import <export.json>`. A row is
-stored only if its `capture_id` matches a booked `paypal:<id>` payment for
-the candidate (run `paypal-sync` first). Then `intake-list`,
+Flow: buyer pays -> submits the form -> you export the submissions from the
+provider as **CSV or JSON** -> `revenue_os intake-import <export.csv>`
+(`csv.DictReader`; extra provider columns are ignored). A row is stored
+only if its `capture_id` matches a booked `paypal:<id>` payment for the
+candidate (run `paypal-sync` first) - the same gate for CSV and JSON. Then
+`intake-list`,
 `intake-show <order-id>`, and `intake-review <order-id>` (the human gate
 before the plan is written and the PDF delivered).
 
