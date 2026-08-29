@@ -468,18 +468,29 @@ def package_deliverables(store: CandidateStore, data_dir, *,
 
 
 def discover_acquisition_opportunities(store, source, *, queries, limit=15,
-                                      min_score=0, politeness_delay=1.0,
-                                      sink=None):
+                                      min_score=0, max_age_days=30,
+                                      llm_scorer=None, politeness_delay=1.0,
+                                      now=None, sink=None):
     """Run each query against `source`, score the real posts it returns,
-    and persist the new leads (dedup by canonical_url).
+    and upsert the leads (dedup by canonical_url).
 
-    Deterministic scoring, no LLM. Contacts no one. A query whose fetch
-    raises is recorded in `query_errors` and the rest continue. Returns a
-    summary dict; `leads` is the full store, ranked.
+    Deterministic scoring by default; `llm_scorer` (a callable) enables the
+    optional LLM relevance pass. Contacts no one. A query whose fetch
+    raises is recorded in `query_errors` and the rest continue; a dead
+    sub-source is recorded in `sources_status`. Returns a summary dict;
+    `leads` is the full store, ranked by final_score.
     """
     import time
+    from datetime import datetime, timedelta, timezone
 
     from .acquisition import AcquisitionAgent
+
+    now = now or datetime.now(timezone.utc)
+    # Fetch a slightly wider window than --max-age-days (min 60d) so the
+    # scorer still sees a few borderline-recent threads and ranks them;
+    # anything older than max_age_days is then heavily down-scored.
+    fetch_days = max(60, max_age_days)
+    since_ts = int((now - timedelta(days=fetch_days)).timestamp())
 
     records: list = []
     query_errors: list[dict] = []
@@ -487,6 +498,8 @@ def discover_acquisition_opportunities(store, source, *, queries, limit=15,
         if i and politeness_delay:
             time.sleep(politeness_delay)
         try:
+            records.extend(source.search(query, limit, since_ts=since_ts))
+        except TypeError:  # a source without the since_ts kwarg
             records.extend(source.search(query, limit))
         except Exception as exc:  # one bad fetch must not kill the run
             logger.warning("acquisition search failed for %r: %s", query, exc)
@@ -497,12 +510,14 @@ def discover_acquisition_opportunities(store, source, *, queries, limit=15,
     orchestrator.add_task(Task(
         objective="discover acquisition opportunities",
         capability="discover_acquisition",
-        payload={"records": records, "min_score": min_score},
+        payload={"records": records, "min_score": min_score,
+                 "max_age_days": max_age_days, "llm_scorer": llm_scorer},
     ))
 
     scored: list[dict] = []
     dropped: list[dict] = []
-    considered = collapsed = no_match = 0
+    considered = collapsed = no_match = too_old = 0
+    mode = "deterministic"
     for result in orchestrator.run_cycle():
         if result.status != "ok":
             logger.warning("acquisition scoring failed: %s", result.error)
@@ -512,24 +527,50 @@ def discover_acquisition_opportunities(store, source, *, queries, limit=15,
         considered = result.output["considered"]
         collapsed = result.output["collapsed"]
         no_match = result.output["no_match"]
+        too_old = result.output["too_old"]
+        mode = result.output["scoring_mode"]
 
-    new = duplicates = 0
+    added = updated = unchanged = 0
     for lead in scored:
-        if store.add(lead):
-            new += 1
-        else:
-            duplicates += 1
+        outcome = store.upsert(lead)
+        added += outcome == "added"
+        updated += outcome == "updated"
+        unchanged += outcome == "unchanged"
     store.save()
 
+    scored_now = sorted(
+        scored, key=lambda d: (d.get("final_score", 0), d.get("relevance_score", 0)),
+        reverse=True)
+
+    # per-source availability
+    sub_errors = dict(getattr(source, "errors", []))
+    sub_names = ([s.name for s in getattr(source, "_sources", [])]
+                 or [getattr(source, "name", "source")])
+    sources_status = {}
+    for name in sub_names:
+        if name in sub_errors:
+            sources_status[name] = f"unavailable: {sub_errors[name]}"
+        elif len(sub_names) == 1 and query_errors and not records:
+            sources_status[name] = f"unavailable: {query_errors[0]['error']}"
+        else:
+            sources_status[name] = "ok"
+
     return {
-        "leads": store.ranked(),
+        "leads": scored_now,             # what THIS run found, ranked
+        "store_leads": store.ranked(),    # the full accumulated store
+        "scoring_mode": mode,
         "considered": considered,
         "no_match": no_match,
+        "low_relevance": no_match,           # alias: no positive signal
+        "too_old": too_old,
         "collapsed": collapsed,
-        "new": new,
-        "duplicates": duplicates,
+        "new": added,
+        "updated": updated,
+        "unchanged": unchanged,
+        "duplicates": updated + unchanged,   # already-seen canonical_urls
         "dropped": dropped,
         "query_errors": query_errors,
+        "sources_status": sources_status,
     }
 
 

@@ -4,8 +4,10 @@ Read commands:
   run              discovery cycle against a source, then print the report
                    (--evaluator llm opt-in; keyword heuristic by default)
   report           print the report only (no discovery)
-  discover-opportunities   find public "how do I get my first customer" posts
-                           (deterministic scoring; never posts or contacts anyone)
+  discover-opportunities   find CURRENT public posts from founders struggling
+                           to get first customers (deterministic; --score llm optional)
+  top-opportunities        the human-review shortlist, ranked by final_score
+  review-opportunity ID --approve|--reject   record a human verdict (no contact)
   digest [-q]      one-line summary of what needs the human
   agent-run        operator agent: one loop to a fixed point (also the cron primitive)
   agent-loop       operator agent: tick / sleep / repeat, bounded and resumable
@@ -152,6 +154,36 @@ def _cmd_run(args) -> int:
     return 0
 
 
+def _acq_llm_scorer(data_dir: Path, *, model: str, max_cost: float,
+                    refresh: bool, est: float):
+    from .acquisition_llm import AcquisitionLlmScorer
+    from .llm_cache import LlmCache
+    from .llm_normalize import build_client
+
+    if est > max_cost:
+        raise ValueError(
+            f"estimated acquisition-llm cost ${est} exceeds the ${max_cost} "
+            "ceiling; nothing was scored")
+    ceiling = _llm_budget_gate(data_dir, est, max_cost)
+    cache = LlmCache.load(data_dir / "llm_acquisition_cache.json")
+    scorer = AcquisitionLlmScorer(
+        client=build_client(), model=model, max_cost_usd=ceiling,
+        cache=cache, refresh=refresh)
+    return scorer, cache
+
+
+def _print_lead_row(d: dict) -> None:
+    age = ("age unknown" if d.get("age_days") is None
+           else f"{d['age_days']}d old")
+    print(f"  [{d.get('final_score', d.get('fit_score', 0)):3}] "
+          f"{d.get('buying_intent', '?'):6} {d.get('prospect_type', '?'):16} "
+          f"{age:12} {d.get('platform', ''):16} {d.get('title', '')[:64]}")
+    print(f"        {d.get('url', '')}")
+    reason = d.get("llm_reason") or d.get("match_reason", "")
+    if reason:
+        print(f"        why: {reason[:150]}")
+
+
 def _cmd_discover_opportunities(args) -> int:
     from .acquisition import SEARCH_QUERIES, AcquisitionStore
     from .acquisition_sources import build_acquisition_source
@@ -161,37 +193,113 @@ def _cmd_discover_opportunities(args) -> int:
     source = build_acquisition_source(args.source, args.source_path)
     queries = tuple(args.query) if args.query else SEARCH_QUERIES
 
+    scorer = cache = None
+    if args.score == "llm":
+        est = round(0.003 * args.limit * len(queries), 4)
+        scorer, cache = _acq_llm_scorer(
+            data_dir, model=args.model, max_cost=args.max_cost,
+            refresh=args.refresh, est=est)
+
     store = AcquisitionStore.load(data_dir / "acquisition.json")
     if args.dry_run:
-        store.save = lambda: None  # read existing (for dedup view) but never write
+        store.save = lambda: None  # read existing (for dedup) but never write
 
     r = discover_acquisition_opportunities(
         store, source, queries=queries, limit=args.limit,
-        min_score=args.min_score, politeness_delay=args.delay,
+        min_score=args.min_score, max_age_days=args.max_age_days,
+        llm_scorer=scorer, politeness_delay=args.delay,
     )
+    if cache is not None and not args.dry_run:
+        cache.save()
+    if scorer is not None:
+        _record_llm_spend(data_dir, "acquisition", scorer)
 
-    leads = r["leads"]
+    leads = r["leads"]  # what this run found, ranked
     if args.json:
         print(json.dumps(leads, indent=2))
     else:
         for d in leads:
-            print(f"  [{d['fit_score']:3}] {d['buying_intent']:6} "
-                  f"promo:{d['promo_allowed']:8} {d['platform']:16} "
-                  f"{d['title'][:70]}")
-            print(f"        {d['url']}")
+            _print_lead_row(d)
     for d in r["dropped"]:
         print(f"  dropped: {d['title']} ({', '.join(d['reasons'])})")
     for e in r["query_errors"]:
         print(f"  query error {e['query']!r}: {e['error']}")
-    for src_name, err in sorted(set(getattr(source, "errors", []))):
-        print(f"  source unavailable: {src_name} ({err})")
+    for name, status in sorted(r["sources_status"].items()):
+        print(f"  source {name}: {status}")
+    if scorer is not None:
+        print(f"  llm: cost ${round(scorer.meter.cost_usd, 4)} "
+              f"({scorer.cache_hits} cache hit / {scorer.cache_misses} miss)"
+              + ("  [ceiling hit]" if scorer.ceiling_hit else ""))
     tag = "(dry-run, nothing persisted) " if args.dry_run else ""
-    print(f"{tag}considered {r['considered']} - no match {r['no_match']} - "
-          f"collapsed {r['collapsed']} - dropped {len(r['dropped'])} - "
-          f"new {r['new']} - duplicates {r['duplicates']} - "
-          f"{len(leads)} in store")
+    print(f"{tag}mode {r['scoring_mode']} - considered {r['considered']} - "
+          f"no positive signal {r['no_match']} - older than "
+          f"{args.max_age_days}d {r['too_old']} - dropped {len(r['dropped'])} - "
+          f"this run: {len(leads)} scored, new {r['new']}, updated {r['updated']} - "
+          f"{len(r['store_leads'])} total in store")
     print("Review each thread's own rules before replying. This tool never "
           "posts or contacts anyone.")
+    return 0
+
+
+def _cmd_top_opportunities(args) -> int:
+    from .acquisition import AcquisitionStore
+
+    store = AcquisitionStore.load(_data_dir(args) / "acquisition.json")
+    good_types = {"active_problem", "seeking_advice", "founder_building", "unknown"}
+    rows = []
+    for d in store.ranked():
+        if d.get("human_review_status") == "rejected":
+            continue
+        # only leads scored by the current relevance model, unless --all
+        if not args.all and d.get("prospect_type") not in good_types:
+            continue
+        score = d.get("final_score", d.get("fit_score", 0)) if args.all \
+            else d.get("final_score", 0)
+        if score < args.min_score:
+            continue
+        age = d.get("age_days")
+        if args.max_age_days is not None and age is not None and age > args.max_age_days:
+            continue
+        rows.append(d)
+    rows = rows[: args.limit]
+
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return 0
+    if not rows:
+        print("no opportunities match the filters")
+        return 0
+    for i, d in enumerate(rows, 1):
+        age = ("age unknown" if d.get("age_days") is None
+               else f"{d['age_days']} days old")
+        print(f"{i}. Score {d.get('final_score', 0)} | "
+              f"{d.get('buying_intent', '?').upper()} | {age} | "
+              f"{d.get('prospect_type', '?')} | review:{d.get('human_review_status', 'new')}")
+        print(f"   \"{d.get('title', '')}\"")
+        print(f"   Why: {d.get('llm_reason') or d.get('match_reason', '')}")
+        print(f"   URL: {d.get('url', '')}")
+        print(f"   Promo policy: {d.get('promo_allowed', 'unknown')} - "
+              f"{d.get('promo_note', '')}")
+        print(f"   id: {d.get('lead_id', '')}   Human review required.")
+    print("\nThis is a shortlist for a human to review. The system never "
+          "posts, messages, or contacts anyone.")
+    return 0
+
+
+def _cmd_review_opportunity(args) -> int:
+    from .acquisition import AcquisitionStore
+
+    if args.approve == args.reject:
+        raise ValueError("pass exactly one of --approve / --reject")
+    store = AcquisitionStore.load(_data_dir(args) / "acquisition.json")
+    status = "reviewed" if args.approve else "rejected"
+    entry = store.set_review(args.lead_id, status, actor=args.actor)
+    store.save()
+    print(f"{entry['lead_id']}: human_review_status -> {status}")
+    print(f"   \"{entry.get('title', '')}\"")
+    if args.approve:
+        print("   Confirmed as a relevant opportunity. This does NOT post, "
+              "contact, or message anyone.")
     return 0
 
 
@@ -940,13 +1048,48 @@ def build_parser() -> argparse.ArgumentParser:
                        help="search query; repeat for several (default: built-in set)")
     disco.add_argument("--limit", type=int, default=15, help="hits per query (max 50)")
     disco.add_argument("--min-score", type=int, default=0,
-                       help="drop leads scoring below this (0-100)")
+                       help="drop leads whose final_score is below this (0-100)")
+    disco.add_argument("--max-age-days", type=int, default=30,
+                       help="posts older than N days score much lower (default 30)")
+    disco.add_argument("--score", choices=("deterministic", "llm"),
+                       default="deterministic",
+                       help="'llm' adds a metered relevance pass (default: deterministic, free)")
+    disco.add_argument("--model", default="claude-sonnet-5", help="model for --score llm")
+    disco.add_argument("--max-cost", type=float, default=1.0,
+                       help="USD ceiling for one --score llm run (default 1.00)")
+    disco.add_argument("--refresh", action="store_true",
+                       help="ignore cached llm scores and re-call the API")
     disco.add_argument("--delay", type=float, default=1.0,
                        help="seconds between queries (politeness; default 1.0)")
     disco.add_argument("--dry-run", action="store_true",
                        help="fetch, score and print, but persist nothing")
     disco.add_argument("--json", action="store_true", help="machine-readable output")
     disco.set_defaults(func=_cmd_discover_opportunities)
+
+    topo = sub.add_parser(
+        "top-opportunities", parents=[common],
+        help="show the human-review shortlist of real, current opportunities",
+    )
+    topo.add_argument("--limit", type=int, default=10)
+    topo.add_argument("--min-score", type=int, default=60,
+                      help="minimum final_score (default 60)")
+    topo.add_argument("--max-age-days", type=int, default=None,
+                      help="hide opportunities older than N days")
+    topo.add_argument("--all", action="store_true",
+                      help="include success-story / educational / irrelevant rows")
+    topo.add_argument("--json", action="store_true")
+    topo.set_defaults(func=_cmd_top_opportunities)
+
+    revo = sub.add_parser(
+        "review-opportunity", parents=[common, actor_only],
+        help="mark one opportunity reviewed (approve) or rejected - never contacts anyone",
+    )
+    revo.add_argument("lead_id", help="lead id (or a unique prefix)")
+    revo.add_argument("--approve", action="store_true",
+                      help="human confirms this is a relevant opportunity")
+    revo.add_argument("--reject", action="store_true",
+                      help="human marks this as not relevant")
+    revo.set_defaults(func=_cmd_review_opportunity)
 
     sub.add_parser("report", parents=[common], help="print the report only").set_defaults(
         func=_cmd_report

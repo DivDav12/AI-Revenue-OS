@@ -58,6 +58,21 @@ def _http_json(url: str):
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _epoch(since_ts) -> int | None:
+    """since_ts may be an int epoch, an ISO string, or None."""
+    if since_ts in (None, ""):
+        return None
+    try:
+        return int(since_ts)
+    except (TypeError, ValueError):
+        pass
+    try:
+        dt = datetime.fromisoformat(str(since_ts).replace("Z", "+00:00"))
+        return int(dt.timestamp())
+    except ValueError:
+        return None
+
+
 # --- offline sources (used by tests / --source static|file) -----------
 
 class StaticAcqSource:
@@ -83,7 +98,7 @@ class StaticAcqSource:
          "platform": "Hacker News", "source": "static"},
     ]
 
-    def search(self, query: str, limit: int) -> list[AcqRecord]:
+    def search(self, query: str, limit: int, *, since_ts=None) -> list[AcqRecord]:
         return [
             AcqRecord(query=query, **{k: d.get(k, "") for k in (
                 "title", "url", "text", "author", "posted_at", "platform",
@@ -111,7 +126,7 @@ class FileAcqSource:
             raise ValueError(f"record file {self.path} must contain a JSON list")
         self._records = raw
 
-    def search(self, query: str, limit: int) -> list[AcqRecord]:
+    def search(self, query: str, limit: int, *, since_ts=None) -> list[AcqRecord]:
         out = []
         for d in self._records[: max(0, limit)]:
             if not isinstance(d, dict):
@@ -132,17 +147,24 @@ class FileAcqSource:
 # --- real sources (opt-in, keyless) ----------------------------------
 
 class HNAlgoliaSource:
-    """Hacker News full-text search via the free, keyless Algolia API."""
+    """Hacker News full-text search via the free, keyless Algolia API.
+
+    When `since_ts` is given, only stories created after it are fetched
+    (numericFilters), so a `--max-age-days` run gets current threads
+    instead of decade-old articles."""
 
     name = "hn-algolia"
     _URL = "https://hn.algolia.com/api/v1/search"
 
-    def search(self, query: str, limit: int) -> list[AcqRecord]:
-        params = urllib.parse.urlencode({
+    def search(self, query: str, limit: int, *, since_ts=None) -> list[AcqRecord]:
+        params = {
             "query": query, "tags": "story",
             "hitsPerPage": max(1, min(limit, 50)),
-        })
-        body = _http_json(f"{self._URL}?{params}")
+        }
+        epoch = _epoch(since_ts)
+        if epoch is not None:
+            params["numericFilters"] = f"created_at_i>{epoch}"
+        body = _http_json(f"{self._URL}?{urllib.parse.urlencode(params)}")
         out: list[AcqRecord] = []
         for hit in body.get("hits", []) or []:
             oid = str(hit.get("objectID", "")).strip()
@@ -166,12 +188,19 @@ class HNAlgoliaSource:
 
 
 class RedditSearchSource:
-    """Reddit link search via the free, keyless search.json endpoint."""
+    """Reddit link search via the keyless search.json endpoint.
+
+    NOTE: Reddit now returns HTTP 403 for unauthenticated non-browser
+    requests, so this source is effectively unavailable. It is kept for
+    completeness and stays failure-isolated (CompositeAcqSource /
+    workflow record the error and HN still works). A future OAuth-based
+    source would plug in here with the same `search(query, limit,
+    since_ts=)` signature - do not add rule-violating workarounds."""
 
     name = "reddit"
     _URL = "https://www.reddit.com/search.json"
 
-    def search(self, query: str, limit: int) -> list[AcqRecord]:
+    def search(self, query: str, limit: int, *, since_ts=None) -> list[AcqRecord]:
         params = urllib.parse.urlencode({
             "q": query, "sort": "new", "type": "link",
             "limit": max(1, min(limit, 50)),
@@ -218,11 +247,11 @@ class CompositeAcqSource:
         self._sources = list(sources)
         self.errors: list[tuple[str, str]] = []
 
-    def search(self, query: str, limit: int) -> list[AcqRecord]:
+    def search(self, query: str, limit: int, *, since_ts=None) -> list[AcqRecord]:
         out: list[AcqRecord] = []
         for src in self._sources:
             try:
-                out.extend(src.search(query, limit))
+                out.extend(src.search(query, limit, since_ts=since_ts))
             except Exception as exc:  # a dead sub-source must not kill the rest
                 logger.warning("source %r failed for %r: %s",
                                src.name, query, exc)

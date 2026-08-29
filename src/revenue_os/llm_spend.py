@@ -19,7 +19,7 @@ from pathlib import Path
 from .store import now_iso
 
 _ACTIVITIES = ("evaluate", "plan", "offer", "decide", "research", "competition",
-               "copy", "launch_plan")
+               "copy", "launch_plan", "acquisition")
 
 
 def entry_from(activity: str, worker) -> dict:

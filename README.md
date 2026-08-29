@@ -1,34 +1,66 @@
 # AI-Revenue-OS
 Autonomous multi-agent AI revenue ecosystem
 
-## Acquisition Agent (`discover-opportunities`)
+## Acquisition Agent (`discover-opportunities` / `top-opportunities`)
 
-Finds **public** posts where someone is explicitly asking how to get their
-first paying customers/clients/users - potential buyers of the Customer
-Launch Plan.
+Finds **current, real** public posts from founders who are actively
+struggling to get their first paying customers - people the EUR 29.90
+Customer Launch Plan could help right now.
 
 ```
 python -m revenue_os discover-opportunities --data-dir data \
   [--source hn-algolia|reddit|both|file|static] [--query "phrase" ...] \
-  [--limit 15] [--min-score 0] [--dry-run] [--json]
+  [--limit 15] [--min-score 0] [--max-age-days 30] \
+  [--score deterministic|llm] [--dry-run] [--json]
+
+python -m revenue_os top-opportunities [--limit 10] [--min-score 60] \
+  [--max-age-days 30] [--all] [--json]
+
+python -m revenue_os review-opportunity <lead-id> --approve|--reject
 ```
 
-- `acquisition_sources.py` isolates the I/O: `hn-algolia` and `reddit` hit
-  free, keyless public search APIs; `file`/`static` are offline. Default
-  source: `hn-algolia`.
-- `acquisition.py` scores each **real** post deterministically (no LLM, no
-  cost): intent-phrase weights + title bonus + recency -> `fit_score`
-  0-100, `buying_intent`, and an advisory `promo_allowed`
-  (`no|caution|likely|unknown`) with the reason.
-- Every stored field is copied verbatim from the API record or computed
-  from it - nothing is synthesised (missing author/timestamp stay empty).
-  Quality checks drop leads with no real URL, no title, a placeholder
-  host, or no intent match.
-- Leads are stored in `data/acquisition.json`, de-duplicated by canonical
-  URL, ranked by `fit_score`. Re-runs add only new threads.
+**Scoring** (`acquisition.py`, deterministic by default - no LLM, no cost):
+`classify()` scans four signal groups - ASK ("how do I get customers",
+"struggling to get customers"), FIRST_CUSTOMER ("0 customers", "first
+sale"), SELF_SITUATION ("my SaaS", "just launched"), plus a question /
+Ask-HN bonus - against NEGATIVE groups: STORY (retrospective case studies,
+"how I got 10k customers", "from 0 to ...") and MISC (tutorials, news,
+"someone should build"). A title match counts far more than a body match.
+It produces `relevance_score` 0-100, `prospect_type`
+(active_problem / seeking_advice / founder_building / success_story /
+educational / irrelevant / unknown), `active_problem`, and `buying_intent`.
 
-**It never posts, replies, or contacts anyone.** `promo_allowed` is a
-conservative hint; always read the community's own rules before replying.
+**Recency**: `age_days` + `age_bucket` (recent<=7d / aging<=30d / old / unknown).
+A missing timestamp is `unknown`, never guessed - it is down-weighted,
+not deleted.
+
+**`final_score` = relevance x recency x problem x intent** (weights
+documented in `acquisition.py`). Posts older than `--max-age-days` hit an
+explicit recency cliff, so a 2-day-old genuine ask beats a 10-year-old
+perfect case study.
+
+**`--score llm`** adds one metered Claude call per lead
+(`acquisition_llm.py`) that judges active-problem vs case-study (examples
+A-F baked into the prompt) and returns `relevance_score`,
+`is_active_problem`, `prospect_type`, `reason`, `recommended_fit`. It
+reuses `budget_gate` + `CostMeter` + `record_llm_spend` + `LlmCache` (a
+lead already scored is never re-charged) and the post text is fenced as
+UNTRUSTED. The model is instructed never to claim the person will buy.
+
+**Sources**: `hn-algolia` (free, keyless; `--max-age-days` narrows the
+fetch to current threads). Reddit's keyless API now returns HTTP 403;
+`RedditSearchSource` stays failure-isolated - HN keeps working and the
+run reports `sources_status`.
+
+**Store** (`data/acquisition.json`, dashboard-ready): keyed + de-duped by
+canonical URL. A re-found lead is *merged* - the better score wins, the
+`human_review_status` (`new` / `reviewed` / `rejected`) and original
+`discovered_at` are preserved.
+
+**It never posts, replies, DMs, emails, or contacts anyone.**
+`review-opportunity --approve` only records a human verdict.
+`promo_allowed` is a conservative hint - always read the community's own
+rules first.
 
 ## PayPal
 
