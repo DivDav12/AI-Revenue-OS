@@ -465,3 +465,51 @@ def package_deliverables(store: CandidateStore, data_dir, *,
         packaged.append(updated)
     store.save()
     return packaged
+
+
+def draft_launch_plan(intake_store, revenue_ledger, worker, order_id: str, *,
+                      sink=None):
+    """Draft the Customer Launch Plan for ONE paid, human-reviewed intake.
+
+    Gates: the intake must be `reviewed` (the human's pre-draft gate), have
+    no plan yet (idempotent), and its capture_id must still be a booked
+    `paypal:<id>` payment for the candidate (the real-revenue rule).
+    Dispatches one task through the Orchestrator to a LaunchPlanAgent and
+    attaches the draft. Returns the updated intake entry, or raises
+    ValueError if a gate is not met / the draft fails.
+    """
+    from .intake import _booked_paypal
+    from .launch_plan import LaunchPlanAgent
+
+    entry = intake_store.get(order_id)
+    if entry is None:
+        raise ValueError(f"no intake for order {order_id!r}")
+    if entry.get("plan"):
+        raise ValueError(f"order {order_id!r} already has a plan")
+    if entry.get("status") != "reviewed":
+        raise ValueError(
+            f"order {order_id!r} is {entry.get('status')!r}; run "
+            "`intake-review` first (human gate)")
+
+    cap = str(entry.get("capture_id", ""))
+    booked = _booked_paypal(revenue_ledger)
+    if cap not in booked or booked[cap] != entry.get("candidate"):
+        raise ValueError(
+            f"order {order_id!r}: capture {cap!r} is not a booked payment for "
+            f"{entry.get('candidate')!r}; nothing was drafted")
+
+    orchestrator = Orchestrator(registry=AgentRegistry(), sink=sink)
+    orchestrator.register(LaunchPlanAgent(name="fulfillment_writer"))
+    orchestrator.add_task(Task(
+        objective=f"launch plan: {order_id}",
+        capability="draft_launch_plan",
+        payload={"intake": dict(entry), "worker": worker},
+    ))
+
+    for result in orchestrator.run_cycle():
+        if result.status != "ok":
+            raise ValueError(f"launch plan draft failed: {result.error}")
+        intake_store.attach_plan(result.output["order_id"], result.output["plan"])
+        intake_store.save()
+        return intake_store.get(order_id)
+    raise ValueError("launch plan draft produced no result")

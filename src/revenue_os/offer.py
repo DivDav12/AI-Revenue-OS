@@ -35,7 +35,10 @@ class Offer:
     currency: str = "USD"
     price_is_estimate: bool = True
     created_at: str = ""
-    positioning: str = ""  # one line: who it's for + the pain (LLM path only)
+    positioning: str = ""  # one line: who it's for + the pain / core promise
+    includes: tuple = ()   # "what you get" bullets, one line each
+    delivery_note: str = ""  # e.g. "Delivered as a PDF within 3 business days."
+    disclaimer: str = ""     # what is NOT promised (honesty line)
 
     def to_dict(self) -> dict:
         return {
@@ -48,6 +51,9 @@ class Offer:
             "price_is_estimate": self.price_is_estimate,
             "created_at": self.created_at,
             "positioning": self.positioning,
+            "includes": list(self.includes),
+            "delivery_note": self.delivery_note,
+            "disclaimer": self.disclaimer,
         }
 
 
@@ -67,6 +73,9 @@ def paid_offer(
     delivery: str = "manual",
     call_to_action: str = "",
     positioning: str = "",
+    includes: tuple = (),
+    delivery_note: str = "",
+    disclaimer: str = "",
 ) -> Offer:
     """A real, human-priced first offer (price_is_estimate=False).
 
@@ -89,6 +98,9 @@ def paid_offer(
         price_is_estimate=False,
         created_at=now_iso(),
         positioning=positioning,
+        includes=tuple(s for s in (x.strip() for x in includes) if s),
+        delivery_note=delivery_note,
+        disclaimer=disclaimer,
     )
 
 

@@ -22,6 +22,10 @@ Human decision commands (operate on the persistent --data-dir store):
   prepare-launch    (--proposer llm opt-in; template by default)
   launch NAME
   build-checkout NAME --price N [--currency EUR]   write a real PayPal checkout page
+  intake-import FILE      store buyer intake rows that match a booked payment
+  intake-list / intake-show ORDER_ID / intake-review ORDER_ID
+  draft-launch-plan ORDER_ID   draft the Customer Launch Plan (web-grounded LLM)
+  plan-approve ORDER_ID / plan-render ORDER_ID   human gate, then Markdown
   payment NAME AMOUNT
   paypal-verify NAME ORDER_ID   book one verified PayPal order (read-only API)
   paypal-sync [--days N] [--dry-run]   book recent PayPal payments by custom_id
@@ -49,6 +53,7 @@ from .revenuedashboard import render_html
 from .discovery_log import DiscoveryLog
 from .llm_spend import LlmSpendLog
 from .llm_workers import (
+    budget_gate as _llm_budget_gate,
     build_evaluator,
     build_planner,
     build_proposer,
@@ -544,7 +549,7 @@ def _cmd_paypal_verify(args) -> int:
 
 
 def _cmd_build_checkout(args) -> int:
-    from .deliverable import render_checkout_html
+    from .deliverable import render_checkout_html, render_intake_html
     from .offer import paid_offer
 
     data_dir = _data_dir(args)
@@ -568,27 +573,42 @@ def _cmd_build_checkout(args) -> int:
         offer = paid_offer(
             cand, price=args.price, currency=args.currency,
             what_is_sold=args.what or "", delivery=args.delivery,
-            call_to_action=args.cta or "",
+            call_to_action=args.cta or "", positioning=args.promise or "",
+            includes=tuple(args.include or ()),
+            delivery_note=args.delivery_note or "",
+            disclaimer=args.disclaimer or "",
         ).to_dict()
         store.put(replace(cand, offer=offer))
         store.save()
     if not offer.get("price"):
         raise ValueError("no offer on this candidate; pass --price to create one")
 
+    form_action = (args.form_action or "").strip()
     html = render_checkout_html(
         {"name": cand.name, "description": cand.description}, offer,
         client_id=client_id, currency=offer.get("currency") or args.currency,
+        form_action=form_action,
     )
     out = (Path(args.out) if args.out
            else data_dir / "deliverables" / cand.name / "checkout.html")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(html, encoding="utf-8")
+    intake_path = out.parent / "intake.html"
+    intake_path.write_text(
+        render_intake_html(cand.name, form_action=form_action,
+                           product=offer.get("what_is_sold") or cand.name),
+        encoding="utf-8",
+    )
     print(f"wrote {out}")
+    print(f"wrote {intake_path}")
     print(f"custom_id = {cand.name}")
     print(f"price = {offer['price']} {offer.get('currency', 'EUR')}")
+    if not form_action:
+        print("NOTE: form endpoint not set - pass --form-action <url> so the "
+              "intake form submits somewhere (both pages show a placeholder).")
     print(
-        f"after a real payment: `revenue_os paypal-sync` "
-        f"(or `paypal-verify \"{cand.name}\" <order-id>`)"
+        f"after a real payment: `revenue_os paypal-sync`, then "
+        f"`revenue_os intake-import <export.json>`"
     )
     return 0
 
@@ -609,6 +629,162 @@ def _cmd_paypal_sync(args) -> int:
               f"{s['reason']}")
     print(f"{tag} {len(r['booked'])} payment(s), {r['total_booked']} total; "
           f"{len(r['skipped'])} skipped (last {r['range_days']} days)")
+    return 0
+
+
+def _intake_store(data_dir: Path):
+    from .intake import IntakeStore
+
+    return IntakeStore.load(data_dir / "intake.json")
+
+
+def _cmd_intake_import(args) -> int:
+    from .intake import import_submissions
+
+    data_dir = _data_dir(args)
+    _, revenue_ledger, _ = _load(data_dir)
+    raw = json.loads(Path(args.file).read_text(encoding="utf-8"))
+    if isinstance(raw, dict):
+        raw = raw.get("submissions") or raw.get("data") or [raw]
+    if not isinstance(raw, list):
+        raise ValueError("expected a JSON list of submissions (or {submissions:[...]})")
+
+    intake = _intake_store(data_dir)
+    r = import_submissions(intake, revenue_ledger, raw, candidate=args.candidate)
+    for e in r["stored"]:
+        print(f"  stored: {e['order_id']} -> {e['candidate']} ({e['fields']['email']})")
+    for s in r["skipped"]:
+        print(f"  skipped row {s['row']}"
+              + (f" ({s['order_id']})" if s.get("order_id") else "")
+              + f": {s['reason']}")
+    print(f"imported {len(r['stored'])} submission(s); {len(r['skipped'])} skipped")
+    return 0
+
+
+def _cmd_intake_list(args) -> int:
+    entries = _intake_store(_data_dir(args)).all()
+    if not entries:
+        print("no intake submissions")
+        return 0
+    for e in sorted(entries, key=lambda x: x.get("submitted_at", "")):
+        f = e["fields"]
+        print(f"  {e['status']:9} {e['order_id']:20} {e['candidate']}  "
+              f"{f['name']} <{f['email']}>")
+    return 0
+
+
+def _cmd_intake_show(args) -> int:
+    from .intake import INTAKE_FIELDS
+
+    e = _intake_store(_data_dir(args)).get(args.order_id)
+    if e is None:
+        raise ValueError(f"no intake for order {args.order_id!r}")
+    print(f"order_id   {e['order_id']}")
+    print(f"capture_id {e.get('capture_id', '')}")
+    print(f"candidate  {e['candidate']}")
+    print(f"status     {e['status']}")
+    print(f"submitted  {e.get('submitted_at', '')}")
+    for key, label in INTAKE_FIELDS:
+        print(f"\n{label}:\n  {e['fields'].get(key, '')}")
+    plan = e.get("plan")
+    if isinstance(plan, dict):
+        qc = plan.get("qc") or {}
+        print(f"\nplan       {plan.get('status')} ({plan.get('basis')})")
+        for chk in qc.get("checks", []):
+            print(f"  qc: {chk}")
+        for s in plan.get("sources", []):
+            print(f"  source: {s.get('title')} - {s.get('url')}")
+    return 0
+
+
+def _cmd_intake_review(args) -> int:
+    data_dir = _data_dir(args)
+    intake = _intake_store(data_dir)
+    e = intake.mark_reviewed(args.order_id, actor=args.actor)
+    intake.save()
+    print(f"reviewed: {e['order_id']} ({e['candidate']}) -> {e['status']}")
+    return 0
+
+
+def _cmd_draft_launch_plan(args) -> int:
+    from .launch_plan import LaunchPlanWorker, estimate_launch_plan_cost_usd
+    from .llm_cache import LlmCache
+    from .llm_normalize import build_client
+    from .workflow import draft_launch_plan
+
+    data_dir = _data_dir(args)
+    _, revenue_ledger, _ = _load(data_dir)
+    intake = _intake_store(data_dir)
+    entry = intake.get(args.order_id)
+    if entry is None:
+        raise ValueError(f"no intake for order {args.order_id!r}")
+    if entry.get("plan"):
+        raise ValueError(f"order {args.order_id!r} already has a plan")
+    if entry.get("status") != "reviewed":
+        raise ValueError(
+            f"order {args.order_id!r} is {entry.get('status')!r}; run "
+            "`intake-review` first (human gate)")
+
+    mode = args.mode
+    cache = LlmCache.load(data_dir / "llm_launch_plan_cache.json")
+    est = estimate_launch_plan_cost_usd(entry["fields"], args.model, mode=mode)
+    if est > args.max_cost:
+        raise ValueError(
+            f"estimated launch-plan cost ${est} exceeds the ${args.max_cost} "
+            "ceiling; nothing was drafted")
+    ceiling = _llm_budget_gate(data_dir, est, args.max_cost)
+
+    worker = LaunchPlanWorker(
+        client=build_client(), model=args.model, max_cost_usd=ceiling,
+        cache=cache, refresh=args.refresh, mode=mode,
+    )
+    updated = draft_launch_plan(intake, revenue_ledger, worker, args.order_id)
+    cache.save()
+    _record_llm_spend(data_dir, "launch_plan", worker)
+
+    plan = updated["plan"]
+    print(f"drafted: {args.order_id} ({updated['candidate']}) -> plan status "
+          f"{plan['status']}")
+    print(f"  basis: {plan['basis']}; cost ${round(worker.meter.cost_usd, 4)} "
+          f"({worker.cache_hits} cache hit / {worker.cache_misses} miss)")
+    for chk in plan.get("qc", {}).get("checks", []):
+        print(f"  qc: {chk}")
+    print("next: review the draft, then `revenue_os plan-approve "
+          f"{args.order_id}`")
+    return 0
+
+
+def _cmd_plan_approve(args) -> int:
+    data_dir = _data_dir(args)
+    intake = _intake_store(data_dir)
+    e = intake.approve_plan(args.order_id, actor=args.actor)
+    intake.save()
+    print(f"approved: {args.order_id} ({e['candidate']}) -> plan "
+          f"{e['plan']['status']}")
+    return 0
+
+
+def _cmd_plan_render(args) -> int:
+    from .deliverable import render_launch_plan_md
+
+    data_dir = _data_dir(args)
+    e = _intake_store(data_dir).get(args.order_id)
+    if e is None:
+        raise ValueError(f"no intake for order {args.order_id!r}")
+    plan = e.get("plan") or {}
+    if plan.get("status") != "approved":
+        raise ValueError(
+            f"plan for {args.order_id!r} is {plan.get('status')!r}; run "
+            "`plan-approve` first (human gate before delivery)")
+    md = render_launch_plan_md(e)
+    out = (Path(args.out) if args.out
+           else data_dir / "deliverables" / e["candidate"]
+           / f"plan-{args.order_id}.md")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(md, encoding="utf-8")
+    print(f"wrote {out}")
+    print("convert to PDF yourself (pandoc / print-to-PDF); nothing is sent "
+          "to the customer automatically")
     return 0
 
 
@@ -933,13 +1109,73 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bc.add_argument("--currency", default="EUR")
     bc.add_argument("--what", default=None,
-                    help="what is sold (default: candidate description)")
+                    help="product name / what is sold (default: candidate description)")
     bc.add_argument("--delivery", choices=("digital", "manual", "subscription"),
                     default="manual")
     bc.add_argument("--cta", default=None, help="call-to-action line")
+    bc.add_argument("--promise", default=None, help="one-line core promise (subheadline)")
+    bc.add_argument("--include", action="append", default=None, metavar="LINE",
+                    help='one "what you get" bullet; repeat for each')
+    bc.add_argument("--delivery-note", default=None,
+                    help='e.g. "Delivered as a personalized PDF within 3 business days."')
+    bc.add_argument("--disclaimer", default=None,
+                    help="what is NOT promised (shown prominently on the page)")
+    bc.add_argument("--form-action", default=None, metavar="URL",
+                    help="endpoint the post-payment intake form POSTs to "
+                         "(a form provider; a placeholder is shown if omitted)")
     bc.add_argument("--out", default=None,
                     help="output path (default: <data-dir>/deliverables/<name>/checkout.html)")
     bc.set_defaults(func=_cmd_build_checkout)
+
+    ii = sub.add_parser(
+        "intake-import", parents=[common],
+        help="store buyer intake submissions that match a booked PayPal payment",
+    )
+    ii.add_argument("file", help="JSON export from the form provider")
+    ii.add_argument("--candidate", default=None,
+                    help="candidate name if a row does not carry one")
+    ii.set_defaults(func=_cmd_intake_import)
+
+    il = sub.add_parser("intake-list", parents=[common],
+                        help="list buyer intake submissions")
+    il.set_defaults(func=_cmd_intake_list)
+
+    ish = sub.add_parser("intake-show", parents=[common],
+                         help="print one buyer intake submission")
+    ish.add_argument("order_id")
+    ish.set_defaults(func=_cmd_intake_show)
+
+    ir = sub.add_parser("intake-review", parents=[common, actor_only],
+                        help="mark a buyer intake submission as reviewed")
+    ir.add_argument("order_id")
+    ir.set_defaults(func=_cmd_intake_review)
+
+    dlp = sub.add_parser(
+        "draft-launch-plan", parents=[common],
+        help="draft the Customer Launch Plan for one paid, reviewed intake",
+    )
+    dlp.add_argument("order_id")
+    dlp.add_argument("--mode", choices=("web", "llm"), default="web",
+                     help="web = grounded in real web search with sources (default)")
+    dlp.add_argument("--model", default="claude-sonnet-5")
+    dlp.add_argument("--max-cost", type=float, default=1.5,
+                     help="USD ceiling for this draft (default 1.50)")
+    dlp.add_argument("--refresh", action="store_true",
+                     help="ignore a cached plan and re-call the API")
+    dlp.set_defaults(func=_cmd_draft_launch_plan)
+
+    pa = sub.add_parser("plan-approve", parents=[common, actor_only],
+                        help="approve a drafted Customer Launch Plan for delivery")
+    pa.add_argument("order_id")
+    pa.set_defaults(func=_cmd_plan_approve)
+
+    pr = sub.add_parser("plan-render", parents=[common],
+                        help="write an approved Customer Launch Plan to Markdown")
+    pr.add_argument("order_id")
+    pr.add_argument("--out", default=None,
+                    help="output path (default: "
+                         "<data-dir>/deliverables/<candidate>/plan-<order_id>.md)")
+    pr.set_defaults(func=_cmd_plan_render)
 
     budget = sub.add_parser(
         "budget", parents=[common, actor_only], help="set/raise a candidate's spend cap"
