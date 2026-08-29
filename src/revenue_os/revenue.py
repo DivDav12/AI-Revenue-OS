@@ -54,6 +54,11 @@ class RevenueLedger:
     def add(self, entry: dict) -> None:
         self._entries.append(entry)
 
+    def has_ref(self, ref: str) -> bool:
+        """True if a payment with this external reference is already
+        recorded (idempotency for imported payments)."""
+        return bool(ref) and any(e.get("ref") == ref for e in self._entries)
+
     def total_for(self, name: str) -> float:
         return round(
             sum(e["amount"] for e in self._entries if e["candidate_name"] == name), 2
@@ -91,6 +96,7 @@ def record_payment(
     currency: str = "USD",
     note: str = "",
     received_at: str | None = None,
+    ref: str = "",
 ) -> Candidate:
     if amount <= 0:
         raise ValueError("amount must be positive")
@@ -101,17 +107,20 @@ def record_payment(
         raise ValueError(
             f"candidate {name!r} is {candidate.status!r}; must be launched or earning"
         )
+    if ref and ledger.has_ref(ref):
+        raise ValueError(f"payment {ref!r} is already recorded")
 
-    ledger.add(
-        {
-            "candidate_name": name,
-            "amount": round(float(amount), 2),
-            "currency": currency,
-            "received_at": received_at or now_iso(),
-            "note": note,
-            "actor": actor,
-        }
-    )
+    entry = {
+        "candidate_name": name,
+        "amount": round(float(amount), 2),
+        "currency": currency,
+        "received_at": received_at or now_iso(),
+        "note": note,
+        "actor": actor,
+    }
+    if ref:
+        entry["ref"] = ref
+    ledger.add(entry)
     ledger.save()
 
     if candidate.status == "launched":

@@ -22,6 +22,8 @@ Human decision commands (operate on the persistent --data-dir store):
   prepare-launch    (--proposer llm opt-in; template by default)
   launch NAME
   payment NAME AMOUNT
+  paypal-verify NAME ORDER_ID   book one verified PayPal order (read-only API)
+  paypal-sync [--days N] [--dry-run]   book recent PayPal payments by custom_id
 
 Cost-control commands (authorize/record only; never move money):
   budget NAME AMOUNT
@@ -526,6 +528,38 @@ def _cmd_payment(args) -> int:
     return 0
 
 
+def _cmd_paypal_verify(args) -> int:
+    from .paypal import verify_and_book_order
+
+    store, revenue_ledger, _ = _load(_data_dir(args))
+    r = verify_and_book_order(
+        store, revenue_ledger, candidate=args.name, order_id=args.order_id,
+        actor=args.actor, force=args.force,
+    )
+    print(f"{r['outcome']}: {r['candidate']} +{r['amount']} {r['currency']} "
+          f"(paypal:{r['capture_id']})")
+    return 0
+
+
+def _cmd_paypal_sync(args) -> int:
+    from .paypal import sync_transactions
+
+    store, revenue_ledger, _ = _load(_data_dir(args))
+    r = sync_transactions(
+        store, revenue_ledger, days=args.days, actor=args.actor, dry_run=args.dry_run,
+    )
+    tag = "would book" if args.dry_run else "booked"
+    for b in r["booked"]:
+        print(f"  {tag}: {b['candidate']} +{b['amount']} {b['currency']} "
+              f"(paypal:{b['capture_id']})")
+    for s in r["skipped"]:
+        print(f"  skipped {s['amount']} {s['currency']} (paypal:{s['capture_id']}): "
+              f"{s['reason']}")
+    print(f"{tag} {len(r['booked'])} payment(s), {r['total_booked']} total; "
+          f"{len(r['skipped'])} skipped (last {r['range_days']} days)")
+    return 0
+
+
 # --- cost-control commands (authorize/record only; never move money) ----
 
 
@@ -817,6 +851,24 @@ def build_parser() -> argparse.ArgumentParser:
     payment.add_argument("name")
     payment.add_argument("amount", type=float)
     payment.set_defaults(func=_cmd_payment)
+
+    pv = sub.add_parser(
+        "paypal-verify", parents=[common, actor_only],
+        help="verify one PayPal order and book it into the revenue ledger",
+    )
+    pv.add_argument("name", help="candidate the payment belongs to")
+    pv.add_argument("order_id", help="the PayPal order ID")
+    pv.add_argument("--force", action="store_true",
+                    help="book even if the order's custom_id names a different candidate")
+    pv.set_defaults(func=_cmd_paypal_verify, actor="paypal")
+
+    ps = sub.add_parser(
+        "paypal-sync", parents=[common, actor_only],
+        help="book recent PayPal payments (matched to candidates by custom_id)",
+    )
+    ps.add_argument("--days", type=int, default=31, help="lookback window (max 31)")
+    ps.add_argument("--dry-run", action="store_true", help="report only, book nothing")
+    ps.set_defaults(func=_cmd_paypal_sync, actor="paypal")
 
     budget = sub.add_parser(
         "budget", parents=[common, actor_only], help="set/raise a candidate's spend cap"
