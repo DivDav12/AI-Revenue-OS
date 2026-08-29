@@ -13,7 +13,9 @@ pre-launch demand test.
 
 from __future__ import annotations
 
+import json
 from html import escape
+from urllib.parse import quote
 
 from .agent import Agent
 from .messages import Result, Task
@@ -22,6 +24,14 @@ from .store import now_iso
 
 def _esc(v: object) -> str:
     return escape(str(v), quote=True)
+
+
+def _js(v: object) -> str:
+    """A safe JS string literal: JSON-encoded, then neutralise the three
+    characters that could break out of a <script> element."""
+    return (json.dumps(str(v))
+            .replace("<", "\\u003c").replace(">", "\\u003e")
+            .replace("&", "\\u0026"))
 
 
 def _paragraphs(body: str) -> list[str]:
@@ -122,6 +132,129 @@ def render_landing_html(candidate: dict, offer: dict, draft: dict,
         "pre-launch demand test"
         + (f" (goal: {_esc(metric)})" if metric else "") + ".</div>\n"
         "</div>\n</body>\n</html>\n"
+    )
+
+
+_CHECKOUT_STYLE = """
+*{box-sizing:border-box}
+body{margin:0;font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,
+  Helvetica,Arial,sans-serif;color:#1b2430;background:#f7f8fa}
+.wrap{max-width:560px;margin:0 auto;padding:3rem 1.25rem 4rem}
+h1{font-size:1.8rem;line-height:1.25;margin:0 0 .6rem}
+.sub{font-size:1.1rem;color:#4a5568;margin:0 0 1.75rem}
+p{margin:0 0 1rem}
+.card{border:1px solid #d9dee6;border-radius:12px;padding:1.4rem;background:#fff;
+  margin:1.75rem 0}
+.price{font-size:1.7rem;font-weight:700;margin:.2rem 0 .1rem}
+.what{font-weight:600;margin-bottom:.4rem}
+#paypal-button-container{margin-top:1rem;min-height:45px}
+#pay-result{margin-top:1rem;padding:.9rem 1rem;border-radius:8px;background:#eef6ee;
+  border:1px solid #cfe6cf;display:none}
+#pay-result.err{background:#fdeeee;border-color:#e6cfcf}
+#pay-result code{font-size:.9rem;word-break:break-all}
+.terms{font-size:.9rem;color:#4a5568}
+.foot{margin-top:2rem;font-size:.85rem;color:#718096;border-top:1px solid #e2e6ec;
+  padding-top:1rem}
+""".strip()
+
+
+def render_checkout_html(candidate: dict, offer: dict, *,
+                         client_id: str, currency: str = "EUR") -> str:
+    """A real one-item PayPal checkout page for a human-priced offer.
+
+    Self-contained except the PayPal JS SDK. The order it creates sets
+    purchase_units[].custom_id to the exact candidate name, so a later
+    `paypal-sync` / `paypal-verify` books the payment against this
+    candidate. This page never records revenue itself.
+    """
+    offer = offer or {}
+    name = str(candidate.get("name", ""))
+    if not name:
+        raise ValueError("candidate has no name")
+    if not client_id:
+        raise ValueError("client_id is required")
+    try:
+        price = round(float(offer["price"]), 2)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("offer needs a numeric price") from exc
+    if price <= 0:
+        raise ValueError("offer price must be positive")
+
+    currency = (offer.get("currency") or currency or "EUR").upper()
+    amount = f"{price:.2f}"
+    what = str(offer.get("what_is_sold") or candidate.get("description") or name)
+    positioning = str(offer.get("positioning") or "")
+    cta = str(offer.get("call_to_action") or "Pay now")
+    delivery = str(offer.get("delivery") or "manual")
+
+    sdk_url = (
+        "https://www.paypal.com/sdk/js?client-id="
+        + quote(client_id, safe="")
+        + "&currency=" + quote(currency, safe="")
+        + "&intent=capture"
+    )
+    # JS string literals - escaped so nothing can break out of <script>.
+    js_custom_id = _js(name)
+    js_amount = _js(amount)
+    js_currency = _js(currency)
+    js_desc = _js(what[:127])
+
+    script = (
+        "paypal.Buttons({\n"
+        "  createOrder: function(data, actions) {\n"
+        "    return actions.order.create({\n"
+        "      intent: 'CAPTURE',\n"
+        "      purchase_units: [{\n"
+        f"        amount: {{ value: {js_amount}, currency_code: {js_currency} }},\n"
+        f"        custom_id: {js_custom_id},\n"
+        f"        description: {js_desc}\n"
+        "      }]\n"
+        "    });\n"
+        "  },\n"
+        "  onApprove: function(data, actions) {\n"
+        "    return actions.order.capture().then(function(details) {\n"
+        "      var box = document.getElementById('pay-result');\n"
+        "      box.style.display = 'block';\n"
+        "      var oid = String(data.orderID).replace(/[<>&]/g, '');\n"
+        "      box.innerHTML = 'Payment received. Your order ID is <code>' + oid +"
+        " '</code>. You will be contacted at the email address you used with"
+        " PayPal to arrange delivery.';\n"
+        "    });\n"
+        "  },\n"
+        "  onError: function(err) {\n"
+        "    var box = document.getElementById('pay-result');\n"
+        "    box.className = 'err'; box.style.display = 'block';\n"
+        "    box.textContent = 'Payment could not be completed. Nothing was charged.';\n"
+        "  }\n"
+        "}).render('#paypal-button-container');"
+    )
+
+    est_note = ""  # a paid_offer is never an estimate; guard anyway
+    if offer.get("price_is_estimate"):
+        est_note = " <span class='terms'>(indicative price)</span>"
+
+    return (
+        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+        f"<title>{_esc(what)}</title>\n<style>\n{_CHECKOUT_STYLE}\n</style>\n"
+        f"<script src=\"{_esc(sdk_url)}\"></script>\n"
+        "</head>\n<body>\n<div class='wrap'>\n"
+        f"<h1>{_esc(what)}</h1>\n"
+        + (f"<p class='sub'>{_esc(positioning)}</p>\n" if positioning else "")
+        + "<div class='card'>\n"
+        f"<div class='what'>{_esc(what)}</div>\n"
+        f"<div class='price'>{_esc(amount)} {_esc(currency)}{est_note}</div>\n"
+        f"<p class='terms'>Delivery: {_esc(delivery)}. {_esc(cta)}</p>\n"
+        "<div id='paypal-button-container'></div>\n"
+        "<div id='pay-result'></div>\n"
+        "</div>\n"
+        "<p class='terms'>Payment is handled entirely by PayPal. If the work "
+        "cannot be delivered, the payment is refunded in full via PayPal.</p>\n"
+        f"<div class='foot'>Sold by the operator of this page. Order reference: "
+        f"<code>{_esc(name)}</code>.</div>\n"
+        "</div>\n"
+        f"<script>\n{script}\n</script>\n"
+        "</body>\n</html>\n"
     )
 
 

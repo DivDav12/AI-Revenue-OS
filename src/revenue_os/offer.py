@@ -58,6 +58,40 @@ def _delivery_for(candidate: Candidate) -> str:
     return "manual"
 
 
+def paid_offer(
+    candidate: Candidate,
+    *,
+    price: float,
+    currency: str = "EUR",
+    what_is_sold: str = "",
+    delivery: str = "manual",
+    call_to_action: str = "",
+    positioning: str = "",
+) -> Offer:
+    """A real, human-priced first offer (price_is_estimate=False).
+
+    Unlike propose_offer() this is not a template guess: the human owner
+    passes the actual price and terms. Nothing here charges anyone; it
+    only records what is being sold so the checkout page and the revenue
+    ledger agree.
+    """
+    if price <= 0:
+        raise ValueError("price must be positive")
+    if delivery not in _CTA_BY_DELIVERY:
+        raise ValueError(f"delivery must be one of {sorted(_CTA_BY_DELIVERY)}")
+    return Offer(
+        candidate_name=candidate.name,
+        what_is_sold=what_is_sold or candidate.description or candidate.name,
+        price=round(float(price), 2),
+        delivery=delivery,
+        call_to_action=call_to_action or _CTA_BY_DELIVERY[delivery],
+        currency=currency.upper(),
+        price_is_estimate=False,
+        created_at=now_iso(),
+        positioning=positioning,
+    )
+
+
 def propose_offer(candidate: Candidate) -> Offer:
     delivery = _delivery_for(candidate)
     return Offer(

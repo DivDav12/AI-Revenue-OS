@@ -18,6 +18,12 @@ Commands:
 - `revenue_os paypal-sync [--days N] [--dry-run]` -- book recent payments,
   matched to candidates by the order's `custom_id`. Needs the "Transaction
   Search" feature enabled on the PayPal app.
+- `revenue_os build-checkout <candidate> --price 150 [--currency EUR]` --
+  write a self-contained `deliverables/<candidate>/checkout.html` with a real
+  PayPal JS SDK button. The order it creates sets `custom_id` to the exact
+  candidate name. Requires `PAYPAL_ENV=live` and `PAYPAL_CLIENT_ID` in the
+  environment, and the candidate to be `launched`/`earning`. The page never
+  records revenue -- reconcile the real payment afterwards with `paypal-sync`.
 
 Payments are tied to a candidate by setting the order's `custom_id` to the
 candidate name. Booking still requires the candidate to be `launched` or

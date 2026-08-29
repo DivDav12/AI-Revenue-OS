@@ -21,6 +21,7 @@ Human decision commands (operate on the persistent --data-dir store):
   outcome NAME {validated|rejected} --metric TEXT
   prepare-launch    (--proposer llm opt-in; template by default)
   launch NAME
+  build-checkout NAME --price N [--currency EUR]   write a real PayPal checkout page
   payment NAME AMOUNT
   paypal-verify NAME ORDER_ID   book one verified PayPal order (read-only API)
   paypal-sync [--days N] [--dry-run]   book recent PayPal payments by custom_id
@@ -40,6 +41,7 @@ import json
 import logging
 import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from .approval import record_decision
@@ -541,6 +543,56 @@ def _cmd_paypal_verify(args) -> int:
     return 0
 
 
+def _cmd_build_checkout(args) -> int:
+    from .deliverable import render_checkout_html
+    from .offer import paid_offer
+
+    data_dir = _data_dir(args)
+    store, _, _ = _load(data_dir)
+    cand = _require(store, args.name)
+    if cand.status not in ("launched", "earning"):
+        raise ValueError(
+            f"candidate {args.name!r} is {cand.status!r}; must be launched or "
+            "earning before taking a real payment (run `revenue_os launch`)"
+        )
+
+    client_id = os.environ.get("PAYPAL_CLIENT_ID", "").strip()
+    env = os.environ.get("PAYPAL_ENV", "sandbox").strip().lower()
+    if not client_id:
+        raise ValueError("set PAYPAL_CLIENT_ID in the environment")
+    if env != "live":
+        raise ValueError(f"PAYPAL_ENV is {env!r}; set PAYPAL_ENV=live for a real checkout")
+
+    offer = dict(cand.offer)
+    if args.price is not None:
+        offer = paid_offer(
+            cand, price=args.price, currency=args.currency,
+            what_is_sold=args.what or "", delivery=args.delivery,
+            call_to_action=args.cta or "",
+        ).to_dict()
+        store.put(replace(cand, offer=offer))
+        store.save()
+    if not offer.get("price"):
+        raise ValueError("no offer on this candidate; pass --price to create one")
+
+    html = render_checkout_html(
+        {"name": cand.name, "description": cand.description}, offer,
+        client_id=client_id, currency=offer.get("currency") or args.currency,
+    )
+    out = (Path(args.out) if args.out
+           else data_dir / "deliverables" / cand.name / "checkout.html")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(html, encoding="utf-8")
+    print(f"wrote {out}")
+    print(f"custom_id = {cand.name}")
+    print(f"price = {offer['price']} {offer.get('currency', 'EUR')}")
+    print(
+        f"after a real payment: `revenue_os paypal-sync` "
+        f"(or `paypal-verify \"{cand.name}\" <order-id>`)"
+    )
+    return 0
+
+
 def _cmd_paypal_sync(args) -> int:
     from .paypal import sync_transactions
 
@@ -869,6 +921,25 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--days", type=int, default=31, help="lookback window (max 31)")
     ps.add_argument("--dry-run", action="store_true", help="report only, book nothing")
     ps.set_defaults(func=_cmd_paypal_sync, actor="paypal")
+
+    bc = sub.add_parser(
+        "build-checkout", parents=[common],
+        help="write a real PayPal checkout page for a launched candidate's offer",
+    )
+    bc.add_argument("name")
+    bc.add_argument(
+        "--price", type=float, default=None,
+        help="offer price; creates/updates the offer (omit to reuse the stored one)",
+    )
+    bc.add_argument("--currency", default="EUR")
+    bc.add_argument("--what", default=None,
+                    help="what is sold (default: candidate description)")
+    bc.add_argument("--delivery", choices=("digital", "manual", "subscription"),
+                    default="manual")
+    bc.add_argument("--cta", default=None, help="call-to-action line")
+    bc.add_argument("--out", default=None,
+                    help="output path (default: <data-dir>/deliverables/<name>/checkout.html)")
+    bc.set_defaults(func=_cmd_build_checkout)
 
     budget = sub.add_parser(
         "budget", parents=[common, actor_only], help="set/raise a candidate's spend cap"
