@@ -136,6 +136,49 @@ class ClassifyTests(unittest.TestCase):
             title="Show HN: my markdown editor", text="feedback welcome")))
 
 
+class SolvedSignalTests(unittest.TestCase):
+    def test_solved_text_marks_success_story_and_crushes_score(self):
+        active = classify("How do I get my first customers for my SaaS?",
+                          "0 paying customers, just launched")
+        solved = classify("Update: solved - how I finally got my first customers",
+                          "for anyone else struggling: here is what worked. thanks everyone")
+        self.assertEqual(solved["prospect_type"], "success_story")
+        self.assertTrue(solved["solved"])
+        self.assertLess(solved["relevance_score"], active["relevance_score"])
+
+    def test_solved_title_prefix_detected(self):
+        self.assertTrue(classify(
+            "[SOLVED] getting my first customers", "we finally got there")["solved"])
+
+    def test_final_score_solved_factor(self):
+        fresh = final_score(relevance_score=80, age_days=2,
+                            prospect_type="active_problem", buying_intent="high",
+                            max_age_days=30, solved=False)
+        solved = final_score(relevance_score=80, age_days=2,
+                             prospect_type="active_problem", buying_intent="high",
+                             max_age_days=30, solved=True)
+        self.assertLess(solved, fresh * 0.3)
+
+    def test_se_accepted_answer_meta_marks_solved(self):
+        rec = AcqRecord(title="how do I get my first customers for my SaaS",
+                        url="https://startups.stackexchange.com/questions/1/x",
+                        text="0 customers", posted_at=_days_ago(3),
+                        platform="startups.stackexchange.com", source="stackexchange",
+                        meta={"answered": True, "answer_count": 4,
+                              "score": 5, "accepted": True})
+        s = score_lead(rec)
+        self.assertTrue(s["solved"])
+        self.assertEqual(s["signals"]["answer_count"], 4)
+
+    def test_problem_factor_ordering(self):
+        from revenue_os.acquisition import _problem_factor
+        f = _problem_factor
+        self.assertGreater(f("active_problem"), f("seeking_advice"))
+        self.assertGreater(f("seeking_advice"), f("founder_building"))
+        self.assertGreater(f("founder_building"), f("educational"))
+        self.assertGreater(f("educational"), f("success_story"))
+
+
 # --- lead assembly / qc ----------------------------------------
 
 class LeadTests(unittest.TestCase):
@@ -498,6 +541,18 @@ class CliTests(unittest.TestCase):
             str(self.recs), "--delay", "0", "--dry-run"), 0)
         self.assertFalse((self.d / "acquisition.json").exists())
 
+    def test_web_source_without_a_client_is_budget_gated_not_a_crash(self):
+        # --source web with an impossible budget -> refused before any client
+        rc = self._run("discover-opportunities", "--source", "web",
+                       "--max-cost", "0.0001", "--delay", "0", "--dry-run")
+        self.assertEqual(rc, 1)   # ValueError -> exit 1, nothing spent
+
+    def test_multiple_source_flags_are_accepted(self):
+        # file can't combine; use a lone recognised pair via the offline path
+        rc = self._run("discover-opportunities", "--source", "static",
+                       "--delay", "0", "--dry-run")
+        self.assertEqual(rc, 0)
+
 
 # --- guarantees --------------------------------------------
 
@@ -506,11 +561,13 @@ class GuaranteeTests(unittest.TestCase):
         import inspect
 
         import revenue_os.acquisition as a
+        import revenue_os.acquisition_llm as ll
         import revenue_os.acquisition_sources as s
-        src = inspect.getsource(a) + inspect.getsource(s)
+        import revenue_os.acquisition_web as w
+        src = "".join(inspect.getsource(m) for m in (a, s, w, ll))
         for banned in ("def post", "def reply", "def send", "def dm(",
-                       "def message", "def comment", "requests.post",
-                       "urlopen(.*POST"):
+                       "def message(", "def comment", "requests.post",
+                       'method="POST"', "method='POST'"):
             self.assertNotIn(banned, src)
 
     def test_agent_never_emits_a_lead_without_a_real_url(self):

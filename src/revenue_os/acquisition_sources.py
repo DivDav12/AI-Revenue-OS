@@ -18,25 +18,31 @@ Standard library only (json, urllib, html, re).
 
 from __future__ import annotations
 
+import gzip
 import html as _html
 import json
 import logging
 import re
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
 _USER_AGENT = "AI-Revenue-OS/0.1 (acquisition research; contact via repo)"
-_TIMEOUT = 8.0
+_TIMEOUT = 10.0
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
 @dataclass(frozen=True)
 class AcqRecord:
-    """A verbatim record of one real public post."""
+    """A verbatim record of one real public post.
+
+    `meta` carries source-specific structured signals (Stack Exchange
+    answer counts, etc.) that the scorer factors in when present. It is
+    optional and defaults to {} so every existing caller keeps working.
+    """
 
     title: str
     url: str = ""
@@ -46,16 +52,30 @@ class AcqRecord:
     platform: str = ""
     source: str = ""
     query: str = ""
+    meta: dict = field(default_factory=dict)
 
 
 def _plain(value: object) -> str:
     return _html.unescape(_TAG_RE.sub(" ", str(value or ""))).strip()
 
 
-def _http_json(url: str):
-    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+def _http_json(url: str, *, headers: dict | None = None):
+    h = {"User-Agent": _USER_AGENT, "Accept-Encoding": "gzip"}
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(url, headers=h)
     with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        raw = resp.read()
+        if (resp.headers.get("Content-Encoding") or "").lower() == "gzip":
+            raw = gzip.decompress(raw)
+    return json.loads(raw.decode("utf-8"))
+
+
+def _iso(epoch) -> str:
+    try:
+        return datetime.fromtimestamp(float(epoch), tz=timezone.utc).isoformat()
+    except (TypeError, ValueError):
+        return ""
 
 
 def _epoch(since_ts) -> int | None:
@@ -236,6 +256,123 @@ class RedditSearchSource:
         return out
 
 
+class StackExchangeSource:
+    """Stack Exchange questions via the documented, public, keyless API
+    (https://api.stackexchange.com/, ~300 req/day/IP without a key).
+
+    Queries several sites (default: freelancing, webmasters - there is no
+    live "startups" SE site) - every result is a question someone posted
+    because they were stuck, so the signal is clean. `since_ts` ->
+    `fromdate`; results are sorted newest-first. `meta` carries answered /
+    answer_count / score / accepted so the scorer can down-rank
+    already-solved problems.
+
+    No HTML scraping: the API returns everything we need (title, link,
+    creation_date, owner, body, answer stats).
+    """
+
+    name = "stackexchange"
+    _URL = "https://api.stackexchange.com/2.3/search/advanced"
+    _DEFAULT_SITES = ("freelancing", "webmasters")
+
+    def __init__(self, sites=None) -> None:
+        self.sites = tuple(sites) if sites else self._DEFAULT_SITES
+        self.requests = 0
+
+    def search(self, query: str, limit: int, *, since_ts=None) -> list[AcqRecord]:
+        per_site = max(1, min(limit, 30))
+        epoch = _epoch(since_ts)
+        out: list[AcqRecord] = []
+        for site in self.sites:
+            params = {
+                "site": site, "q": query, "sort": "creation", "order": "desc",
+                "pagesize": per_site, "filter": "withbody",
+            }
+            if epoch is not None:
+                params["fromdate"] = epoch
+            self.requests += 1
+            body = _http_json(f"{self._URL}?{urllib.parse.urlencode(params)}")
+            for item in body.get("items", []) or []:
+                link = str(item.get("link", "")).strip()
+                title = _plain(item.get("title"))
+                if not link or not title:
+                    continue
+                answer_count = int(item.get("answer_count", 0) or 0)
+                accepted = bool(item.get("accepted_answer_id"))
+                out.append(AcqRecord(
+                    title=title,
+                    url=link,
+                    text=_plain(item.get("body"))[:1500],
+                    author=str((item.get("owner") or {}).get("display_name", "")).strip(),
+                    posted_at=_iso(item.get("creation_date")),
+                    platform=f"{site}.stackexchange.com",
+                    source=self.name,
+                    query=query,
+                    meta={
+                        "answered": bool(item.get("is_answered")),
+                        "answer_count": answer_count,
+                        "score": int(item.get("score", 0) or 0),
+                        "accepted": accepted,
+                    },
+                ))
+        return out
+
+
+_BSKY_URI = re.compile(r"^at://([^/]+)/app\.bsky\.feed\.post/([A-Za-z0-9]+)$")
+
+
+class BlueskySource:
+    """Bluesky post search via the AppView
+    (https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts).
+
+    `sort=latest` + `since` (ISO) give real freshness; AT URIs are
+    converted to canonical bsky.app URLs. This source only ever READS
+    public posts - it never authenticates, posts, or interacts.
+
+    NOTE: Bluesky now gates the `searchPosts` endpoint (401 'Authentication
+    Required' on bsky.social; 403 from many server IPs on the public
+    AppView). When that happens this source stays failure-isolated - the
+    other sources still run and `sources_status` records it - exactly like
+    Reddit. We do NOT add authentication or a scraping workaround; the
+    `web` source reaches Bluesky threads through indexed search instead.
+    """
+
+    name = "bluesky"
+    _URL = "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts"
+
+    def search(self, query: str, limit: int, *, since_ts=None) -> list[AcqRecord]:
+        params = {"q": query, "sort": "latest", "limit": max(1, min(limit, 100))}
+        epoch = _epoch(since_ts)
+        if epoch is not None:
+            params["since"] = _iso(epoch)
+        body = _http_json(f"{self._URL}?{urllib.parse.urlencode(params)}")
+        out: list[AcqRecord] = []
+        for post in body.get("posts", []) or []:
+            m = _BSKY_URI.match(str(post.get("uri", "")))
+            author = post.get("author") or {}
+            handle = str(author.get("handle", "")).strip()
+            if not m or not handle:
+                continue
+            rkey = m.group(2)
+            record = post.get("record") or {}
+            text = _plain(record.get("text"))
+            if not text:
+                continue
+            out.append(AcqRecord(
+                title=text[:120],
+                url=f"https://bsky.app/profile/{handle}/post/{rkey}",
+                text=text,
+                author=str(author.get("displayName") or handle).strip(),
+                posted_at=str(record.get("createdAt", "")).strip(),
+                platform="Bluesky",
+                source=self.name,
+                query=query,
+                meta={"reply_count": int(post.get("replyCount", 0) or 0),
+                      "like_count": int(post.get("likeCount", 0) or 0)},
+            ))
+        return out
+
+
 class CompositeAcqSource:
     """Fans a query out to several sources. One dead source (e.g. a 403
     from an API that now needs auth) is logged and recorded in
@@ -259,19 +396,56 @@ class CompositeAcqSource:
         return out
 
 
-def build_acquisition_source(name: str, path=None):
-    if name == "static":
-        return StaticAcqSource()
+# free, keyless sources that need no credentials
+_FREE_SOURCES = ("stackexchange", "bluesky", "hn-algolia")
+_SIMPLE = {
+    "static": StaticAcqSource,
+    "hn-algolia": HNAlgoliaSource,
+    "reddit": RedditSearchSource,
+    "stackexchange": StackExchangeSource,
+    "bluesky": BlueskySource,
+}
+
+
+def _one_source(name: str, path=None, web_source=None):
     if name == "file":
         if not path:
             raise ValueError("source 'file' requires --source-path")
         return FileAcqSource(path)
-    if name == "hn-algolia":
-        return HNAlgoliaSource()
-    if name == "reddit":
-        return RedditSearchSource()
-    if name == "both":
-        return CompositeAcqSource([HNAlgoliaSource(), RedditSearchSource()])
+    if name == "web":
+        if web_source is None:
+            raise ValueError("source 'web' must be built with a client (see CLI)")
+        return web_source
+    if name in _SIMPLE:
+        return _SIMPLE[name]()
     raise ValueError(
-        f"unknown source: {name!r} "
-        "(expected hn-algolia, reddit, both, file, or static)")
+        f"unknown source: {name!r} (expected one of "
+        f"{', '.join(sorted(list(_SIMPLE) + ['file', 'web', 'free', 'all', 'both']))})")
+
+
+def build_acquisition_source(names, path=None, web_source=None):
+    """Build one source or a CompositeAcqSource from a list of names.
+
+    `free` -> stackexchange + bluesky + hn-algolia (all keyless).
+    `all`  -> free + web.  `both` is a back-compat alias for `free`.
+    A single name returns that source directly; several return a
+    CompositeAcqSource (failure-isolated).
+    """
+    if isinstance(names, str):
+        names = [names]
+    expanded: list[str] = []
+    for n in names:
+        if n in ("free", "both"):
+            expanded += list(_FREE_SOURCES)
+        elif n == "all":
+            expanded += list(_FREE_SOURCES) + ["web"]
+        else:
+            expanded.append(n)
+    seen: list[str] = []
+    for n in expanded:
+        if n not in seen:
+            seen.append(n)
+    if ("file" in seen or "static" in seen) and len(seen) > 1:
+        raise ValueError("'file' / 'static' cannot be combined with other sources")
+    built = [_one_source(n, path=path, web_source=web_source) for n in seen]
+    return built[0] if len(built) == 1 else CompositeAcqSource(built)

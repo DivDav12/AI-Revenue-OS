@@ -86,7 +86,7 @@ import json
 import os
 import re
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
@@ -185,6 +185,16 @@ _STORY_RE = (
     re.compile(r"\b\d{2,}\s+customers? in \d+\s+(?:day|week|month|year)"),
 )
 
+_SOLVED = (
+    ("solved it", 5), ("figured it out", 5), ("update: solved", 6),
+    ("update solved", 6), ("thanks everyone", 4), ("thank you everyone", 4),
+    ("thanks for the help", 4), ("for anyone else struggling", 6),
+    ("for anyone else who", 4), ("we finally got", 5), ("i finally got", 5),
+    ("finally got my first", 5), ("got it sorted", 4), ("no longer an issue", 4),
+    ("this is now resolved", 5), ("problem solved", 5),
+)
+_SOLVED_TITLE_PREFIX = ("update:", "solved:", "solved -", "[solved]", "resolved:")
+
 _MISC = (
     ("tutorial", 3), ("ultimate guide", 4), ("guide to", 3),
     ("step by step", 3), ("step-by-step", 3), ("cheat sheet", 3),
@@ -244,6 +254,7 @@ _FAKE_HOSTS = {
 }
 _REAL_HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9-]+)+$")
 _REDDIT_PERMALINK = re.compile(r"^(/r/[^/]+/comments/[a-z0-9]+)")
+_SE_QUESTION = re.compile(r"^(/questions/\d+)")
 _NORM_RE = re.compile(r"[^a-z0-9'$,\s]+")
 
 
@@ -263,6 +274,12 @@ def canonical_url(url: str) -> str:
     if host in ("reddit.com", "old.reddit.com", "np.reddit.com"):
         host = "reddit.com"
         m = _REDDIT_PERMALINK.match(path.lower())
+        if m:
+            path = m.group(1)
+    elif host.endswith(".stackexchange.com") or host in (
+            "stackoverflow.com", "stackexchange.com", "superuser.com",
+            "serverfault.com", "askubuntu.com"):
+        m = _SE_QUESTION.match(path)          # /questions/<id>/<slug> -> /questions/<id>
         if m:
             path = m.group(1)
     path = path.rstrip("/") or "/"
@@ -351,11 +368,14 @@ def classify(title: str, text: str) -> dict:
     selfsit = _hits(_SELF_SITUATION, title_n, body_n)
     story = _hits(_STORY, title_n, body_n)
     misc = _hits(_MISC, title_n, body_n)
+    solved = _hits(_SOLVED, title_n, body_n)
     for rx in _STORY_RE:
         if rx.search(title_n):
             story.append((rx.pattern, 5, True))
         elif rx.search(body_n):
             story.append((rx.pattern, 4, False))
+    if title_n.strip().startswith(_SOLVED_TITLE_PREFIX):
+        solved.append(("<solved title prefix>", 6, True))
 
     def pts(hits, title_w, body_w, cap):
         return min(cap, sum((title_w if t else body_w) * w for _, w, t in hits))
@@ -368,9 +388,11 @@ def classify(title: str, text: str) -> dict:
 
     story_pts = pts(story, 30, 12, 65)
     misc_pts = pts(misc, 10, 6, 28)
+    solved_pts = pts(solved, 25, 12, 60)
 
     relevance = max(0, min(100, ask_pts + first_pts + self_pts + question_bonus
-                           - story_pts - misc_pts))
+                           - story_pts - misc_pts - solved_pts))
+    text_solved = solved_pts >= 12
 
     ask_in_title = any(t for *_, t in ask)
     has_ask = bool(ask)
@@ -379,6 +401,8 @@ def classify(title: str, text: str) -> dict:
 
     if story_pts >= 30:
         ptype = "success_story"
+    elif text_solved:
+        ptype = "success_story"          # they already fixed it -> not a live lead
     elif misc_pts >= 16 and not has_ask:
         ptype = "educational"
     elif ask_in_title and (has_first or has_self) and relevance >= 55:
@@ -405,7 +429,8 @@ def classify(title: str, text: str) -> dict:
         pos.append(f"'{phrase}'" + (" (title)" if t else ""))
     if question_bonus:
         pos.append("question/Ask-HN format")
-    neg = [f"'{p}'" + (" (title)" if t else "") for p, _, t in story + misc]
+    neg = [f"'{p}'" + (" (title)" if t else "")
+           for p, _, t in story + misc + solved]
 
     reason = ("; ".join(pos[:6]) or "weak keyword only")
     if neg:
@@ -420,9 +445,10 @@ def classify(title: str, text: str) -> dict:
         "prospect_type": ptype,
         "active_problem": active_problem,
         "buying_intent": intent,
+        "solved": text_solved,
         "match_reason": reason,
         "matched_phrases": tuple(p for p, *_ in ask + first + selfsit),
-        "negative_signals": tuple(p for p, *_ in story + misc),
+        "negative_signals": tuple(p for p, *_ in story + misc + solved),
         "any_positive": any_positive,
     }
 
@@ -441,13 +467,38 @@ def score_lead(record) -> dict | None:
     age = age_info(g("posted_at"))
     c.pop("any_positive")
     c.update(age)
+
+    # source-specific structured signals (Stack Exchange answer stats)
+    meta = getattr(record, "meta", None)
+    if isinstance(record, dict):
+        meta = record.get("meta")
+    meta = meta if isinstance(meta, dict) else {}
+    se_solved = bool(meta.get("accepted")) or int(meta.get("answer_count", 0) or 0) >= 2
+    if se_solved and not c["solved"]:
+        c["solved"] = True
+        c["match_reason"] += " | negatives: SE question already answered"
+    # a recent, entirely-unanswered SE question = still stuck -> small boost
+    unanswered = ("answer_count" in meta and int(meta.get("answer_count", 0) or 0) == 0
+                  and not meta.get("answered"))
+    if unanswered and (age["age_days"] is None or age["age_days"] <= 45):
+        c["relevance_score"] = min(100, int(c["relevance_score"]) + 8)
+        c["match_reason"] += "; unanswered SE question"
+
+    c["signals"] = meta
     c["fit_score"] = c["relevance_score"]  # backwards-compatible alias
     return c
 
 
 def _problem_factor(prospect_type: str) -> float:
-    return {"active_problem": 1.0, "seeking_advice": 0.8,
-            "founder_building": 0.55}.get(prospect_type, 0.35)
+    return {
+        "active_problem": 1.0,    # strongly preferred
+        "seeking_advice": 0.8,
+        "founder_building": 0.55,
+        "unknown": 0.40,
+        "educational": 0.28,      # deprioritized
+        "irrelevant": 0.18,
+        "success_story": 0.12,    # strongly deprioritized
+    }.get(prospect_type, 0.35)
 
 
 def _intent_factor(intent: str) -> float:
@@ -455,14 +506,23 @@ def _intent_factor(intent: str) -> float:
 
 
 def final_score(*, relevance_score: int, age_days, prospect_type: str,
-                buying_intent: str, max_age_days: int,
+                buying_intent: str, max_age_days: int, solved: bool = False,
                 recommended_fit: int | None = None) -> int:
+    """final = relevance x recency x problem-type x intent x solved.
+
+    Weights (documented): recency 1.0(<=3d) .. 0.04(>1y), with a hard
+    <=0.10 cliff once older than --max-age-days. problem-type strongly
+    favours active_problem (1.0) and crushes success_story (0.12).
+    solved -> x0.20 (they already fixed it). So a 2-day genuine ask
+    (~80 x 1.0 x 1.0 x 1.0) far outranks a 5-year article that merely
+    contains "first customers" (~90 x 0.04 x 0.12 -> ~0)."""
     base = relevance_score if recommended_fit is None else round(
         0.5 * relevance_score + 0.5 * recommended_fit)
     fs = (base
           * _recency_factor(age_days, max_age_days)
           * _problem_factor(prospect_type)
-          * _intent_factor(buying_intent))
+          * _intent_factor(buying_intent)
+          * (0.20 if solved else 1.0))
     return max(0, min(100, round(fs)))
 
 
@@ -484,12 +544,14 @@ class AcquisitionLead:
     relevance_score: int = 0
     prospect_type: str = "unknown"
     active_problem: bool = False
+    solved: bool = False
     final_score: int = 0
     scoring_mode: str = "deterministic"
     llm_reason: str = ""
     recommended_fit: int = 0
     negative_signals: tuple = ()
     matched_phrases: tuple = ()
+    signals: dict = field(default_factory=dict)
     # recency
     age_days: int | None = None
     age_bucket: str = "unknown"
@@ -525,6 +587,8 @@ class AcquisitionLead:
             "buying_intent": self.buying_intent,
             "prospect_type": self.prospect_type,
             "active_problem": self.active_problem,
+            "solved": self.solved,
+            "signals": dict(self.signals),
             "scoring_mode": self.scoring_mode,
             "llm_reason": self.llm_reason,
             "recommended_fit": self.recommended_fit,
@@ -564,6 +628,7 @@ def build_lead(record, score: dict, *, max_age_days: int = _DEFAULT_MAX_AGE_DAYS
         relevance_score=int(score["relevance_score"]),
         age_days=score["age_days"], prospect_type=score["prospect_type"],
         buying_intent=score["buying_intent"], max_age_days=max_age_days,
+        solved=bool(score.get("solved")),
         recommended_fit=(int(score["recommended_fit"])
                          if scoring_mode == "llm" and score.get("recommended_fit")
                          else None),
@@ -588,6 +653,8 @@ def build_lead(record, score: dict, *, max_age_days: int = _DEFAULT_MAX_AGE_DAYS
         buying_intent=score["buying_intent"],
         prospect_type=score["prospect_type"],
         active_problem=bool(score["active_problem"]),
+        solved=bool(score.get("solved")),
+        signals=dict(score.get("signals") or {}),
         scoring_mode=scoring_mode,
         llm_reason=str(score.get("llm_reason", "")),
         recommended_fit=int(score.get("recommended_fit", 0) or 0),
@@ -706,13 +773,18 @@ def _scoring_view(record, score: dict) -> dict:
         if isinstance(record, dict):
             return str(record.get(name, "") or "")
         return str(getattr(record, name, "") or "")
+    meta = getattr(record, "meta", None)
+    if isinstance(record, dict):
+        meta = record.get("meta")
     return {
         "canonical_url": canonical_url(g("url")),
         "title": g("title"),
         "text": g("text")[:_MAX_SUMMARY],
         "posted_at": g("posted_at"),
-        "deterministic": {k: score[k] for k in
-                          ("relevance_score", "prospect_type", "buying_intent")},
+        "source_signals": dict(meta) if isinstance(meta, dict) else {},
+        "deterministic": {k: score.get(k) for k in
+                          ("relevance_score", "prospect_type", "buying_intent",
+                           "solved")},
     }
 
 
@@ -768,10 +840,14 @@ class AcquisitionStore:
         return list(self._by_url.values())
 
     def ranked(self) -> list[dict]:
+        # a lead scored by the current model has a real final_score;
+        # legacy records without one sink to the bottom (they must not
+        # outrank current opportunities).
         return sorted(
             self._by_url.values(),
-            key=lambda d: (d.get("final_score", d.get("fit_score", 0)),
-                           d.get("relevance_score", d.get("fit_score", 0))),
+            key=lambda d: (d.get("final_score", -1),
+                           d.get("relevance_score", d.get("fit_score", 0)),
+                           d.get("last_seen_at", "")),
             reverse=True)
 
     def upsert(self, lead: dict) -> str:

@@ -172,6 +172,25 @@ def _acq_llm_scorer(data_dir: Path, *, model: str, max_cost: float,
     return scorer, cache
 
 
+def _acq_web_source(data_dir: Path, *, model: str, max_cost: float,
+                    refresh: bool, n_queries: int):
+    """Build the opt-in web-search source, budget-gated like --score llm."""
+    from .acquisition_web import WebSearchSource
+    from .llm_cache import LlmCache
+    from .llm_normalize import build_client
+
+    est = round(0.05 * n_queries, 4)   # ~1 grounded call + up to 3 searches / query
+    if est > max_cost:
+        raise ValueError(
+            f"estimated web-search cost ${est} exceeds the ${max_cost} ceiling; "
+            "run without --source web or raise --max-cost")
+    ceiling = _llm_budget_gate(data_dir, est, max_cost)
+    cache = LlmCache.load(data_dir / "llm_acquisition_web_cache.json")
+    src = WebSearchSource(client=build_client(), model=model,
+                          max_cost_usd=ceiling, cache=cache, refresh=refresh)
+    return src, cache
+
+
 def _print_lead_row(d: dict) -> None:
     age = ("age unknown" if d.get("age_days") is None
            else f"{d['age_days']}d old")
@@ -190,8 +209,17 @@ def _cmd_discover_opportunities(args) -> int:
     from .workflow import discover_acquisition_opportunities
 
     data_dir = _data_dir(args)
-    source = build_acquisition_source(args.source, args.source_path)
+    names = list(args.source) if args.source else ["stackexchange", "bluesky",
+                                                   "hn-algolia"]
     queries = tuple(args.query) if args.query else SEARCH_QUERIES
+
+    wants_web = any(n in ("web", "all") for n in names)
+    web_source = web_cache = None
+    if wants_web:
+        web_source, web_cache = _acq_web_source(
+            data_dir, model=args.model, max_cost=args.max_cost,
+            refresh=args.refresh, n_queries=len(queries))
+    source = build_acquisition_source(names, args.source_path, web_source=web_source)
 
     scorer = cache = None
     if args.score == "llm":
@@ -209,10 +237,15 @@ def _cmd_discover_opportunities(args) -> int:
         min_score=args.min_score, max_age_days=args.max_age_days,
         llm_scorer=scorer, politeness_delay=args.delay,
     )
-    if cache is not None and not args.dry_run:
-        cache.save()
+    if not args.dry_run:
+        if cache is not None:
+            cache.save()
+        if web_cache is not None:
+            web_cache.save()
     if scorer is not None:
         _record_llm_spend(data_dir, "acquisition", scorer)
+    if web_source is not None:
+        _record_llm_spend(data_dir, "acquisition", web_source)
 
     leads = r["leads"]  # what this run found, ranked
     if args.json:
@@ -226,8 +259,13 @@ def _cmd_discover_opportunities(args) -> int:
         print(f"  query error {e['query']!r}: {e['error']}")
     for name, status in sorted(r["sources_status"].items()):
         print(f"  source {name}: {status}")
+    if web_source is not None:
+        print(f"  web search: cost ${round(web_source.meter.cost_usd, 4)} "
+              f"({web_source.searches} searches, {web_source.cache_hits} cache hit "
+              f"/ {web_source.cache_misses} miss)"
+              + ("  [ceiling hit]" if web_source.ceiling_hit else ""))
     if scorer is not None:
-        print(f"  llm: cost ${round(scorer.meter.cost_usd, 4)} "
+        print(f"  llm score: cost ${round(scorer.meter.cost_usd, 4)} "
               f"({scorer.cache_hits} cache hit / {scorer.cache_misses} miss)"
               + ("  [ceiling hit]" if scorer.ceiling_hit else ""))
     tag = "(dry-run, nothing persisted) " if args.dry_run else ""
@@ -1035,12 +1073,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     disco = sub.add_parser(
         "discover-opportunities", parents=[common],
-        help="find public posts asking how to get their first paying customers",
+        help="find CURRENT public posts from founders struggling to get customers",
     )
     disco.add_argument(
-        "--source", default="hn-algolia",
-        choices=("hn-algolia", "reddit", "both", "file", "static"),
-        help="public search source (default: hn-algolia; 'file'/'static' are offline)",
+        "--source", action="append", default=None,
+        choices=("stackexchange", "bluesky", "hn-algolia", "web", "reddit",
+                 "file", "static", "free", "all"),
+        help="repeatable. Default: stackexchange + bluesky + hn-algolia (all "
+             "keyless). 'web' = grounded web search (opt-in, budget-gated, "
+             "costs a little). 'free' = the 3 keyless; 'all' = free + web.",
     )
     disco.add_argument("--source-path", default=None,
                        help="JSON record file for --source file")
@@ -1056,7 +1097,7 @@ def build_parser() -> argparse.ArgumentParser:
                        help="'llm' adds a metered relevance pass (default: deterministic, free)")
     disco.add_argument("--model", default="claude-sonnet-5", help="model for --score llm")
     disco.add_argument("--max-cost", type=float, default=1.0,
-                       help="USD ceiling for one --score llm run (default 1.00)")
+                       help="USD ceiling for --score llm and/or --source web (default 1.00)")
     disco.add_argument("--refresh", action="store_true",
                        help="ignore cached llm scores and re-call the API")
     disco.add_argument("--delay", type=float, default=1.0,

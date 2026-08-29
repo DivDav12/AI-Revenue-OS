@@ -59,6 +59,13 @@ _RUBRIC = (
     "founder asking for help).\n"
     "F: 'How do you allocate equity in a startup?' with an unrelated "
     "comment mentioning customers -> false, ~5, irrelevant.\n\n"
+    "If the post shows the problem is already SOLVED or the question is "
+    "already answered ('update: solved', 'thanks everyone, got it', an "
+    "accepted answer) -> is_active_problem false, low relevance_score, "
+    "prospect_type success_story. source_signals may tell you the answer "
+    "count.\n\n"
+    "Base every judgement ONLY on the post text and source_signals given "
+    "to you - do not invent context.\n\n"
     "recommended_fit: 0-100, how well the EUR 29.90 Customer Launch Plan "
     "(a personalised 14-day acquisition plan) would fit THIS poster's "
     "situation. Call record_relevance once."
@@ -86,12 +93,16 @@ _TOOL = {
 
 def _brief(view: dict) -> str:
     det = view.get("deterministic", {})
+    sig = view.get("source_signals") or {}
+    sig_line = f"\nsource_signals: {json.dumps(sig, sort_keys=True)}" if sig else ""
     return (
         f"Title: {view.get('title', '')}\n"
         f"Posted: {view.get('posted_at') or '(unknown)'}\n"
-        f"Body: {view.get('text') or '(none)'}\n"
+        f"Body: {view.get('text') or '(none)'}"
+        f"{sig_line}\n"
         f"(deterministic pre-score: {det.get('relevance_score')} / "
-        f"{det.get('prospect_type')} / {det.get('buying_intent')})"
+        f"{det.get('prospect_type')} / {det.get('buying_intent')} / "
+        f"solved={det.get('solved')})"
     )
 
 

@@ -9,9 +9,9 @@ Customer Launch Plan could help right now.
 
 ```
 python -m revenue_os discover-opportunities --data-dir data \
-  [--source hn-algolia|reddit|both|file|static] [--query "phrase" ...] \
-  [--limit 15] [--min-score 0] [--max-age-days 30] \
-  [--score deterministic|llm] [--dry-run] [--json]
+  [--source stackexchange] [--source bluesky] [--source web] \
+  [--query "phrase" ...] [--limit 15] [--min-score 0] [--max-age-days 30] \
+  [--score deterministic|llm] [--max-cost 1.0] [--refresh] [--dry-run] [--json]
 
 python -m revenue_os top-opportunities [--limit 10] [--min-score 60] \
   [--max-age-days 30] [--all] [--json]
@@ -47,10 +47,25 @@ reuses `budget_gate` + `CostMeter` + `record_llm_spend` + `LlmCache` (a
 lead already scored is never re-charged) and the post text is fenced as
 UNTRUSTED. The model is instructed never to claim the person will buy.
 
-**Sources**: `hn-algolia` (free, keyless; `--max-age-days` narrows the
-fetch to current threads). Reddit's keyless API now returns HTTP 403;
-`RedditSearchSource` stays failure-isolated - HN keeps working and the
-run reports `sources_status`.
+**Sources** (`--source` is repeatable; default = the three keyless ones):
+
+| name | API | key? | freshness | notes |
+|---|---|---|---|---|
+| `stackexchange` | api.stackexchange.com | no | `fromdate` | `startups` + `freelancing` + `webmasters`; every result is a real question; `meta` carries answer stats -> already-answered questions are down-ranked |
+| `bluesky` | public.api.bsky.app (AppView) | no | `since` + `sort=latest` | indie-founder chatter; AT URIs -> canonical `bsky.app` URLs; read-only, never authenticates |
+| `hn-algolia` | hn.algolia.com | no | `numericFilters` | HN stories/Ask HN |
+| `web` | Anthropic `web_search` tool | `ANTHROPIC_API_KEY` | search `page_age` | **opt-in** (`--source web`), budget-gated + cached; reaches indexed Reddit/IH/forum threads without touching those sites; keeps ONLY URLs that appear in real search results |
+| `reddit` | reddit.com/search.json | - | - | returns HTTP 403 unauthenticated; kept failure-isolated, no OAuth |
+| `free` / `all` | - | - | - | `free` = stackexchange+bluesky+hn-algolia; `all` = free + web |
+
+Every source is failure-isolated: one dead API is reported in
+`sources_status` and the others still return.
+
+**Solved-signal**: `_SOLVED` phrases ("solved it", "update: solved",
+"thanks everyone", `[solved]` prefixes) and Stack Exchange
+`accepted`/`answer_count>=2` mark a post `solved` -> `final_score x 0.20`.
+Old records are never deleted from the store but a missing/low
+`final_score` sinks them below current opportunities.
 
 **Store** (`data/acquisition.json`, dashboard-ready): keyed + de-duped by
 canonical URL. A re-found lead is *merged* - the better score wins, the
