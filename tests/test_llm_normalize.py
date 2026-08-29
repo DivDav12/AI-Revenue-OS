@@ -1,3 +1,4 @@
+import importlib.util
 import io
 import json
 import os
@@ -6,6 +7,12 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
+
+# These two tests exercise the "anthropic package is not installed" path.
+# When the optional [llm] extra IS installed (e.g. to run the web source),
+# build_client() succeeds and only fails later on a real API call, so the
+# assertions below no longer apply - skip them in that environment.
+_HAS_ANTHROPIC = importlib.util.find_spec("anthropic") is not None
 
 from revenue_os import cli
 from revenue_os.llm_cache import LlmCache
@@ -166,6 +173,7 @@ class CostTests(unittest.TestCase):
 
 
 class BuildClientTests(unittest.TestCase):
+    @unittest.skipIf(_HAS_ANTHROPIC, "anthropic installed - tests the missing-package path")
     def test_missing_package_raises_with_hint(self):
         # anthropic is not a core dependency
         with self.assertRaises(ValueError) as ctx:
@@ -368,6 +376,7 @@ class CliLlmTests(unittest.TestCase):
         self.assertEqual(fake.calls, 0)
         self.assertFalse((Path(self.data) / "candidates.json").exists())
 
+    @unittest.skipIf(_HAS_ANTHROPIC, "anthropic installed - tests the missing-package path")
     def test_evaluator_llm_without_package_exits_1(self):
         code, err = _run([
             "run", "--source", "static", "--evaluator", "llm",
