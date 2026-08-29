@@ -256,13 +256,15 @@ _AVATARS = {
                      '<path d="M12 14v2"/>'),
     "finder": _svg('<path d="M4 5h16l-6 8v6l-4-2v-4z"/>'),
     "trendhunter": _svg('<path d="M3 17 9 11l4 4 8-8"/><path d="M17 4h4v4"/>'),
+    "competitor": _svg('<circle cx="12" cy="12" r="8"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>'
+                       '<circle cx="12" cy="12" r="2"/>'),
     "generic": _svg('<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2"/>'),
 }
 _ACCENT = {
     "operator": "#22d3ee", "discovery": "#38bdf8", "evaluator": "#a78bfa",
     "researcher": "#34d399", "planner": "#fbbf24", "offer": "#f472b6",
     "decision": "#f87171", "finder": "#5eead4", "trendhunter": "#c084fc",
-    "generic": "#94a3b8",
+    "competitor": "#fb923c", "generic": "#94a3b8",
 }
 
 # llm_spend activity  ->  (node key, display name, role, Goal field, llm-mode value)
@@ -271,6 +273,7 @@ _ACCENT = {
 _WORKERS = (
     ("evaluate", "evaluator", "Evaluator", "Scoring",         "evaluator",       "llm"),
     ("research", "researcher", "Product Researcher", "Due diligence", "research",     "llm"),
+    ("competition", "competitor", "Competitor Analyzer", "Competition read", "competition", "llm"),
     ("plan",     "planner",    "Validation Planner", "Validation plan", "planner",    "llm"),
     ("offer",    "offer",      "Offer Builder", "First offer",    "proposer",         "llm"),
     ("decide",   "decision",   "Decision Policy", "Orchestration", "decision_policy", "llm"),
@@ -327,6 +330,7 @@ _MAP_POS = {
     "evaluator":   (650, 232),
     "trendhunter": (150, 400),
     "finder":      (650, 400),
+    "competitor":  (650, 560),
     "decision":    (120, 368),
     "operator":    (400, 358),
     "planner":     (400, 486),
@@ -638,14 +642,15 @@ def _attention(queue: list[dict]) -> str:
 
 _ACT_AGENT = {
     "discover": "discovery", "investigate": "planner", "analyze_trends": "trendhunter",
-    "prepare_launch": "offer", "research": "researcher", "stop": "operator",
+    "prepare_launch": "offer", "research": "researcher",
+    "analyze_competition": "competitor", "stop": "operator",
 }
 
 # task_log agent name  ->  map node key
 _TASK_AGENT_NODE = {
     "market_scanner": "discovery", "evaluator": "evaluator",
     "opportunity_finder": "finder", "product_researcher": "researcher",
-    "trend_hunter": "trendhunter",
+    "competitor_analyzer": "competitor", "trend_hunter": "trendhunter",
 }
 
 
@@ -878,6 +883,14 @@ def _candidates(candidates: list[dict]) -> str:
                 f"{_esc(research.get('rationale', ''))} "
                 f"<span class='muted'>({_esc(research.get('basis', ''))})</span></p>"
             )
+        comp = c.get("competition") or {}
+        cmp_html = ""
+        if comp.get("verdict"):
+            cmp_html = (
+                f"<p><b>competition: {_esc(comp['verdict'])}</b> &mdash; "
+                f"{_esc(comp.get('rationale', ''))} "
+                f"<span class='muted'>({_esc(comp.get('basis', ''))})</span></p>"
+            )
         budget = ""
         if c.get("plan_needs_budget"):
             budget = (
@@ -894,7 +907,7 @@ def _candidates(candidates: list[dict]) -> str:
                 + (f" &mdash; {_esc(pos)}" if pos else "") + "</p>"
             )
         blocks += (
-            f"<details><summary>{summary}</summary>{rat}{res}{budget}{off}"
+            f"<details><summary>{summary}</summary>{rat}{res}{cmp_html}{budget}{off}"
             f"{_breakdown(c.get('breakdown', {}))}</details>"
         )
     return blocks

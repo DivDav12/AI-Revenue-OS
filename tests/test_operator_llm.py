@@ -30,6 +30,11 @@ _PAYLOADS = {
         "competition": "crowded", "demand_evidence": "thin", "legal_flags": "none",
         "verdict": "caution", "rationale": "unproven",
     },
+    "record_competition_analysis": {
+        "named_competitors": "Zapier, Make", "pricing_landscape": "$0-50/mo",
+        "differentiation_angle": "vertical templates", "saturation": "high",
+        "verdict": "crowded", "rationale": "mature category",
+    },
 }
 
 
@@ -191,6 +196,32 @@ class OperatorLlmTests(unittest.TestCase):
         self.assertTrue(all(c.research == {} for c in store.all()))
         self.assertFalse((self.d / "llm_spend.json").exists())
 
+    def test_competitor_analyzer_notes_shortlisted_and_records_spend(self):
+        goal = Goal(competition="llm")
+        with mock.patch("revenue_os.llm_normalize.build_client", return_value=_FakeClient()):
+            steps = OperatorAgent(self.d, goal).run()
+        store = CandidateStore.load(self.d / "candidates.json")
+        shortlisted = [c for c in store.all() if c.status == "shortlisted"]
+        self.assertTrue(shortlisted)
+        self.assertTrue(all(c.competition.get("verdict") == "crowded"
+                            for c in shortlisted))
+        self.assertIn("competition", {e["activity"] for e in self._spend()})
+        self.assertTrue(any(s.decision.action == "analyze_competition"
+                            for s in steps))
+        # runs once then the flag stops it
+        self.assertEqual(
+            [s.decision.action for s in steps].count("analyze_competition"), 1
+        )
+        # task log carries the real lineage
+        import json
+        tl = json.loads((self.d / "task_log.json").read_text())
+        self.assertIn("competitor_analyzer", {e["agent"] for e in tl})
+
+    def test_competition_default_off(self):
+        OperatorAgent(self.d, Goal()).run()
+        store = CandidateStore.load(self.d / "candidates.json")
+        self.assertTrue(all(c.competition == {} for c in store.all()))
+
     def test_research_cap_exhaustion_stops(self):
         log = LlmSpendLog(self.d / "llm_spend.json")
         log.add({"activity": "research", "cost_usd": 5.0, "api_calls": 1})
@@ -244,6 +275,12 @@ class AgentGoalCliTests(unittest.TestCase):
             self.assertEqual(g.evaluator, "llm")
             self.assertEqual(g.planner, "llm")
             self.assertEqual(g.model, "claude-opus-5")
+
+    def test_agent_goal_sets_competition(self):
+        with tempfile.TemporaryDirectory() as d:
+            code, _ = _run(["agent-goal", "--competition", "llm", "--data-dir", d])
+            self.assertEqual(code, 0)
+            self.assertEqual(load_goal(d).competition, "llm")
 
 
 if __name__ == "__main__":

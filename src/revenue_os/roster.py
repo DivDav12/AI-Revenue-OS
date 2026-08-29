@@ -47,8 +47,9 @@ AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec("trend_hunter", "Trend Hunter", "discovery", "Emerging demand",
               "analyze_trends", node="trendhunter", status="live"),
     AgentSpec("competitor_analyzer", "Competitor Analyzer", "discovery",
-              "Competition read", "analyze_competition", node="researcher",
-              spend_activity="competition"),
+              "Competition read", "analyze_competition", node="competitor",
+              mode_field="competition", on_value="llm", off_value="off",
+              spend_activity="competition", status="live"),
     AgentSpec("supplier_finder", "Supplier Finder", "discovery", "Sourcing feasibility",
               "find_suppliers", node="discovery"),
     # --- build cluster --------------------------------------------------

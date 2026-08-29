@@ -56,6 +56,18 @@ class CandidateStoreTests(unittest.TestCase):
         merged = reloaded.upsert(_cand("gamma", total=3.3))
         self.assertEqual(merged.research, {"verdict": "caution"})
 
+    def test_competition_note_round_trips_and_survives_upsert(self):
+        store = CandidateStore(self.path)
+        c = store.upsert(_cand("delta"))
+        store.put(replace(c, status="shortlisted",
+                          competition={"verdict": "crowded"}))
+        store.save()
+
+        reloaded = CandidateStore.load(self.path)
+        self.assertEqual(reloaded.get("delta").competition, {"verdict": "crowded"})
+        merged = reloaded.upsert(_cand("delta", total=4.1))
+        self.assertEqual(merged.competition, {"verdict": "crowded"})
+
     def test_all_is_ranked_by_total_desc(self):
         store = CandidateStore(self.path)
         store.upsert(_cand("low", total=1.0))

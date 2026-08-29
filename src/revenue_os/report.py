@@ -108,6 +108,7 @@ def pipeline_report(
             "plan_max_cost": cand.plan.get("max_cost", 0.0),
             "offer": dict(cand.offer),
             "research": dict(cand.research),
+            "competition": dict(cand.competition),
         }
         for cand in candidates
     ]
@@ -292,6 +293,13 @@ def render_candidate(candidate: Candidate) -> str:
     if candidate.research:
         for key in sorted(candidate.research):
             lines.append(f"    {key}: {candidate.research[key]}")
+    else:
+        lines.append("    (none)")
+
+    lines.append("  competition")
+    if candidate.competition:
+        for key in sorted(candidate.competition):
+            lines.append(f"    {key}: {candidate.competition[key]}")
     else:
         lines.append("    (none)")
 

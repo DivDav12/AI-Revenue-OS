@@ -285,6 +285,27 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertIn("Opportunity Finder", html)   # map node
         self.assertNotIn("://", html)
 
+    def test_competitor_analyzer_node_and_lineage_and_note(self):
+        self.store.put(Candidate(
+            name="alpha", status="shortlisted", total=3.0, verdict="hold",
+            competition={"verdict": "crowded", "rationale": "mature category",
+                         "basis": "model knowledge, no web"},
+        ))
+        task_log = [
+            {"ts": "1", "task_id": "c1", "parent_id": None, "depth": 0,
+             "capability": "analyze_competition", "agent": "competitor_analyzer",
+             "status": "ok", "summary": {"candidate_name": "alpha"}},
+        ]
+        html = render_html(
+            _report(self.store, self.d), _FIXED_TS,
+            agent_log=[{"ts": "0", "action": "analyze_competition", "reason": "x"}],
+            task_log=task_log, goal={"competition": "llm"},
+        )
+        self.assertIn("Competitor Analyzer", html)          # map node
+        self.assertIn("x1='400' y1='358' x2='650' y2='560'", html)  # operator -> competitor
+        self.assertIn("competition: crowded", html)         # candidate details
+        self.assertNotIn("://", html)
+
     def test_trends_panel_real_or_empty(self):
         empty = render_html(_report(self.store, self.d), _FIXED_TS)
         self.assertIn("No trend analysis yet.", empty)

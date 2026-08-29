@@ -207,6 +207,8 @@ def _cmd_agent_goal(args) -> int:
         updates["proposer"] = args.proposer
     if args.research is not None:
         updates["research"] = args.research
+    if args.competition is not None:
+        updates["competition"] = args.competition
     if args.trend_hunter is not None:
         updates["trend_hunter"] = args.trend_hunter
     if args.decision_policy is not None:
@@ -665,6 +667,7 @@ def build_parser() -> argparse.ArgumentParser:
     ag_goal.add_argument("--planner", choices=("template", "llm"), default=None)
     ag_goal.add_argument("--proposer", choices=("template", "llm"), default=None)
     ag_goal.add_argument("--research", choices=("off", "llm"), default=None)
+    ag_goal.add_argument("--competition", choices=("off", "llm"), default=None)
     ag_goal.add_argument(
         "--trend-hunter", action=argparse.BooleanOptionalAction, default=None,
         help="deterministic trend analysis over the candidate corpus",

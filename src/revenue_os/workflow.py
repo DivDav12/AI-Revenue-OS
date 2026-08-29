@@ -324,3 +324,45 @@ def research_shortlisted(store: CandidateStore, worker, *, sink=None) -> list[Ca
             researched.append(updated)
     store.save()
     return researched
+
+
+def analyze_competition_shortlisted(store: CandidateStore, worker, *,
+                                    sink=None) -> list[Candidate]:
+    """Dispatch an analyze_competition task per shortlisted candidate
+    without a note, through the Orchestrator to a CompetitorAnalyzerAgent,
+    and attach each note.
+
+    Idempotent: candidates that already have a note are skipped. A failed
+    analysis leaves that candidate un-noted for a later retry. `sink` (a
+    TaskLog.record) receives each dispatched task. Returns the candidates
+    analysed this call.
+    """
+    from .competition import CompetitorAnalyzerAgent
+
+    pending = [
+        c for c in store.all() if c.status == "shortlisted" and not c.competition
+    ]
+    if not pending:
+        return []
+
+    orchestrator = Orchestrator(registry=AgentRegistry(), sink=sink)
+    orchestrator.register(CompetitorAnalyzerAgent(name="competitor_analyzer"))
+    for cand in pending:
+        orchestrator.add_task(Task(
+            objective=f"competition: {cand.name}",
+            capability="analyze_competition",
+            payload={"candidate": cand, "worker": worker},
+        ))
+
+    analysed: list[Candidate] = []
+    for result in orchestrator.run_cycle():
+        if result.status != "ok":
+            logger.warning("competition analysis failed: %s", result.error)
+            continue
+        cand = store.get(result.output["candidate_name"])
+        if cand is not None:
+            updated = replace(cand, competition=dict(result.output["competition"]))
+            store.put(updated)
+            analysed.append(updated)
+    store.save()
+    return analysed
