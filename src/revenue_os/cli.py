@@ -11,6 +11,7 @@ Read commands:
   llm-costs        print recorded AI operating spend
   outcomes         retrospective on validated vs rejected candidates
   dashboard        write a static HTML pipeline snapshot (no discovery)
+  dashboard-serve  serve an interactive dashboard on localhost (human gates only)
   candidate NAME   print one candidate's full state
   demo             full end-to-end walkthrough in a throwaway directory
 
@@ -363,7 +364,13 @@ def _cmd_llm_costs(args) -> int:
     return 0
 
 
-def _write_dashboard(data_dir: Path, out: Path | None = None) -> Path:
+def build_dashboard_html(
+    data_dir: Path, *, interactive: bool = False,
+    flash: str | None = None, csrf: str | None = None,
+) -> str:
+    """Load all persisted state and render the dashboard HTML. Shared by
+    the static `dashboard` writer and the `dashboard-serve` server so both
+    build the report identically."""
     import json
 
     from .agent_log import AgentLog
@@ -375,11 +382,12 @@ def _write_dashboard(data_dir: Path, out: Path | None = None) -> Path:
         store, revenue_ledger, spend_ledger,
         _discovery_log(data_dir), _llm_spend_log(data_dir), _llm_budget(data_dir),
     )
+
     def _load_json(name):
         p = data_dir / name
         return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
 
-    html = render_html(
+    return render_html(
         report, generated_at=now_iso(),
         agent_log=AgentLog.load(data_dir / "agent_log.json").entries(),
         session=session_dict(data_dir),
@@ -388,7 +396,12 @@ def _write_dashboard(data_dir: Path, out: Path | None = None) -> Path:
         task_log=load_task_log(data_dir).entries(),
         trend=_load_json("trend_report.json"),
         revenue_analysis=_load_json("revenue_analysis.json"),
+        interactive=interactive, flash=flash, csrf=csrf,
     )
+
+
+def _write_dashboard(data_dir: Path, out: Path | None = None) -> Path:
+    html = build_dashboard_html(data_dir)
     out = out or data_dir / "dashboard.html"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(html, encoding="utf-8")
@@ -399,6 +412,13 @@ def _cmd_dashboard(args) -> int:
     data_dir = _data_dir(args)
     out = _write_dashboard(data_dir, Path(args.out) if args.out else None)
     print(f"dashboard written: {out}")
+    return 0
+
+
+def _cmd_dashboard_serve(args) -> int:
+    from .dashboard_server import serve
+
+    serve(_data_dir(args), host=args.host, port=args.port, actor=args.actor)
     return 0
 
 
@@ -707,6 +727,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--out", default=None, help="output path (default: <data-dir>/dashboard.html)"
     )
     dash.set_defaults(func=_cmd_dashboard)
+
+    dserve = sub.add_parser(
+        "dashboard-serve", parents=[common],
+        help="serve an interactive dashboard on localhost (human gates only)",
+    )
+    dserve.add_argument("--port", type=int, default=8787)
+    dserve.add_argument("--host", default="127.0.0.1",
+                        help="loopback only; a non-loopback host is refused")
+    dserve.add_argument("--actor", default="dashboard",
+                        help="recorded as the actor for gate actions")
+    dserve.set_defaults(func=_cmd_dashboard_serve)
 
     cand = sub.add_parser("candidate", parents=[common], help="show one candidate")
     cand.add_argument("name")

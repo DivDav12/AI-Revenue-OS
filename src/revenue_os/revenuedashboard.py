@@ -92,6 +92,28 @@ main{padding:1.1rem 1.3rem 2.5rem;max-width:1520px}
 .attention ul{margin:.35rem 0 0;padding-left:1.1rem}
 .attention li{margin:.15rem 0}
 
+.flash{border:1px solid var(--good);border-left:3px solid var(--good);border-radius:8px;
+  padding:.55rem .8rem;margin-bottom:1rem;font-size:.82rem;
+  background:linear-gradient(90deg,color-mix(in srgb,var(--good) 14%,transparent),transparent)}
+.flash.err{border-color:var(--bad);border-left-color:var(--bad);
+  background:linear-gradient(90deg,color-mix(in srgb,var(--bad) 14%,transparent),transparent)}
+.gate-form{display:flex;align-items:center;flex-wrap:wrap;gap:.5rem;
+  padding:.45rem 0;border-top:1px solid color-mix(in srgb,var(--warn) 25%,transparent)}
+.gate-form:first-of-type{border-top:none}
+.gate-form .who{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.8rem;
+  min-width:14rem}
+.gate-form label{font-size:.72rem;color:var(--dim);display:flex;align-items:center;gap:.3rem}
+.gate-form input{background:var(--bg2);border:1px solid var(--edge-hi);color:var(--text);
+  border-radius:6px;padding:.28rem .45rem;font:inherit;font-size:.8rem;width:9rem}
+.gate-btn{font:inherit;font-size:.66rem;font-weight:700;letter-spacing:.08em;
+  text-transform:uppercase;padding:.32rem .7rem;border-radius:20px;cursor:pointer;
+  border:1px solid var(--edge-hi);background:var(--surface2);color:var(--text)}
+.gate-btn:hover{filter:brightness(1.15)}
+.gate-btn.approve,.gate-btn.validated,.gate-btn.launch,.gate-btn.pay{
+  border-color:color-mix(in srgb,var(--good) 55%,var(--edge));color:var(--good)}
+.gate-btn.reject,.gate-btn.rejected{
+  border-color:color-mix(in srgb,var(--bad) 55%,var(--edge));color:var(--bad)}
+
 section{background:var(--surface);border:1px solid var(--edge);border-radius:10px;
   padding:.95rem 1rem;margin-bottom:.9rem}
 #agents{background:linear-gradient(180deg,var(--surface),var(--surface2));
@@ -640,19 +662,62 @@ def _topbar(report, session, agent_log, spend_entries, goal) -> str:
     )
 
 
-def _attention(queue: list[dict]) -> str:
+def _attention(queue: list[dict], interactive: bool = False,
+               csrf: str | None = None) -> str:
     if not queue:
         return ""
-    items = "".join(
-        f"<li>{_esc(i['next_action'])} &mdash; <span class='mono'>{_esc(i['name'])}</span>"
-        + (" <span class='bad'>(stale)</span>" if i.get("stale") else "")
-        + "</li>"
-        for i in queue
-    )
+    if not interactive:
+        items = "".join(
+            f"<li>{_esc(i['next_action'])} &mdash; <span class='mono'>{_esc(i['name'])}</span>"
+            + (" <span class='bad'>(stale)</span>" if i.get("stale") else "")
+            + "</li>"
+            for i in queue
+        )
+        return (
+            "<div class='attention'><div class='k'>Human action required</div>"
+            f"<ul>{items}</ul></div>"
+        )
+    forms = "".join(_gate_form(i, csrf) for i in queue)
     return (
         "<div class='attention'><div class='k'>Human action required</div>"
-        f"<ul>{items}</ul></div>"
+        f"{forms}</div>"
     )
+
+
+def _gate_form(item: dict, csrf: str | None) -> str:
+    name = _esc(item["name"])
+    status = item.get("status")
+    stale = " <span class='bad'>(stale)</span>" if item.get("stale") else ""
+    head = (
+        "<form class='gate-form' action='/action' method='post'>"
+        f"<input type='hidden' name='csrf' value='{_esc(csrf or '')}'>"
+        f"<input type='hidden' name='name' value='{name}'>"
+        f"<span class='who'>{name}{stale}</span>"
+    )
+    if status == "shortlisted":
+        body = (
+            "<button class='gate-btn approve' name='action' value='approve'>Approve</button>"
+            "<button class='gate-btn reject' name='action' value='reject'>Reject</button>"
+        )
+    elif status == "investigating":
+        body = (
+            "<input type='hidden' name='action' value='outcome'>"
+            "<label>Metric <input name='metric' type='text' "
+            "placeholder='e.g. 4 of 10 said yes'></label>"
+            "<button class='gate-btn validated' name='result' value='validated'>Validated</button>"
+            "<button class='gate-btn rejected' name='result' value='rejected'>Rejected</button>"
+        )
+    elif status == "validated":
+        body = "<button class='gate-btn launch' name='action' value='launch'>Launch</button>"
+    elif status in ("launched", "earning"):
+        body = (
+            "<label>Amount <input name='amount' type='number' step='0.01' min='0' "
+            "required></label>"
+            "<button class='gate-btn pay' name='action' value='payment'>Record payment</button>"
+        )
+    else:
+        body = f"<span class='muted'>{_esc(item.get('next_action', ''))}</span>"
+    return head + body + "</form>"
 
 
 # ---------------------------------------------------------------------------
@@ -1041,15 +1106,27 @@ def render_html(report: dict, generated_at: str, *,
                 goal: dict | None = None,
                 task_log: list[dict] | None = None,
                 trend: dict | None = None,
-                revenue_analysis: dict | None = None) -> str:
-    """Build the full standalone command-center HTML document."""
+                revenue_analysis: dict | None = None,
+                interactive: bool = False,
+                flash: str | None = None,
+                csrf: str | None = None) -> str:
+    """Build the full standalone command-center HTML document.
+
+    interactive=True renders the human gates as POST forms to /action
+    (used by `dashboard-serve`); the default renders the read-only view.
+    """
     queue = report["action_queue"]
+    flash_html = ""
+    if flash:
+        cls = " err" if flash.lower().startswith("error") else ""
+        flash_html = f"<div class='flash{cls}'>{_esc(flash)}</div>"
     body = (
         _sidebar()
         + "<main id='top'>"
         + f"<p class='muted mono' style='margin:.2rem 0 .8rem'>generated {_esc(generated_at)}</p>"
+        + flash_html
         + _topbar(report, session, agent_log, spend_entries, goal)
-        + _attention(queue)
+        + _attention(queue, interactive, csrf)
         + "<section id='agents'><h2>Agents</h2>"
         + _agent_map(agent_log or [], spend_entries, goal, session, report,
                      bool(queue), task_log or [])

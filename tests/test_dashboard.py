@@ -477,6 +477,48 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertIn("Human action required", html)
         self.assertIn("approve or reject", html)
 
+    def test_interactive_default_off_is_byte_identical(self):
+        self.store.put(Candidate(name="alpha", status="shortlisted"))
+        r = _report(self.store, self.d)
+        self.assertEqual(render_html(r, _FIXED_TS),
+                         render_html(r, _FIXED_TS, interactive=False))
+        plain = render_html(r, _FIXED_TS)
+        self.assertNotIn("action='/action'", plain)
+        self.assertNotIn("class='gate-form'", plain)
+        self.assertNotIn("<button", plain)
+
+    def test_interactive_renders_gate_forms_per_status(self):
+        self.store.put(Candidate(name="s1", status="shortlisted"))
+        self.store.put(Candidate(name="i1", status="investigating"))
+        self.store.put(Candidate(name="v1", status="validated",
+                                 offer={"price": 9.0}))
+        self.store.put(Candidate(name="l1", status="launched"))
+        html = render_html(_report(self.store, self.d), _FIXED_TS,
+                           interactive=True, csrf="TOK", flash="ok: s1 -> approved")
+        self.assertIn("action='/action'", html)
+        self.assertIn("name='csrf' value='TOK'", html)
+        self.assertIn("class='flash'", html)
+        # shortlisted -> approve/reject
+        self.assertIn("name='action' value='approve'", html)
+        self.assertIn("name='action' value='reject'", html)
+        # investigating -> outcome + metric input
+        self.assertIn("name='action' value='outcome'", html)
+        self.assertIn("name='metric'", html)
+        self.assertIn("name='result' value='validated'", html)
+        # validated -> launch
+        self.assertIn("name='action' value='launch'", html)
+        # launched -> payment + amount input
+        self.assertIn("name='action' value='payment'", html)
+        self.assertIn("name='amount'", html)
+        # still no JavaScript / external refs
+        self.assertNotIn("<script", html)
+        self.assertNotIn("://", html)
+
+    def test_interactive_flash_error_gets_err_class(self):
+        html = render_html(_report(self.store, self.d), _FIXED_TS,
+                           interactive=True, flash="error: bad")
+        self.assertIn("class='flash err'", html)
+
     def test_roi_table_appears_after_payment(self):
         self.store.put(Candidate(name="alpha", status="validated"))
         mark_launched(self.store, "alpha", actor="o")
