@@ -7,12 +7,15 @@ from pathlib import Path
 from revenue_os.acquisition import (
     AcquisitionAgent,
     AcquisitionStore,
+    age_bucket,
     age_info,
     build_lead,
     canonical_url,
     classify,
+    evidence,
     final_score,
     lead_id,
+    prospect_quality,
     qc_lead,
     score_lead,
 )
@@ -69,9 +72,14 @@ class AgeTests(unittest.TestCase):
         self.assertEqual(age_info("garbage")["age_bucket"], "unknown")
 
     def test_buckets(self):
-        self.assertEqual(age_info(_days_ago(2))["age_bucket"], "recent")
+        self.assertEqual(age_info(_days_ago(2))["age_bucket"], "extremely_fresh")
+        self.assertEqual(age_info(_days_ago(6))["age_bucket"], "fresh")
+        self.assertEqual(age_info(_days_ago(12))["age_bucket"], "recent")
         self.assertEqual(age_info(_days_ago(20))["age_bucket"], "aging")
-        self.assertEqual(age_info(_days_ago(200))["age_bucket"], "old")
+        self.assertEqual(age_info(_days_ago(45))["age_bucket"], "stale")
+        self.assertEqual(age_info(_days_ago(75))["age_bucket"], "very_stale")
+        self.assertEqual(age_info(_days_ago(200))["age_bucket"], "archive")
+        self.assertEqual(age_info("")["age_bucket"], "unknown")
 
     def test_max_age_days_downranks_old_but_keeps_unknown_reasonable(self):
         old = final_score(relevance_score=90, age_days=400,
@@ -185,13 +193,15 @@ class LeadTests(unittest.TestCase):
     def test_build_lead_fills_all_new_fields(self):
         lead = build_lead(_rec(days=2), score_lead(_rec(days=2)), max_age_days=30)
         d = lead.to_dict()
-        for k in ("age_days", "age_bucket", "prospect_type", "relevance_score",
-                  "final_score", "scoring_mode", "human_review_status",
-                  "lead_id", "active_problem", "recommended_fit", "llm_reason"):
+        for k in ("age_days", "age_bucket", "prospect_type", "prospect_quality",
+                  "relevance_score", "final_score", "scoring_mode",
+                  "human_review_status", "lead_id", "active_problem",
+                  "recommended_fit", "llm_reason", "why", "matched_queries"):
             self.assertIn(k, d)
         self.assertEqual(d["human_review_status"], "new")
         self.assertEqual(d["scoring_mode"], "deterministic")
-        self.assertEqual(d["age_bucket"], "recent")
+        self.assertEqual(d["age_bucket"], "extremely_fresh")
+        self.assertTrue(d["why"])                      # evidence list populated
 
     def test_final_score_beats_an_old_perfect_match(self):
         fresh = build_lead(_rec(title="how do I get my first customers for my SaaS",
@@ -553,8 +563,130 @@ class CliTests(unittest.TestCase):
                        "--delay", "0", "--dry-run")
         self.assertEqual(rc, 0)
 
+    def test_discover_free_runs_offline_source_and_persists(self):
+        rc = self._run("discover-free", "--source", "file", "--source-path",
+                       str(self.recs), "--delay", "0", "--max-age-days", "30")
+        self.assertEqual(rc, 0)
+        store = AcquisitionStore.load(self.d / "acquisition.json")
+        self.assertTrue(store.all())
+        # every lead carries the new evidence + quality fields
+        d = store.all()[0]
+        self.assertIn("prospect_quality", d)
+        self.assertIn("why", d)
+        self.assertIn("age_bucket", d)
+
+    def test_discover_free_rejects_web_at_the_parser(self):
+        # argparse itself refuses 'web'/'all' for discover-free (SystemExit 2)
+        for src in ("web", "all"):
+            with self.assertRaises(SystemExit):
+                self._run("discover-free", "--source", src, "--delay", "0",
+                          "--dry-run")
+        # nothing was spent
+        sp = self.d / "llm_spend.json"
+        if sp.exists():
+            self.assertEqual(json.loads(sp.read_text())[-1]["cost_usd"], 0.0)
+
+    def test_run_discovery_guard_also_blocks_web_in_free_mode(self):
+        # belt-and-suspenders: the runtime guard rejects web even if it slips past
+        from types import SimpleNamespace
+
+        from revenue_os.cli import _run_discovery
+        args = SimpleNamespace(source=None, query=None, limit=5, min_score=0,
+                               max_age_days=30, delay=0, dry_run=True, json=False,
+                               data_dir=str(self.d), score="deterministic",
+                               model="x", max_cost=1.0, refresh=False)
+        with self.assertRaises(ValueError):
+            _run_discovery(args, names=["web"], allow_web=False, allow_llm=False)
+
 
 # --- guarantees --------------------------------------------
+
+class FreeV2Tests(unittest.TestCase):
+    def test_seven_tier_buckets_and_monotonic_recency(self):
+        order = ["extremely_fresh", "fresh", "recent", "aging", "stale",
+                 "very_stale", "archive"]
+        self.assertEqual([age_bucket(d) for d in (1, 6, 12, 22, 45, 75, 200)], order)
+        from revenue_os.acquisition import _recency_factor
+        fs = [_recency_factor(d, 3650) for d in (1, 6, 12, 22, 45, 75, 200)]
+        self.assertEqual(fs, sorted(fs, reverse=True))       # strictly decreasing
+        self.assertGreater(_recency_factor(2, 3650), _recency_factor(None, 3650))
+
+    def test_prospect_quality_levels(self):
+        base = {"relevance_score": 70, "prospect_type": "active_problem",
+                "age_bucket": "extremely_fresh", "solved": False}
+        self.assertEqual(prospect_quality(base), "high")
+        self.assertEqual(prospect_quality({**base, "age_bucket": "stale"}), "medium")
+        self.assertEqual(prospect_quality({**base, "solved": True}), "low")
+        self.assertEqual(prospect_quality({**base, "prospect_type": "success_story"}),
+                         "none")
+        self.assertEqual(prospect_quality({**base, "relevance_score": 5,
+                                           "prospect_type": "irrelevant"}), "none")
+
+    def test_fresh_good_lead_beats_stale_perfect_lead(self):
+        fresh = build_lead(_rec(title="how do I get my first customers for my SaaS",
+                                text="0 paying customers, just launched", days=2),
+                           score_lead(_rec(days=2)), max_age_days=30)
+        stale = build_lead(
+            _rec(title="how do I get my first customers for my SaaS",
+                 text="0 paying customers, just launched",
+                 url="https://news.ycombinator.com/item?id=9", days=95),
+            score_lead(_rec(url="https://news.ycombinator.com/item?id=9", days=95)),
+            max_age_days=30)
+        self.assertGreater(fresh.final_score, stale.final_score * 4)
+
+    def test_evidence_is_grounded_never_invented(self):
+        c = classify("how do I get my first customers for my SaaS?",
+                     "I launched two weeks ago and have 0 paying customers")
+        c.update(age_info(_days_ago(2)))
+        why = evidence(c, "I launched two weeks ago and have 0 paying customers")
+        joined = " ".join(why).lower()
+        self.assertIn("day(s) ago", joined)
+        self.assertIn("zero/low-customer state", joined)
+        self.assertIn("asks for help", joined)
+        self.assertIn("first-person founder", joined)
+        # a lead with no signals gets no invented reasons beyond the age line
+        empty = evidence({"age_days": None, "age_bucket": "unknown",
+                          "matched_phrases": (), "negative_signals": (),
+                          "signals": {}}, "")
+        self.assertEqual(empty, ["post date not available (age unknown)"])
+
+    def test_matched_queries_merge_on_collapse(self):
+        r = AcquisitionAgent(name="s").run(Task(
+            objective="d", capability="discover_acquisition",
+            payload={"records": [
+                _rec(url="https://news.ycombinator.com/item?id=1",
+                     title="how do I get my first customers for my SaaS",
+                     text="0 paying customers", query="q1", days=2),
+                _rec(url="https://news.ycombinator.com/item?id=1&x=y",
+                     title="how do I get my first customers for my SaaS",
+                     text="0 paying customers", query="q2", days=2),
+            ]}))
+        self.assertEqual(len(r.output["leads"]), 1)
+        self.assertEqual(sorted(r.output["leads"][0]["matched_queries"]),
+                         ["q1", "q2"])
+
+    def test_store_merges_matched_queries_across_runs(self):
+        import tempfile
+        d = Path(tempfile.mkdtemp())
+        s = AcquisitionStore.load(d / "a.json")
+        s.upsert({"canonical_url": "u", "lead_id": "x", "final_score": 40,
+                  "matched_queries": ["q1"]})
+        s.upsert({"canonical_url": "u", "lead_id": "x", "final_score": 40,
+                  "matched_queries": ["q2"]})
+        self.assertEqual(sorted(s.get("u")["matched_queries"]), ["q1", "q2"])
+
+    def test_legacy_records_do_not_outrank_current_ones(self):
+        import tempfile
+        p = Path(tempfile.mkdtemp()) / "a.json"
+        p.write_text(json.dumps([
+            {"canonical_url": "legacy", "url": "https://x.test/1", "title": "old",
+             "fit_score": 95},                                    # no final_score
+            {"canonical_url": "fresh", "url": "https://x.test/2", "title": "new",
+             "final_score": 30, "relevance_score": 40},
+        ]), encoding="utf-8")
+        ranked = AcquisitionStore.load(p).ranked()
+        self.assertEqual(ranked[0]["canonical_url"], "fresh")     # legacy sinks
+
 
 class GuaranteeTests(unittest.TestCase):
     def test_no_posting_or_contact_functions_exist(self):

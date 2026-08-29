@@ -168,9 +168,10 @@ class CompositeAndFactoryTests(unittest.TestCase):
         self.assertEqual(c.errors[0][0], "stackexchange")
 
     def test_free_expands_to_the_keyless_sources(self):
+        # `free` = the keyless set only (no Reddit, no Bluesky - both gated)
         src = build_acquisition_source("free")
         self.assertEqual(sorted(s.name for s in src._sources),
-                         ["bluesky", "hn-algolia", "stackexchange"])
+                         ["hn-algolia", "stackexchange"])
         se = [s for s in src._sources if s.name == "stackexchange"][0]
         self.assertEqual(se.sites, ("freelancing", "webmasters"))
 
@@ -193,6 +194,36 @@ class CompositeAndFactoryTests(unittest.TestCase):
     def test_unknown_source_rejected(self):
         with self.assertRaises(ValueError):
             build_acquisition_source(["twitter"])
+
+
+class HNFreshnessTests(unittest.TestCase):
+    def test_since_ts_switches_to_search_by_date_with_ask_hn(self):
+        from revenue_os.acquisition_sources import HNAlgoliaSource
+        with _FakeHTTP({"search_by_date": {"hits": []}}) as http:
+            HNAlgoliaSource().search("first customers", 10, since_ts=1_700_000_000)
+        url = http.calls[0]
+        self.assertIn("search_by_date", url)
+        self.assertIn("ask_hn", url)
+        self.assertIn("created_at_i", url)
+
+    def test_no_since_ts_uses_relevance_search(self):
+        from revenue_os.acquisition_sources import HNAlgoliaSource
+        with _FakeHTTP({"api/v1/search?": {"hits": []}}) as http:
+            HNAlgoliaSource().search("q", 5)
+        self.assertIn("/api/v1/search?", http.calls[0])
+        self.assertNotIn("search_by_date", http.calls[0])
+
+
+class RegistryTests(unittest.TestCase):
+    def test_registry_classifies_sources(self):
+        from revenue_os.acquisition_sources import FREE_SOURCES, SOURCE_REGISTRY
+        self.assertEqual(SOURCE_REGISTRY["hn-algolia"]["tier"], "free")
+        self.assertEqual(SOURCE_REGISTRY["web"]["tier"], "paid")
+        self.assertTrue(SOURCE_REGISTRY["reddit"]["auth"])
+        self.assertTrue(SOURCE_REGISTRY["bluesky"]["auth"])
+        self.assertEqual(FREE_SOURCES, ("hn-algolia", "stackexchange"))
+        for n in FREE_SOURCES:
+            self.assertFalse(SOURCE_REGISTRY[n]["auth"])
 
 
 class CanonicalUrlSETests(unittest.TestCase):

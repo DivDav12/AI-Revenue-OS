@@ -78,6 +78,27 @@ def _iso(epoch) -> str:
         return ""
 
 
+# What each source needs, so the CLI can group sources by tier and the
+# operator can see at a glance what runs for free.
+#   tier: "free" | "paid" | "authenticated"
+SOURCE_REGISTRY: dict[str, dict] = {
+    "hn-algolia": {"tier": "free", "auth": False,
+                   "note": "Hacker News search (Algolia), keyless"},
+    "stackexchange": {"tier": "free", "auth": False,
+                      "note": "Stack Exchange API, keyless (~300 req/day/IP)"},
+    "bluesky": {"tier": "authenticated", "auth": True,
+                "note": "post search is now auth/edge gated (401/403)"},
+    "reddit": {"tier": "authenticated", "auth": True,
+               "note": "robots.txt Disallow: / ; JSON API 403 unauthenticated"},
+    "web": {"tier": "paid", "auth": True,
+            "note": "Anthropic web_search - needs API credits (ANTHROPIC_API_KEY)"},
+    "static": {"tier": "free", "auth": False, "note": "built-in samples (offline)"},
+    "file": {"tier": "free", "auth": False, "note": "local JSON file (offline)"},
+}
+# free-first default set (Reddit/Bluesky excluded - unavailable; web excluded - paid)
+FREE_SOURCES = ("hn-algolia", "stackexchange")
+
+
 def _epoch(since_ts) -> int | None:
     """since_ts may be an int epoch, an ISO string, or None."""
     if since_ts in (None, ""):
@@ -174,17 +195,24 @@ class HNAlgoliaSource:
     instead of decade-old articles."""
 
     name = "hn-algolia"
-    _URL = "https://hn.algolia.com/api/v1/search"
+    _SEARCH = "https://hn.algolia.com/api/v1/search"
+    _BY_DATE = "https://hn.algolia.com/api/v1/search_by_date"
 
     def search(self, query: str, limit: int, *, since_ts=None) -> list[AcqRecord]:
-        params = {
-            "query": query, "tags": "story",
-            "hitsPerPage": max(1, min(limit, 50)),
-        }
         epoch = _epoch(since_ts)
+        # With a freshness window: sort by DATE and include Ask HN, so real
+        # recent questions surface instead of being buried under Show HN.
+        # Without one: relevance ranking over all stories.
         if epoch is not None:
-            params["numericFilters"] = f"created_at_i>{epoch}"
-        body = _http_json(f"{self._URL}?{urllib.parse.urlencode(params)}")
+            url = self._BY_DATE
+            params = {"query": query, "tags": "(story,ask_hn)",
+                      "numericFilters": f"created_at_i>{epoch}",
+                      "hitsPerPage": max(1, min(limit, 50))}
+        else:
+            url = self._SEARCH
+            params = {"query": query, "tags": "story",
+                      "hitsPerPage": max(1, min(limit, 50))}
+        body = _http_json(f"{url}?{urllib.parse.urlencode(params)}")
         out: list[AcqRecord] = []
         for hit in body.get("hits", []) or []:
             oid = str(hit.get("objectID", "")).strip()
@@ -396,8 +424,6 @@ class CompositeAcqSource:
         return out
 
 
-# free, keyless sources that need no credentials
-_FREE_SOURCES = ("stackexchange", "bluesky", "hn-algolia")
 _SIMPLE = {
     "static": StaticAcqSource,
     "hn-algolia": HNAlgoliaSource,
@@ -426,8 +452,10 @@ def _one_source(name: str, path=None, web_source=None):
 def build_acquisition_source(names, path=None, web_source=None):
     """Build one source or a CompositeAcqSource from a list of names.
 
-    `free` -> stackexchange + bluesky + hn-algolia (all keyless).
+    `free` -> hn-algolia + stackexchange (keyless, no credentials).
     `all`  -> free + web.  `both` is a back-compat alias for `free`.
+    (Reddit and Bluesky are NOT in `free` - both are currently
+    unavailable without auth; select them explicitly to try anyway.)
     A single name returns that source directly; several return a
     CompositeAcqSource (failure-isolated).
     """
@@ -436,9 +464,9 @@ def build_acquisition_source(names, path=None, web_source=None):
     expanded: list[str] = []
     for n in names:
         if n in ("free", "both"):
-            expanded += list(_FREE_SOURCES)
+            expanded += list(FREE_SOURCES)
         elif n == "all":
-            expanded += list(_FREE_SOURCES) + ["web"]
+            expanded += list(FREE_SOURCES) + ["web"]
         else:
             expanded.append(n)
     seen: list[str] = []

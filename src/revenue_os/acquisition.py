@@ -58,25 +58,31 @@ counts far more than the same signal in the body.
 `score_lead` returns None only when NO positive signal fired at all.
 
 --------------------------------------------------------------------
-RECENCY + FINAL SCORE
+RECENCY + FINAL SCORE  (v2 - "free acquisition")
 --------------------------------------------------------------------
-  age_bucket: recent (<=7d) / aging (<=30d) / old (>30d) / unknown
+  age_bucket (7-tier "reply window"):
+      extremely_fresh <=3d   fresh <=7d   recent <=14d   aging <=30d
+      stale <=60d   very_stale <=90d   archive >90d   unknown
 
-  recency_factor:  3d->1.0  7d->0.9  14d->0.75  30d->0.55  90d->0.30
-                   365d->0.12  older->0.04   unknown->0.35
-  if age_days is not None and age_days > max_age_days:
-      recency_factor = min(recency_factor, 0.10)   # explicit cliff
+  recency_factor: 1.0 / 0.9 / 0.7 / 0.45 / 0.2 / 0.09 / 0.03 ; unknown 0.30
+  if age_days > max_age_days: recency_factor = min(f, 0.10)  (cliff)
 
   problem_factor:  active_problem 1.0 / seeking_advice 0.8 /
-                   founder_building 0.55 / else 0.35
+                   founder_building 0.55 / unknown 0.40 /
+                   educational 0.28 / irrelevant 0.18 / success_story 0.12
   intent_factor:   high 1.0 / medium 0.85 / low 0.60
+  solved_factor:   0.20 if the problem looks already solved/answered
 
-  final_score = round(relevance_score * recency_factor
-                      * problem_factor * intent_factor)   (clamped 0-100)
+  final_score = round(relevance x recency x problem x intent x solved)
 
-So a 2-day-old genuine "how do I get my first customer" (relevance ~80,
-factors 1.0/1.0/1.0) scores ~80, while a 10-year-old perfectly-worded
-case study (relevance ~90, recency 0.04, problem 0.35) scores ~1.
+  prospect_quality (high|medium|low|none) = the single "worth a human's
+  time?" verdict, combining problem type + freshness + solved state.
+
+  why = a list of observable reasons, each tied to real matched text or
+  metadata - never invented.
+
+  scorer_version bumps when this model changes; upsert re-derives any
+  stored lead with an older version so a model update refreshes the store.
 """
 
 from __future__ import annotations
@@ -86,7 +92,7 @@ import json
 import os
 import re
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
@@ -208,23 +214,29 @@ _MISC = (
     ("hiring", 3), ("we're hiring", 4),
 )
 
-# Default search strings. Chosen to surface CURRENT asks, not case studies.
+# Default search strings. Targeted at "a real person CURRENTLY stuck",
+# not "anything mentioning customers". Kept deliberately small and diverse
+# so the same thread does not surface a dozen times.
 SEARCH_QUERIES: tuple[str, ...] = (
-    "how get first customers",
-    "first paying customer",
+    "how do I get my first customers",
+    "first paying customers",
+    "launched my SaaS no customers",
     "can't get customers",
     "struggling to get customers",
-    "how acquire users",
-    "how find customers",
-    "need customers SaaS",
-    "zero customers SaaS",
-    "first users startup",
-    "customer acquisition problem",
-    "how sell SaaS",
-    "no paying customers",
+    "how do I get users for my SaaS",
+    "zero customers after launch",
+    "nobody is buying my product",
+    "how do I market my SaaS",
+    "first 10 customers",
+    "no sales after launch",
+    "how do I promote my product",
 )
 
 _BUCKET_RANK = {"low": 1, "medium": 2, "high": 3}
+# bump when the deterministic scoring model changes materially -
+# upsert re-derives any stored lead with an older version.
+_SCORER_VERSION = "2"
+
 _PROSPECT_TYPES = (
     "active_problem", "seeking_advice", "founder_building",
     "success_story", "educational", "irrelevant", "unknown",
@@ -315,34 +327,39 @@ def age_info(posted_at: str, *, now: datetime | None = None) -> dict:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     age_days = max(0, (now - dt).days)
+    return {"age_days": age_days, "age_bucket": age_bucket(age_days)}
+
+
+# 7-tier freshness (the "reply window"). For acquisition, freshness is
+# everything: a 2-day genuine ask must beat a 90-day perfect match.
+def age_bucket(age_days: int | None) -> str:
+    if age_days is None:
+        return "unknown"
+    if age_days <= 3:
+        return "extremely_fresh"
     if age_days <= 7:
-        bucket = "recent"
-    elif age_days <= 30:
-        bucket = "aging"
-    else:
-        bucket = "old"
-    return {"age_days": age_days, "age_bucket": bucket}
+        return "fresh"
+    if age_days <= 14:
+        return "recent"
+    if age_days <= 30:
+        return "aging"
+    if age_days <= 60:
+        return "stale"
+    if age_days <= 90:
+        return "very_stale"
+    return "archive"
+
+
+_RECENCY_BY_BUCKET = {
+    "extremely_fresh": 1.0, "fresh": 0.9, "recent": 0.7, "aging": 0.45,
+    "stale": 0.2, "very_stale": 0.09, "archive": 0.03, "unknown": 0.30,
+}
 
 
 def _recency_factor(age_days: int | None, max_age_days: int) -> float:
-    if age_days is None:
-        return 0.35
-    if age_days <= 3:
-        f = 1.0
-    elif age_days <= 7:
-        f = 0.9
-    elif age_days <= 14:
-        f = 0.75
-    elif age_days <= 30:
-        f = 0.55
-    elif age_days <= 90:
-        f = 0.30
-    elif age_days <= 365:
-        f = 0.12
-    else:
-        f = 0.04
-    if age_days > max_age_days:
-        f = min(f, 0.10)
+    f = _RECENCY_BY_BUCKET[age_bucket(age_days)]
+    if age_days is not None and age_days > max_age_days:
+        f = min(f, 0.10)   # explicit cliff past the requested window
     return f
 
 
@@ -486,7 +503,94 @@ def score_lead(record) -> dict | None:
 
     c["signals"] = meta
     c["fit_score"] = c["relevance_score"]  # backwards-compatible alias
+    c["prospect_quality"] = prospect_quality(c)
+    c["scorer_version"] = _SCORER_VERSION
+    c["why"] = evidence(c, g("text") or g("title"))
     return c
+
+
+_FRESH_BUCKETS = ("extremely_fresh", "fresh", "recent")
+
+
+def prospect_quality(c: dict) -> str:
+    """A single 'is this worth a human's time' verdict: high | medium |
+    low | none. Combines problem type, freshness, and solved state - the
+    factors a person actually weighs before deciding to reply."""
+    rel = int(c.get("relevance_score", 0))
+    ptype = c.get("prospect_type", "unknown")
+    bucket = c.get("age_bucket", "unknown")
+    solved = bool(c.get("solved"))
+    if ptype in ("irrelevant", "success_story", "educational") or rel < 12:
+        return "none"
+    if solved:
+        return "low"
+    if (ptype == "active_problem" and rel >= 55
+            and bucket in _FRESH_BUCKETS):
+        return "high"
+    if (ptype in ("active_problem", "seeking_advice") and rel >= 35
+            and bucket not in ("archive", "very_stale")):
+        return "medium"
+    return "low"
+
+
+_SOLVED_WORDS = tuple(p for p, *_ in _SOLVED)
+
+
+def evidence(c: dict, text: str) -> list[str]:
+    """A list of observable reasons, each tied to real matched text or
+    metadata. Never invents a reason."""
+    out: list[str] = []
+    age_days = c.get("age_days")
+    bucket = c.get("age_bucket", "unknown")
+    if age_days is None:
+        out.append("post date not available (age unknown)")
+    else:
+        out.append(f"posted {age_days} day(s) ago ({bucket})")
+
+    phr = set(c.get("matched_phrases", ()))
+    first = {"first paying customer", "first customer", "0 customer",
+             "no customer", "0 paying customer", "no paying customer",
+             "no user", "0 user", "no sale", "no traction", "nobody is buying"}
+    if phr & first:
+        out.append("explicit zero/low-customer state (matched "
+                   f"{sorted(phr & first)[:3]})")
+    ask = {p for p in phr if p.startswith(("how ", "can't", "cant", "struggling",
+                                           "need ", "looking", "help", "advice",
+                                           "where", "what", "should i"))}
+    if ask:
+        out.append(f"asks for help / advice (matched {sorted(ask)[:3]})")
+    selfp = {"my saas", "my startup", "my product", "my app", "i built",
+             "i launched", "just launched", "launched my", "we launched",
+             "i'm building", "im building", "my mvp", "my first product"}
+    if phr & selfp:
+        out.append(f"first-person founder (matched {sorted(phr & selfp)[:3]})")
+    if c.get("age_bucket") in ("extremely_fresh", "fresh") and (phr & selfp):
+        out.append("recently launched and posting now")
+
+    neg = set(c.get("negative_signals", ()))
+    if c.get("solved"):
+        hit = neg & set(_SOLVED_WORDS)
+        out.append("appears already solved / answered"
+                   + (f" (matched {sorted(hit)[:2]})" if hit else ""))
+    story = {p for p in neg if p in {"how i got", "how we got", "from 0 to",
+             "went from 0 to", "here's how", "here is how", "case study",
+             "lessons learned", "my journey to"}}
+    if story:
+        out.append(f"contains retrospective/success-story signals ({sorted(story)[:2]})")
+    misc = {p for p in neg if p in {"tutorial", "ultimate guide", "guide to",
+            "step by step", "someone should build", "announcing", "[news]"}}
+    if misc:
+        out.append(f"looks like a tutorial / announcement ({sorted(misc)[:2]})")
+
+    sig = c.get("signals") or {}
+    if "answer_count" in sig:
+        if sig.get("answer_count", 0) == 0 and not sig.get("answered"):
+            out.append("unanswered question (still stuck)")
+        elif sig.get("accepted"):
+            out.append("question has an accepted answer")
+        else:
+            out.append(f"question has {sig.get('answer_count')} answer(s)")
+    return out
 
 
 def _problem_factor(prospect_type: str) -> float:
@@ -543,14 +647,18 @@ class AcquisitionLead:
     # scoring
     relevance_score: int = 0
     prospect_type: str = "unknown"
+    prospect_quality: str = "none"
     active_problem: bool = False
     solved: bool = False
     final_score: int = 0
     scoring_mode: str = "deterministic"
+    scorer_version: str = ""
     llm_reason: str = ""
     recommended_fit: int = 0
     negative_signals: tuple = ()
     matched_phrases: tuple = ()
+    matched_queries: tuple = ()
+    why: tuple = ()
     signals: dict = field(default_factory=dict)
     # recency
     age_days: int | None = None
@@ -581,15 +689,19 @@ class AcquisitionLead:
             "match_reason": self.match_reason,
             "matched_phrases": list(self.matched_phrases),
             "negative_signals": list(self.negative_signals),
+            "matched_queries": list(self.matched_queries),
+            "why": list(self.why),
             "relevance_score": self.relevance_score,
             "fit_score": self.fit_score,
             "final_score": self.final_score,
             "buying_intent": self.buying_intent,
             "prospect_type": self.prospect_type,
+            "prospect_quality": self.prospect_quality,
             "active_problem": self.active_problem,
             "solved": self.solved,
             "signals": dict(self.signals),
             "scoring_mode": self.scoring_mode,
+            "scorer_version": self.scorer_version,
             "llm_reason": self.llm_reason,
             "recommended_fit": self.recommended_fit,
             "promo_allowed": self.promo_allowed,
@@ -646,16 +758,20 @@ def build_lead(record, score: dict, *, max_age_days: int = _DEFAULT_MAX_AGE_DAYS
         problem_summary=(g("text") or g("title"))[:_MAX_SUMMARY],
         match_reason=score["match_reason"],
         matched_phrases=tuple(score["matched_phrases"]),
+        matched_queries=(g("query"),) if g("query") else (),
+        why=tuple(score.get("why", ())),
         negative_signals=tuple(score.get("negative_signals", ())),
         relevance_score=int(score["relevance_score"]),
         fit_score=int(score["relevance_score"]),
         final_score=fs,
         buying_intent=score["buying_intent"],
         prospect_type=score["prospect_type"],
+        prospect_quality=score.get("prospect_quality", prospect_quality(score)),
         active_problem=bool(score["active_problem"]),
         solved=bool(score.get("solved")),
         signals=dict(score.get("signals") or {}),
         scoring_mode=scoring_mode,
+        scorer_version=str(score.get("scorer_version", _SCORER_VERSION)),
         llm_reason=str(score.get("llm_reason", "")),
         recommended_fit=int(score.get("recommended_fit", 0) or 0),
         promo_allowed=promo_allowed,
@@ -746,8 +862,15 @@ class AcquisitionAgent(Agent):
             keep = by_url.get(lead.canonical_url)
             if keep is not None:
                 collapsed += 1
+                # the same thread found via several queries -> one lead,
+                # merged evidence
+                merged_q = tuple(dict.fromkeys(
+                    keep.matched_queries + lead.matched_queries))
                 if lead.final_score <= keep.final_score:
+                    by_url[lead.canonical_url] = replace(
+                        keep, matched_queries=merged_q)
                     continue
+                lead = replace(lead, matched_queries=merged_q)
             by_url[lead.canonical_url] = lead
 
         leads = sorted(by_url.values(),
@@ -864,16 +987,25 @@ class AcquisitionStore:
 
         merged = dict(old)
         merged["last_seen_at"] = lead.get("last_seen_at") or now_iso()
-        # take the better final_score and carry its scoring fields
+        # union the queries that have surfaced this thread (merged evidence)
+        merged["matched_queries"] = list(dict.fromkeys(
+            list(old.get("matched_queries", []))
+            + list(lead.get("matched_queries", []))))
+        # Refresh the score when: it improved, an llm verdict replaces a
+        # deterministic one, OR the scorer version changed (a model update
+        # must re-derive stale records). A lower score from the SAME model
+        # is treated as transient and ignored.
         old_fs = old.get("final_score", old.get("fit_score", 0))
         new_fs = lead.get("final_score", lead.get("fit_score", 0))
         changed = merged["last_seen_at"] != old.get("last_seen_at")
-        if new_fs > old_fs or (new_fs == old_fs
-                               and lead.get("scoring_mode") == "llm"
-                               and old.get("scoring_mode") != "llm"):
+        llm_upgrade = (lead.get("scoring_mode") == "llm"
+                       and old.get("scoring_mode") != "llm")
+        rescored = lead.get("scorer_version") != old.get("scorer_version")
+        if new_fs > old_fs or llm_upgrade or rescored:
             for k in ("relevance_score", "fit_score", "final_score",
-                      "buying_intent", "prospect_type", "active_problem",
-                      "match_reason", "matched_phrases", "negative_signals",
+                      "buying_intent", "prospect_type", "prospect_quality",
+                      "active_problem", "solved", "match_reason", "why",
+                      "matched_phrases", "negative_signals", "scorer_version",
                       "scoring_mode", "llm_reason", "recommended_fit"):
                 if k in lead:
                     merged[k] = lead[k]

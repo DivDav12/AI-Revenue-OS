@@ -5,7 +5,8 @@ Read commands:
                    (--evaluator llm opt-in; keyword heuristic by default)
   report           print the report only (no discovery)
   discover-opportunities   find CURRENT public posts from founders struggling
-                           to get first customers (deterministic; --score llm optional)
+                           to get first customers (free sources; --source web optional)
+  discover-free            same, but ONLY free keyless sources ($0, no Anthropic)
   top-opportunities        the human-review shortlist, ranked by final_score
   review-opportunity ID --approve|--reject   record a human verdict (no contact)
   digest [-q]      one-line summary of what needs the human
@@ -193,27 +194,50 @@ def _acq_web_source(data_dir: Path, *, model: str, max_cost: float,
 
 def _print_lead_row(d: dict) -> None:
     age = ("age unknown" if d.get("age_days") is None
-           else f"{d['age_days']}d old")
+           else f"{d['age_days']}d ({d.get('age_bucket', '?')})")
     print(f"  [{d.get('final_score', d.get('fit_score', 0)):3}] "
-          f"{d.get('buying_intent', '?'):6} {d.get('prospect_type', '?'):16} "
-          f"{age:12} {d.get('platform', ''):16} {d.get('title', '')[:64]}")
+          f"q:{d.get('prospect_quality', '?'):6} {d.get('prospect_type', '?'):15} "
+          f"{age:20} {d.get('source', ''):12} {d.get('title', '')[:58]}")
     print(f"        {d.get('url', '')}")
-    reason = d.get("llm_reason") or d.get("match_reason", "")
-    if reason:
-        print(f"        why: {reason[:150]}")
+    for w in (d.get("why") or [])[:6]:
+        print(f"        - {w}")
+    if d.get("llm_reason"):
+        print(f"        - (llm) {d['llm_reason'][:150]}")
 
 
-def _cmd_discover_opportunities(args) -> int:
+def _source_status_report(names: list[str], statuses: dict) -> None:
+    from .acquisition_sources import SOURCE_REGISTRY
+    by_tier = {"free": [], "paid": [], "authenticated": [], "other": []}
+    for n in names:
+        reg = SOURCE_REGISTRY.get(n, {})
+        tier = reg.get("tier", "other")
+        st = statuses.get(n, "not run")
+        by_tier.setdefault(tier, []).append(
+            (n, st, reg.get("note", ""), reg.get("auth", False)))
+    labels = [("free", "FREE SOURCES"), ("authenticated", "UNAVAILABLE (auth)"),
+              ("paid", "PAID"), ("other", "OTHER")]
+    for key, label in labels:
+        rows = by_tier.get(key) or []
+        if not rows:
+            continue
+        print(f"  {label}")
+        for n, st, note, _auth in rows:
+            mark = "[ok]" if st == "ok" else "[! ]"
+            print(f"    {mark} {n:14} {st}" + (f"  ({note})" if st != "ok" else ""))
+
+
+def _run_discovery(args, *, names, allow_web, allow_llm):
     from .acquisition import SEARCH_QUERIES, AcquisitionStore
     from .acquisition_sources import build_acquisition_source
     from .workflow import discover_acquisition_opportunities
 
     data_dir = _data_dir(args)
-    names = list(args.source) if args.source else ["stackexchange", "bluesky",
-                                                   "hn-algolia"]
     queries = tuple(args.query) if args.query else SEARCH_QUERIES
 
     wants_web = any(n in ("web", "all") for n in names)
+    if wants_web and not allow_web:
+        raise ValueError("the 'web' source is paid (Anthropic) and is not "
+                         "available in this command; use `discover-opportunities`")
     web_source = web_cache = None
     if wants_web:
         web_source, web_cache = _acq_web_source(
@@ -222,7 +246,7 @@ def _cmd_discover_opportunities(args) -> int:
     source = build_acquisition_source(names, args.source_path, web_source=web_source)
 
     scorer = cache = None
-    if args.score == "llm":
+    if allow_llm and getattr(args, "score", "deterministic") == "llm":
         est = round(0.003 * args.limit * len(queries), 4)
         scorer, cache = _acq_llm_scorer(
             data_dir, model=args.model, max_cost=args.max_cost,
@@ -230,7 +254,7 @@ def _cmd_discover_opportunities(args) -> int:
 
     store = AcquisitionStore.load(data_dir / "acquisition.json")
     if args.dry_run:
-        store.save = lambda: None  # read existing (for dedup) but never write
+        store.save = lambda: None
 
     r = discover_acquisition_opportunities(
         store, source, queries=queries, limit=args.limit,
@@ -238,16 +262,19 @@ def _cmd_discover_opportunities(args) -> int:
         llm_scorer=scorer, politeness_delay=args.delay,
     )
     if not args.dry_run:
-        if cache is not None:
-            cache.save()
-        if web_cache is not None:
-            web_cache.save()
-    if scorer is not None:
-        _record_llm_spend(data_dir, "acquisition", scorer)
-    if web_source is not None:
-        _record_llm_spend(data_dir, "acquisition", web_source)
+        for c in (cache, web_cache):
+            if c is not None:
+                c.save()
+    for w in (scorer, web_source):
+        if w is not None:
+            _record_llm_spend(data_dir, "acquisition", w)
 
-    leads = r["leads"]  # what this run found, ranked
+    _emit_discovery(args, r, names, queries, web_source, scorer)
+    return 0
+
+
+def _emit_discovery(args, r, names, queries, web_source, scorer) -> None:
+    leads = r["leads"]
     if args.json:
         print(json.dumps(leads, indent=2))
     else:
@@ -257,43 +284,57 @@ def _cmd_discover_opportunities(args) -> int:
         print(f"  dropped: {d['title']} ({', '.join(d['reasons'])})")
     for e in r["query_errors"]:
         print(f"  query error {e['query']!r}: {e['error']}")
-    for name, status in sorted(r["sources_status"].items()):
-        print(f"  source {name}: {status}")
+    _source_status_report(names, r["sources_status"])
+    web_cost = round(web_source.meter.cost_usd, 4) if web_source else 0.0
+    llm_cost = round(scorer.meter.cost_usd, 4) if scorer else 0.0
     if web_source is not None:
-        print(f"  web search: cost ${round(web_source.meter.cost_usd, 4)} "
-              f"({web_source.searches} searches, {web_source.cache_hits} cache hit "
-              f"/ {web_source.cache_misses} miss)"
-              + ("  [ceiling hit]" if web_source.ceiling_hit else ""))
+        print(f"  web search: ${web_cost} ({web_source.searches} searches, "
+              f"{web_source.cache_hits} hit / {web_source.cache_misses} miss)")
     if scorer is not None:
-        print(f"  llm score: cost ${round(scorer.meter.cost_usd, 4)} "
-              f"({scorer.cache_hits} cache hit / {scorer.cache_misses} miss)"
-              + ("  [ceiling hit]" if scorer.ceiling_hit else ""))
+        print(f"  llm score: ${llm_cost} ({scorer.cache_hits} hit / "
+              f"{scorer.cache_misses} miss)")
+    print(f"  external spend this run: ${round(web_cost + llm_cost, 4)}")
     tag = "(dry-run, nothing persisted) " if args.dry_run else ""
-    print(f"{tag}mode {r['scoring_mode']} - considered {r['considered']} - "
-          f"no positive signal {r['no_match']} - older than "
-          f"{args.max_age_days}d {r['too_old']} - dropped {len(r['dropped'])} - "
-          f"this run: {len(leads)} scored, new {r['new']}, updated {r['updated']} - "
-          f"{len(r['store_leads'])} total in store")
-    print("Review each thread's own rules before replying. This tool never "
-          "posts or contacts anyone.")
-    return 0
+    print(f"{tag}{len(queries)} queries - considered {r['considered']} - "
+          f"no positive signal {r['no_match']} - collapsed {r['collapsed']} - "
+          f"older than {args.max_age_days}d {r['too_old']} - dropped "
+          f"{len(r['dropped'])} - this run: {len(leads)} scored, new {r['new']}, "
+          f"updated {r['updated']} - {len(r['store_leads'])} total in store")
+    print("Human review required. This tool never posts, messages, or "
+          "contacts anyone.")
+
+
+def _cmd_discover_opportunities(args) -> int:
+    from .acquisition_sources import FREE_SOURCES
+    names = list(args.source) if args.source else list(FREE_SOURCES)
+    return _run_discovery(args, names=names, allow_web=True, allow_llm=True)
+
+
+def _cmd_discover_free(args) -> int:
+    from .acquisition_sources import FREE_SOURCES
+    names = list(args.source) if args.source else list(FREE_SOURCES)
+    bad = [n for n in names if n in ("web", "all")]
+    if bad:
+        raise ValueError("discover-free uses only free sources; drop "
+                         f"{bad} or use `discover-opportunities`")
+    args.score = "deterministic"        # never touch Anthropic
+    return _run_discovery(args, names=names, allow_web=False, allow_llm=False)
+
 
 
 def _cmd_top_opportunities(args) -> int:
     from .acquisition import AcquisitionStore
 
     store = AcquisitionStore.load(_data_dir(args) / "acquisition.json")
-    good_types = {"active_problem", "seeking_advice", "founder_building", "unknown"}
+    good_q = {"high", "medium"} if not args.all else {"high", "medium", "low", "none"}
     rows = []
     for d in store.ranked():
         if d.get("human_review_status") == "rejected":
             continue
-        # only leads scored by the current relevance model, unless --all
-        if not args.all and d.get("prospect_type") not in good_types:
+        # current-model leads only, and only ones actually worth a look
+        if not args.all and d.get("prospect_quality", "none") not in good_q:
             continue
-        score = d.get("final_score", d.get("fit_score", 0)) if args.all \
-            else d.get("final_score", 0)
-        if score < args.min_score:
+        if d.get("final_score", 0) < args.min_score:
             continue
         age = d.get("age_days")
         if args.max_age_days is not None and age is not None and age > args.max_age_days:
@@ -304,23 +345,35 @@ def _cmd_top_opportunities(args) -> int:
     if args.json:
         print(json.dumps(rows, indent=2))
         return 0
+    print("TOP FREE ACQUISITION OPPORTUNITIES\n")
     if not rows:
-        print("no opportunities match the filters")
+        print("  (none match the filters - see the discovery report for why)")
         return 0
     for i, d in enumerate(rows, 1):
         age = ("age unknown" if d.get("age_days") is None
-               else f"{d['age_days']} days old")
-        print(f"{i}. Score {d.get('final_score', 0)} | "
-              f"{d.get('buying_intent', '?').upper()} | {age} | "
-              f"{d.get('prospect_type', '?')} | review:{d.get('human_review_status', 'new')}")
-        print(f"   \"{d.get('title', '')}\"")
-        print(f"   Why: {d.get('llm_reason') or d.get('match_reason', '')}")
+               else f"{d['age_days']}d ({d.get('age_bucket', '?')})")
+        print(f"{i}. Score: {d.get('final_score', 0)}  (relevance {d.get('relevance_score', 0)})")
+        print(f"   Quality: {d.get('prospect_quality', '?')}   "
+              f"Type: {d.get('prospect_type', '?')}   "
+              f"Intent: {d.get('buying_intent', '?')}   Age: {age}   "
+              f"Source: {d.get('source', '?')}")
+        excerpt = (d.get("problem_summary") or d.get("title") or "").strip()[:200]
+        print(f'   "{excerpt}"')
+        print("   Why:")
+        for w in (d.get("why") or [d.get("match_reason", "")]):
+            print(f"     - {w}")
+        if d.get("llm_reason"):
+            print(f"     - (llm) {d['llm_reason']}")
+        if d.get("matched_queries"):
+            print(f"   Matched queries: {', '.join(d['matched_queries'][:5])}")
         print(f"   URL: {d.get('url', '')}")
         print(f"   Promo policy: {d.get('promo_allowed', 'unknown')} - "
               f"{d.get('promo_note', '')}")
-        print(f"   id: {d.get('lead_id', '')}   Human review required.")
-    print("\nThis is a shortlist for a human to review. The system never "
-          "posts, messages, or contacts anyone.")
+        print(f"   review: {d.get('human_review_status', 'new')}   "
+              f"id: {d.get('lead_id', '')}")
+        print()
+    print("Human review required. The system never posts, messages, or "
+          "contacts anyone.")
     return 0
 
 
@@ -1071,41 +1124,53 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.set_defaults(func=_cmd_run)
 
+    def _add_discovery_args(p, *, with_web):
+        srcs = ("hn-algolia", "stackexchange", "bluesky", "reddit", "file",
+                "static", "free") + (("web", "all") if with_web else ())
+        p.add_argument(
+            "--source", action="append", default=None, choices=srcs,
+            help="repeatable. Default: hn-algolia + stackexchange (keyless, $0). "
+                 + ("'web' = Anthropic web search (paid, budget-gated). "
+                    if with_web else "")
+                 + "'free' = the keyless set.")
+        p.add_argument("--source-path", default=None,
+                       help="JSON record file for --source file")
+        p.add_argument("--query", action="append", default=None, metavar="TEXT",
+                       help="search query; repeat for several (default: built-in)")
+        p.add_argument("--limit", type=int, default=15, help="hits per query (max 50)")
+        p.add_argument("--min-score", type=int, default=0,
+                       help="drop leads whose final_score is below this")
+        p.add_argument("--max-age-days", type=int, default=30,
+                       help="posts older than N days score much lower (default 30)")
+        p.add_argument("--delay", type=float, default=1.0,
+                       help="seconds between queries (politeness)")
+        p.add_argument("--dry-run", action="store_true",
+                       help="fetch, score and print, but persist nothing")
+        p.add_argument("--json", action="store_true", help="machine-readable output")
+        if with_web:
+            p.add_argument("--score", choices=("deterministic", "llm"),
+                           default="deterministic",
+                           help="'llm' adds a metered relevance pass (paid)")
+            p.add_argument("--model", default="claude-sonnet-5")
+            p.add_argument("--max-cost", type=float, default=1.0,
+                           help="USD ceiling for --score llm and/or --source web")
+            p.add_argument("--refresh", action="store_true",
+                           help="ignore cached llm results and re-call the API")
+
     disco = sub.add_parser(
         "discover-opportunities", parents=[common],
         help="find CURRENT public posts from founders struggling to get customers",
     )
-    disco.add_argument(
-        "--source", action="append", default=None,
-        choices=("stackexchange", "bluesky", "hn-algolia", "web", "reddit",
-                 "file", "static", "free", "all"),
-        help="repeatable. Default: stackexchange + bluesky + hn-algolia (all "
-             "keyless). 'web' = grounded web search (opt-in, budget-gated, "
-             "costs a little). 'free' = the 3 keyless; 'all' = free + web.",
-    )
-    disco.add_argument("--source-path", default=None,
-                       help="JSON record file for --source file")
-    disco.add_argument("--query", action="append", default=None, metavar="TEXT",
-                       help="search query; repeat for several (default: built-in set)")
-    disco.add_argument("--limit", type=int, default=15, help="hits per query (max 50)")
-    disco.add_argument("--min-score", type=int, default=0,
-                       help="drop leads whose final_score is below this (0-100)")
-    disco.add_argument("--max-age-days", type=int, default=30,
-                       help="posts older than N days score much lower (default 30)")
-    disco.add_argument("--score", choices=("deterministic", "llm"),
-                       default="deterministic",
-                       help="'llm' adds a metered relevance pass (default: deterministic, free)")
-    disco.add_argument("--model", default="claude-sonnet-5", help="model for --score llm")
-    disco.add_argument("--max-cost", type=float, default=1.0,
-                       help="USD ceiling for --score llm and/or --source web (default 1.00)")
-    disco.add_argument("--refresh", action="store_true",
-                       help="ignore cached llm scores and re-call the API")
-    disco.add_argument("--delay", type=float, default=1.0,
-                       help="seconds between queries (politeness; default 1.0)")
-    disco.add_argument("--dry-run", action="store_true",
-                       help="fetch, score and print, but persist nothing")
-    disco.add_argument("--json", action="store_true", help="machine-readable output")
+    _add_discovery_args(disco, with_web=True)
     disco.set_defaults(func=_cmd_discover_opportunities)
+
+    dfree = sub.add_parser(
+        "discover-free", parents=[common],
+        help="discovery using ONLY free keyless sources - $0, never calls Anthropic",
+    )
+    _add_discovery_args(dfree, with_web=False)
+    dfree.set_defaults(func=_cmd_discover_free, score="deterministic",
+                       model="claude-sonnet-5", max_cost=0.0, refresh=False)
 
     topo = sub.add_parser(
         "top-opportunities", parents=[common],

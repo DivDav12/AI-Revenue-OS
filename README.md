@@ -8,16 +8,35 @@ struggling to get their first paying customers - people the EUR 29.90
 Customer Launch Plan could help right now.
 
 ```
-python -m revenue_os discover-opportunities --data-dir data \
-  [--source stackexchange] [--source bluesky] [--source web] \
+# free-first: only keyless sources, $0, never calls Anthropic
+python -m revenue_os discover-free --data-dir data \
+  [--source hn-algolia] [--source stackexchange] \
   [--query "phrase" ...] [--limit 15] [--min-score 0] [--max-age-days 30] \
-  [--score deterministic|llm] [--max-cost 1.0] [--refresh] [--dry-run] [--json]
+  [--dry-run] [--json]
+
+# same, plus the optional paid --source web (Anthropic web_search, budget-gated)
+python -m revenue_os discover-opportunities --data-dir data [--source web ...] \
+  [--score deterministic|llm] [--max-cost 1.0] [--refresh] ...
 
 python -m revenue_os top-opportunities [--limit 10] [--min-score 60] \
   [--max-age-days 30] [--all] [--json]
 
 python -m revenue_os review-opportunity <lead-id> --approve|--reject
 ```
+
+**Sources (free-first).** `--source` is repeatable; default =
+`hn-algolia` + `stackexchange` (both keyless, $0). The CLI groups sources
+by tier in its output:
+
+| tier | source | note |
+|---|---|---|
+| FREE | `hn-algolia` | HN search via Algolia; `--max-age-days` switches to date-sorted `search_by_date` incl. Ask HN |
+| FREE | `stackexchange` | SE API, keyless; `freelancing` + `webmasters` (there is no live "startups" SE) |
+| UNAVAILABLE (auth) | `reddit` | `robots.txt` `Disallow: /`; JSON API 403 - left failure-isolated, not bypassed |
+| UNAVAILABLE (auth) | `bluesky` | `searchPosts` now auth/edge gated (401/403) - failure-isolated, not bypassed |
+| PAID | `web` | Anthropic `web_search` - needs API credits; `discover-opportunities` only, budget-gated |
+
+One dead source never kills the run: `sources_status` reports it and the others still return.
 
 **Scoring** (`acquisition.py`, deterministic by default - no LLM, no cost):
 `classify()` scans four signal groups - ASK ("how do I get customers",
@@ -30,13 +49,22 @@ It produces `relevance_score` 0-100, `prospect_type`
 (active_problem / seeking_advice / founder_building / success_story /
 educational / irrelevant / unknown), `active_problem`, and `buying_intent`.
 
-**Recency**: `age_days` + `age_bucket` (recent<=7d / aging<=30d / old / unknown).
-A missing timestamp is `unknown`, never guessed - it is down-weighted,
-not deleted.
+It also produces **`prospect_quality`** (`high` / `medium` / `low` /
+`none`) - the one "worth a human's time?" verdict - and **`why`**, a list
+of observable reasons each tied to real matched text or metadata (never
+invented). `matched_queries` records every search that surfaced the same
+thread (merged into one lead).
 
-**`final_score` = relevance x recency x problem x intent** (weights
-documented in `acquisition.py`). Posts older than `--max-age-days` hit an
-explicit recency cliff, so a 2-day-old genuine ask beats a 10-year-old
+**Recency (7-tier "reply window")**: `age_bucket` = `extremely_fresh`
+(<=3d) / `fresh` (<=7d) / `recent` (<=14d) / `aging` (<=30d) / `stale`
+(<=60d) / `very_stale` (<=90d) / `archive` (>90d) / `unknown`. A missing
+timestamp is `unknown`, never guessed - down-weighted, not deleted. Old
+records are kept but a bumped `scorer_version` re-derives them on the next
+run, and they can never outrank a scored current lead.
+
+**`final_score` = relevance x recency x problem x intent x solved**
+(weights in `acquisition.py`). Posts older than `--max-age-days` hit an
+explicit recency cliff, so a 2-day-old genuine ask beats a 90-day-old
 perfect case study.
 
 **`--score llm`** adds one metered Claude call per lead
