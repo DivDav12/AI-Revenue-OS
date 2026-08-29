@@ -207,6 +207,8 @@ def _cmd_agent_goal(args) -> int:
         updates["proposer"] = args.proposer
     if args.research is not None:
         updates["research"] = args.research
+    if args.trend_hunter is not None:
+        updates["trend_hunter"] = args.trend_hunter
     if args.decision_policy is not None:
         updates["decision_policy"] = args.decision_policy
     if args.model is not None:
@@ -356,20 +358,27 @@ def _cmd_llm_costs(args) -> int:
 
 
 def _write_dashboard(data_dir: Path, out: Path | None = None) -> Path:
+    import json
+
     from .agent_log import AgentLog
     from .operator import load_goal, session_dict
+    from .task_log import load_task_log
 
     store, revenue_ledger, spend_ledger = _load(data_dir)
     report = pipeline_report(
         store, revenue_ledger, spend_ledger,
         _discovery_log(data_dir), _llm_spend_log(data_dir), _llm_budget(data_dir),
     )
+    trend_path = data_dir / "trend_report.json"
+    trend = json.loads(trend_path.read_text(encoding="utf-8")) if trend_path.exists() else None
     html = render_html(
         report, generated_at=now_iso(),
         agent_log=AgentLog.load(data_dir / "agent_log.json").entries(),
         session=session_dict(data_dir),
         spend_entries=_llm_spend_log(data_dir).entries(),
         goal=load_goal(data_dir).to_dict(),
+        task_log=load_task_log(data_dir).entries(),
+        trend=trend,
     )
     out = out or data_dir / "dashboard.html"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -656,6 +665,10 @@ def build_parser() -> argparse.ArgumentParser:
     ag_goal.add_argument("--planner", choices=("template", "llm"), default=None)
     ag_goal.add_argument("--proposer", choices=("template", "llm"), default=None)
     ag_goal.add_argument("--research", choices=("off", "llm"), default=None)
+    ag_goal.add_argument(
+        "--trend-hunter", action=argparse.BooleanOptionalAction, default=None,
+        help="deterministic trend analysis over the candidate corpus",
+    )
     ag_goal.add_argument("--decision-policy", choices=("rules", "llm"), default=None)
     ag_goal.add_argument("--model", default=None, help="model for the llm workers")
     ag_goal.add_argument("--max-llm-cost-per-action", type=float, default=None)

@@ -21,14 +21,16 @@ class RosterTests(unittest.TestCase):
     def test_live_agents_are_the_implemented_discovery_workers(self):
         self.assertEqual(
             {a.id for a in roster.live()},
-            {"market_scanner", "opportunity_finder", "product_researcher"},
+            {"market_scanner", "opportunity_finder", "product_researcher",
+             "trend_hunter"},
         )
         for a in roster.planned():
             self.assertEqual(a.status, "planned")
 
     def test_lookup_helpers(self):
         self.assertEqual(roster.get("ads_manager").name, "Ads Manager")
-        self.assertEqual(roster.by_capability("evaluate").id, "opportunity_finder")
+        self.assertEqual(roster.by_capability("select").id, "opportunity_finder")
+        self.assertEqual(roster.by_capability("analyze_trends").id, "trend_hunter")
         self.assertIsNone(roster.get("nope"))
 
     def test_money_touching_clusters_are_human_gated(self):

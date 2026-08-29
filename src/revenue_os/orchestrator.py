@@ -26,11 +26,14 @@ class Orchestrator:
         worker: Agent | None = None,
         *,
         max_depth: int = 3,
+        sink=None,
     ) -> None:
         self.registry = registry or AgentRegistry()
         if worker is not None:
             self.registry.register(worker)
         self.max_depth = max_depth
+        # optional callable (task, result) -> None, invoked after each dispatch
+        self.sink = sink
         self._tasks: list[Task] = []
         self.results: list[Result] = []
         self.tasks_seen: list[Task] = []  # every dispatched task, for lineage
@@ -93,6 +96,11 @@ class Orchestrator:
         logger.info(
             "result %s for task %s: status=%s", result.id, result.task_id, result.status
         )
+        if self.sink is not None:
+            try:
+                self.sink(task, result)
+            except Exception:  # a logging sink must never break dispatch
+                logger.warning("task sink failed for %s", task.id, exc_info=True)
         self._enqueue_follow_ups(task, result)
         return result
 

@@ -19,6 +19,7 @@ from .normalize import to_opportunity
 from .opportunity import Opportunity, OpportunityScore
 from .orchestrator import Orchestrator
 from .registry import AgentRegistry
+from .team import build_team
 from .offer import propose_offer
 from .store import Candidate, CandidateStore, now_iso
 from .validation import plan_validation
@@ -111,37 +112,72 @@ def run_discovery_cycle(
     evaluator: str = "keyword",
     est_cost_usd: float = 0.0,
     calibrated: bool = False,
+    sink=None,
 ) -> list[Candidate]:
     """Discover, evaluate, persist candidates, and auto-shortlist the top N.
+
+    Runs the real discovery team: Market Scanner fans one 'evaluate' task
+    per opportunity out to the Evaluator, then the Opportunity Finder
+    ranks the scores and names the shortlist. `sink` (a TaskLog.record)
+    receives every dispatched task with its lineage.
 
     Candidates scoring below min_score (default 0.0 = no gate) are not
     persisted. Idempotent: re-runs refresh scores but never downgrade a
     candidate a human has already acted on. Returns all stored candidates.
-
-    `normalizer` maps a signal to an Opportunity (default: the keyword
-    heuristic). `calibrated` reweights the criterion mean from recorded
-    validation outcomes (a no-op until there are enough). When a
-    DiscoveryLog is supplied, one entry recording the run's counts and
-    evaluator cost is appended and saved.
     """
     weights = calibration_weights(store) if calibrated else None
-    opportunities = _discover(source, limit, normalizer)
+    team = build_team(source=source, normalizer=normalizer, sink=sink)
+    root = Task(
+        objective="discover opportunities",
+        capability="discover",
+        payload={"limit": limit, "then": "evaluate", "weights": weights},
+    )
+    team.add_task(root)
+
+    opportunities: list[Opportunity] = []
+    scores: dict[str, OpportunityScore] = {}
+    for result in team.run_cycle():
+        if result.status != "ok":
+            continue
+        if "opportunities" in result.output:
+            opportunities = result.output["opportunities"]
+        elif "opportunity_name" in result.output:
+            scores[result.output["opportunity_name"]] = OpportunityScore(
+                opportunity_name=result.output["opportunity_name"],
+                total=result.output["total"],
+                verdict=result.output["verdict"],
+                breakdown=result.output["breakdown"],
+            )
     if not opportunities:
         logger.warning("discovery returned no opportunities (source failure or empty)")
-    ranked = run_evaluation(opportunities, weights=weights)
-    evaluated = len(ranked)
-    kept = [s for s in ranked if s.total >= min_score]
-    dropped = len(ranked) - len(kept)
+
+    evaluated = len(scores)
+    finder = Task(
+        objective="select opportunities",
+        capability="select",
+        parent_id=root.id,
+        depth=1,
+        payload={
+            "scored": [
+                {"name": s.opportunity_name, "total": s.total, "verdict": s.verdict}
+                for s in scores.values()
+            ],
+            "min_score": min_score,
+            "shortlist_n": shortlist_n,
+        },
+    )
+    team.add_task(finder)
+    selection = team.run_cycle()[0].output
+    kept_names = set(selection["kept"])
+    dropped = len(selection["dropped"])
     if dropped:
         logger.info("dropped %d candidate(s) below min_score=%s", dropped, min_score)
-    ranked = kept
-    scores = {s.opportunity_name: s for s in ranked}
 
     new_count = 0
     refreshed_count = 0
     for opp in opportunities:
         score = scores.get(opp.name)
-        if score is None:
+        if score is None or opp.name not in kept_names:
             continue
         existed = store.get(opp.name) is not None
         store.upsert(
@@ -163,8 +199,7 @@ def run_discovery_cycle(
             new_count += 1
 
     shortlisted_count = 0
-    for score in ranked[: max(0, shortlist_n)]:
-        name = score.opportunity_name
+    for name in selection["shortlist"]:
         cand = store.get(name)
         if cand is not None and cand.status == "discovered":
             store.put(
@@ -185,7 +220,7 @@ def run_discovery_cycle(
                 "filtered_out": int(getattr(source, "dropped", 0)),
                 "dropped_below_score": dropped,
                 "evaluated": evaluated,
-                "kept": len(kept),
+                "kept": len(kept_names),
                 "new": new_count,
                 "refreshed": refreshed_count,
                 "shortlisted": shortlisted_count,
@@ -250,13 +285,14 @@ def prepare_launch(store: CandidateStore, proposer=propose_offer) -> list[Candid
     return [c for c in store.all() if c.status == "validated"]
 
 
-def research_shortlisted(store: CandidateStore, worker) -> list[Candidate]:
+def research_shortlisted(store: CandidateStore, worker, *, sink=None) -> list[Candidate]:
     """Dispatch a research task per shortlisted candidate without a note,
     through the Orchestrator to a ResearchAgent, and attach each note.
 
     Idempotent: candidates that already have a note are skipped. A failed
-    research leaves that candidate un-noted for a later retry. Returns
-    the candidates researched this call.
+    research leaves that candidate un-noted for a later retry. `sink` (a
+    TaskLog.record) receives each dispatched task. Returns the candidates
+    researched this call.
     """
     from .research import ResearchAgent
 
@@ -266,8 +302,8 @@ def research_shortlisted(store: CandidateStore, worker) -> list[Candidate]:
     if not pending:
         return []
 
-    orchestrator = Orchestrator(registry=AgentRegistry())
-    orchestrator.register(ResearchAgent(name="researcher"))
+    orchestrator = Orchestrator(registry=AgentRegistry(), sink=sink)
+    orchestrator.register(ResearchAgent(name="product_researcher"))
     for cand in pending:
         orchestrator.add_task(Task(
             objective=f"research: {cand.name}",

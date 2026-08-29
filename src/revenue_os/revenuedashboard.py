@@ -115,6 +115,9 @@ section{background:var(--surface);border:1px solid var(--edge);border-radius:10p
   font-size:.6rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
   padding:.2rem .55rem;border-radius:20px;background:var(--surface);
   border:1px solid var(--glow);color:var(--glow);box-shadow:0 0 16px -4px var(--glow)}
+.fan{position:absolute;transform:translate(-50%,-50%);z-index:3;font-size:.58rem;
+  font-weight:700;color:var(--dim);background:var(--surface);border:1px solid var(--edge-hi);
+  border-radius:10px;padding:.05rem .3rem}
 .standby{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:1;
   text-align:center;font-size:.7rem;letter-spacing:.16em;text-transform:uppercase;color:var(--dim)}
 .standby span{display:block;margin-top:.3rem;font-size:.68rem;letter-spacing:.04em;
@@ -251,19 +254,22 @@ _AVATARS = {
     "decision": _svg('<circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/>'
                      '<circle cx="12" cy="18" r="2"/><path d="M6 8v3a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V8"/>'
                      '<path d="M12 14v2"/>'),
+    "finder": _svg('<path d="M4 5h16l-6 8v6l-4-2v-4z"/>'),
+    "trendhunter": _svg('<path d="M3 17 9 11l4 4 8-8"/><path d="M17 4h4v4"/>'),
     "generic": _svg('<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2"/>'),
 }
 _ACCENT = {
     "operator": "#22d3ee", "discovery": "#38bdf8", "evaluator": "#a78bfa",
     "researcher": "#34d399", "planner": "#fbbf24", "offer": "#f472b6",
-    "decision": "#f87171", "generic": "#94a3b8",
+    "decision": "#f87171", "finder": "#5eead4", "trendhunter": "#c084fc",
+    "generic": "#94a3b8",
 }
 
 # llm_spend activity  ->  (node key, display name, role, Goal field, llm-mode value)
-# The first two are live roster agents (see roster.py); planner / offer /
-# decision are internal steps not yet promoted to named roster agents.
+# Evaluator is the internal scoring engine; planner / offer / decision are
+# internal steps not yet promoted to named roster agents.
 _WORKERS = (
-    ("evaluate", "evaluator", "Opportunity Finder", "Scoring",    "evaluator",       "llm"),
+    ("evaluate", "evaluator", "Evaluator", "Scoring",         "evaluator",       "llm"),
     ("research", "researcher", "Product Researcher", "Due diligence", "research",     "llm"),
     ("plan",     "planner",    "Validation Planner", "Validation plan", "planner",    "llm"),
     ("offer",    "offer",      "Offer Builder", "First offer",    "proposer",         "llm"),
@@ -316,13 +322,15 @@ def _agent_card(*, key, name, role, status, task, meta) -> str:
 
 _MAP_W, _MAP_H = 800, 640
 _MAP_POS = {
-    "discovery":  (400, 70),
-    "researcher": (150, 232),
-    "evaluator":  (650, 232),
-    "decision":   (120, 368),
-    "operator":   (400, 358),
-    "planner":    (400, 486),
-    "offer":      (400, 582),
+    "discovery":   (400, 70),
+    "researcher":  (150, 232),
+    "evaluator":   (650, 232),
+    "trendhunter": (150, 400),
+    "finder":      (650, 400),
+    "decision":    (120, 368),
+    "operator":    (400, 358),
+    "planner":     (400, 486),
+    "offer":       (400, 582),
 }
 
 
@@ -331,7 +339,7 @@ def _pct(role: str) -> tuple[float, float]:
     return round(100 * x / _MAP_W, 2), round(100 * y / _MAP_H, 2)
 
 
-def _wires(edges: list[tuple[str, str]], last_edge) -> str:
+def _wires(edges: list[tuple[str, str]], last_edge, edge_counts=None) -> str:
     if not edges:
         wires = (
             "<svg viewBox='0 0 800 640' class='wires' preserveAspectRatio='xMidYMid meet'"
@@ -340,11 +348,20 @@ def _wires(edges: list[tuple[str, str]], last_edge) -> str:
             "<span>Agents are standing by.</span></div>"
         )
         return wires
+    edge_counts = edge_counts or {}
     lines = "".join(
         "<line x1='{}' y1='{}' x2='{}' y2='{}' marker-end='url(#wa)'/>".format(
             *_MAP_POS[a], *_MAP_POS[b]
         )
         for a, b in edges
+    )
+    fanout = "".join(
+        "<div class='fan' style='left:{}%;top:{}%'>&times;{}</div>".format(
+            round(100 * (_MAP_POS[a][0] + _MAP_POS[b][0]) / 2 / _MAP_W, 2),
+            round(100 * (_MAP_POS[a][1] + _MAP_POS[b][1]) / 2 / _MAP_H, 2),
+            n,
+        )
+        for (a, b), n in edge_counts.items() if n > 1
     )
     chip = ""
     if last_edge:
@@ -358,18 +375,24 @@ def _wires(edges: list[tuple[str, str]], last_edge) -> str:
         " aria-hidden='true'>"
         "<defs><marker id='wa' viewBox='0 0 10 10' refX='8' refY='5' markerWidth='5'"
         " markerHeight='5' orient='auto'><path d='M0 0 L10 5 L0 10 z'/></marker></defs>"
-        f"<g>{lines}</g></svg>{chip}"
+        f"<g>{lines}</g></svg>{fanout}{chip}"
     )
 
 
 def _agent_map(agent_log, spend_entries, goal, session, report,
-               queue_open: bool = False) -> str:
+               queue_open: bool = False, task_log=None) -> str:
     goal = goal or {}
+    task_log = task_log or []
     decisions = [e for e in (agent_log or []) if e.get("action") not in _MARKERS]
     running = bool(session) and not session.get("ended_at")
     by_act: dict[str, list[dict]] = {}
     for e in (spend_entries or []):
         by_act.setdefault(e.get("activity"), []).append(e)
+    task_by_node: dict[str, list[dict]] = {}
+    for e in task_log:
+        node = _TASK_AGENT_NODE.get(e.get("agent"))
+        if node:
+            task_by_node.setdefault(node, []).append(e)
 
     nodes: dict[str, dict] = {}
 
@@ -389,16 +412,42 @@ def _agent_map(agent_log, spend_entries, goal, session, report,
     nodes["operator"] = dict(key="operator", name="operator (CEO)", role="Coordinator",
                              status=op_status, task=note, meta=op_meta)
 
-    # --- discovery --------------------------------------------------
+    # --- discovery-team agents (deterministic; status from the task log) --
     disc = [e for e in decisions if e.get("action") == "discover"]
     src = ", ".join(goal.get("sources", ["static"]))
+    scans = task_by_node.get("discovery", [])
     nodes["discovery"] = dict(
         key="discovery", name="Market Scanner", role="Signal intake",
-        status="active" if (running and disc) else "idle",
+        status="working" if (running and scans) else ("active" if scans else "idle"),
         task=f"sources: {_esc(src)}",
         meta=[("runs", len(disc)),
               ("last", _esc(disc[-1]["ts"]) if disc else "&mdash;"),
               ("filter", "on" if goal.get("filter") else "off")],
+    )
+
+    finds = task_by_node.get("finder", [])
+    last_find = finds[-1].get("summary", {}) if finds else {}
+    nodes["finder"] = dict(
+        key="finder", name="Opportunity Finder", role="Rank & shortlist",
+        status="working" if (running and finds) else ("active" if finds else "idle"),
+        task=(f"shortlisted {last_find.get('shortlist', 0)} of "
+              f"{last_find.get('kept', 0)} kept" if finds else "awaiting scores"),
+        meta=[("runs", len(finds))],
+    )
+
+    trends = task_by_node.get("trendhunter", [])
+    last_trend = trends[-1].get("summary", {}) if trends else {}
+    if goal.get("trend_hunter"):
+        t_status = "working" if (running and trends) else ("active" if trends else "idle")
+    else:
+        t_status = "disabled"
+    nodes["trendhunter"] = dict(
+        key="trendhunter", name="Trend Hunter", role="Emerging demand",
+        status=t_status,
+        task=(f"{last_trend.get('keywords', 0)} keyword(s), "
+              f"{last_trend.get('sources', 0)} source(s)" if trends
+              else ("enabled" if goal.get("trend_hunter") else "off")),
+        meta=[("runs", len(trends))],
     )
 
     # --- configurable workers -------------------------------------
@@ -432,21 +481,28 @@ def _agent_map(agent_log, spend_entries, goal, session, report,
         nodes[key] = dict(key=key, name=name, role=role,
                           status=status, task=task, meta=meta)
 
-    # --- real relationships (only what the log / spend actually show) --
+    # --- real relationships --------------------------------------------
     def took(action: str) -> bool:
         return any(e.get("action") == action for e in decisions)
 
-    edges: list[tuple[str, str]] = []
-    if took("discover"):
-        edges += [("operator", "discovery"), ("discovery", "evaluator")]
-    if took("research"):
-        edges.append(("operator", "researcher"))
+    edge_counts: dict = {}
+    if task_log:
+        # genuine parent->child lineage from the dispatched tasks
+        edges, edge_counts = _lineage_edges(task_log)
+    else:
+        # no task log yet: infer from the operator's own decisions
+        edges = []
+        if took("discover"):
+            edges += [("operator", "discovery"), ("discovery", "evaluator")]
+        if took("research"):
+            edges.append(("operator", "researcher"))
     if took("investigate"):
         edges.append(("operator", "planner"))
     if took("prepare_launch"):
         edges.append(("operator", "offer"))
     if goal.get("decision_policy") == "llm" and by_act.get("decide"):
         edges.append(("decision", "operator"))
+    edges = [e for e in dict.fromkeys(edges) if e[0] in _MAP_POS and e[1] in _MAP_POS]
 
     last_edge = None
     if decisions:
@@ -459,7 +515,9 @@ def _agent_map(agent_log, spend_entries, goal, session, report,
         f"{_agent_card(**nodes[r])}</div>"
         for r in _MAP_POS if r in nodes
     )
-    return f"<div class='amap'>{_wires(edges, last_edge)}{positioned}</div>"
+    return (
+        f"<div class='amap'>{_wires(edges, last_edge, edge_counts)}{positioned}</div>"
+    )
 
 
 def _roster_panel() -> str:
@@ -579,9 +637,36 @@ def _attention(queue: list[dict]) -> str:
 # ---------------------------------------------------------------------------
 
 _ACT_AGENT = {
-    "discover": "discovery", "investigate": "planner",
+    "discover": "discovery", "investigate": "planner", "analyze_trends": "trendhunter",
     "prepare_launch": "offer", "research": "researcher", "stop": "operator",
 }
+
+# task_log agent name  ->  map node key
+_TASK_AGENT_NODE = {
+    "market_scanner": "discovery", "evaluator": "evaluator",
+    "opportunity_finder": "finder", "product_researcher": "researcher",
+    "trend_hunter": "trendhunter",
+}
+
+
+def _lineage_edges(task_log: list[dict]) -> tuple[list[tuple[str, str]], dict]:
+    """Real parent->child agent edges from the task log, with a per-edge
+    dispatch count. The operator is the parent of every root task."""
+    by_id = {e.get("task_id"): e for e in task_log}
+    edges: dict[tuple[str, str], int] = {}
+    for e in task_log:
+        child = _TASK_AGENT_NODE.get(e.get("agent"))
+        if child is None:
+            continue
+        parent_entry = by_id.get(e.get("parent_id"))
+        if parent_entry is None:
+            parent = "operator"
+        else:
+            parent = _TASK_AGENT_NODE.get(parent_entry.get("agent"))
+        if parent is None or parent == child:
+            continue
+        edges[(parent, child)] = edges.get((parent, child), 0) + 1
+    return list(edges), edges
 
 
 def _task_queue(queue: list[dict]) -> str:
@@ -606,24 +691,57 @@ def _task_queue(queue: list[dict]) -> str:
     )
 
 
-def _activity(agent_log: list[dict], limit: int = 20) -> str:
-    entries = list(reversed((agent_log or [])[-limit:]))
-    if not entries:
-        return "<p class='muted'>No agent decisions recorded.</p>"
-    rows = ""
-    for e in entries:
+def _summary_text(summary: dict) -> str:
+    return ", ".join(f"{k} {v}" for k, v in summary.items()) if summary else ""
+
+
+def _activity(agent_log: list[dict], limit: int = 24, task_log=None) -> str:
+    merged: list[tuple] = []
+    for e in agent_log or []:
         action = e.get("action", "")
-        cls = " class='marker'" if action in _MARKERS else ""
         who = _ACT_AGENT.get(action, "operator")
+        merged.append((e.get("ts", ""), action, who, e.get("reason", ""),
+                       action in _MARKERS))
+    for e in task_log or []:
+        merged.append((e.get("ts", ""), e.get("capability", ""),
+                       e.get("agent", ""),
+                       _summary_text(e.get("summary", {})) or e.get("error", "") or "",
+                       False))
+    if not merged:
+        return "<p class='muted'>No agent decisions recorded.</p>"
+    merged.sort(key=lambda r: r[0])
+    rows = ""
+    for ts, what, who, detail, marker in reversed(merged[-limit:]):
+        cls = " class='marker'" if marker else ""
         rows += (
-            f"<tr><td class='muted mono'>{_esc(e.get('ts', ''))}</td>"
-            f"<td{cls}>{_esc(action)}</td>"
+            f"<tr><td class='muted mono'>{_esc(ts)}</td>"
+            f"<td{cls}>{_esc(what)}</td>"
             f"<td class='muted'>{_esc(who)}</td>"
-            f"<td>{_esc(e.get('reason', ''))}</td></tr>"
+            f"<td>{_esc(detail)}</td></tr>"
         )
     return (
         "<div class='feed'><table><tr><th>when</th><th>action</th><th>agent</th>"
-        f"<th>reason</th></tr>{rows}</table></div>"
+        f"<th>detail</th></tr>{rows}</table></div>"
+    )
+
+
+def _trends(trend: dict | None) -> str:
+    if not trend:
+        return "<p class='muted'>No trend analysis yet.</p>"
+    kw = trend.get("keywords") or []
+    kws = "".join(
+        f"<tr><td>{_esc(w)}</td><td class='num'>{_num(n)}</td></tr>"
+        for w, n in kw[:12]
+    ) or "<tr><td class='muted' colspan='2'>no keyword repeats yet</td></tr>"
+    srcs = " &middot; ".join(
+        f"{_esc(s)} <b>{_num(n)}</b>" for s, n in trend.get("sources", {}).items()
+    )
+    return (
+        f"<p class='muted mono'>{_esc(trend.get('ts', ''))} &middot; "
+        f"{_num(trend.get('count', 0))} candidate(s) over "
+        f"{_num(trend.get('runs', 0))} run(s)</p>"
+        f"<p>sources: {srcs or '&mdash;'}</p>"
+        f"<table><tr><th>keyword</th><th>n</th></tr>{kws}</table>"
     )
 
 
@@ -849,7 +967,9 @@ def render_html(report: dict, generated_at: str, *,
                 agent_log: list[dict] | None = None,
                 session: dict | None = None,
                 spend_entries: list[dict] | None = None,
-                goal: dict | None = None) -> str:
+                goal: dict | None = None,
+                task_log: list[dict] | None = None,
+                trend: dict | None = None) -> str:
     """Build the full standalone command-center HTML document."""
     queue = report["action_queue"]
     body = (
@@ -859,7 +979,8 @@ def render_html(report: dict, generated_at: str, *,
         + _topbar(report, session, agent_log, spend_entries, goal)
         + _attention(queue)
         + "<section id='agents'><h2>Agents</h2>"
-        + _agent_map(agent_log or [], spend_entries, goal, session, report, bool(queue))
+        + _agent_map(agent_log or [], spend_entries, goal, session, report,
+                     bool(queue), task_log or [])
         + "<h3>Target roster</h3>"
         + _roster_panel()
         + "</section>"
@@ -867,20 +988,22 @@ def render_html(report: dict, generated_at: str, *,
         + "<section id='tasks'><h2>Task queue</h2>"
         + _task_queue(report["action_queue"]) + "</section>"
         + "<section id='activity'><h2>Recent activity</h2>"
-        + _activity(agent_log or []) + "</section>"
+        + _activity(agent_log or [], task_log=task_log or []) + "</section>"
         + "</div>"
         + "<div class='cols'>"
         + "<section id='opportunities'><h2>Pipeline</h2>"
         + _pipeline(report["status_counts"]) + "</section>"
-        + "<section id='finances'><h2>LLM spend</h2>"
-        + _spend(report.get("llm_spend")) + "</section>"
+        + "<section><h2>Trends</h2>"
+        + _trends(trend) + "</section>"
         + "</div>"
         + "<div class='cols'>"
-        + "<section><h2>Last discovery</h2>"
-        + _last_discovery(report.get("last_discovery")) + "</section>"
+        + "<section id='finances'><h2>LLM spend</h2>"
+        + _spend(report.get("llm_spend")) + "</section>"
         + "<section><h2>Outcomes</h2>"
         + _outcomes(report.get("outcomes")) + "</section>"
         + "</div>"
+        + "<section><h2>Last discovery</h2>"
+        + _last_discovery(report.get("last_discovery")) + "</section>"
         + "<section><h2>Revenue / ROI</h2>"
         + _roi(report["roi"], report, goal) + "</section>"
         + "<section><h2>Candidates</h2>"

@@ -255,6 +255,49 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertNotIn("class='meta'", panel)
         self.assertIn("Planned agents are not running", html)
 
+    def test_map_edges_come_from_real_task_lineage(self):
+        base = _report(self.store, self.d)
+        root = "t-root"
+        task_log = [
+            {"ts": "1", "task_id": root, "parent_id": None, "depth": 0,
+             "capability": "discover", "agent": "market_scanner",
+             "status": "ok", "summary": {"count": 3}},
+            {"ts": "2", "task_id": "e1", "parent_id": root, "depth": 1,
+             "capability": "evaluate", "agent": "evaluator",
+             "status": "ok", "summary": {"total": 3.0}},
+            {"ts": "3", "task_id": "e2", "parent_id": root, "depth": 1,
+             "capability": "evaluate", "agent": "evaluator",
+             "status": "ok", "summary": {"total": 2.0}},
+            {"ts": "4", "task_id": "s1", "parent_id": root, "depth": 1,
+             "capability": "select", "agent": "opportunity_finder",
+             "status": "ok", "summary": {"kept": 2, "shortlist": 2}},
+        ]
+        html = render_html(base, _FIXED_TS,
+                           agent_log=[{"ts": "0", "action": "discover", "reason": "x"}],
+                           task_log=task_log)
+        # operator -> market scanner (root), scanner -> evaluator, scanner -> finder
+        self.assertIn("x1='400' y1='358' x2='400' y2='70'", html)   # op -> scanner
+        self.assertIn("x1='400' y1='70' x2='650' y2='232'", html)   # scanner -> evaluator
+        self.assertIn("x1='400' y1='70' x2='650' y2='400'", html)   # scanner -> finder
+        self.assertIn("&times;2", html)                             # fan-out count
+        # merged activity feed carries the real task rows
+        self.assertIn("opportunity_finder", html)
+        self.assertIn("Opportunity Finder", html)   # map node
+        self.assertNotIn("://", html)
+
+    def test_trends_panel_real_or_empty(self):
+        empty = render_html(_report(self.store, self.d), _FIXED_TS)
+        self.assertIn("No trend analysis yet.", empty)
+        with_trend = render_html(
+            _report(self.store, self.d), _FIXED_TS,
+            goal={"trend_hunter": True},
+            trend={"ts": "T", "count": 4, "runs": 1,
+                   "keywords": [["automation", 3], ["notion", 2]],
+                   "sources": {"hn": 4}},
+        )
+        self.assertIn("automation", with_trend)
+        self.assertIn("Trend Hunter", with_trend)
+
     def test_agent_map_empty_links_shows_standby_not_fake_edges(self):
         html = render_html(
             _report(self.store, self.d), _FIXED_TS,

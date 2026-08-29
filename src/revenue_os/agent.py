@@ -138,11 +138,26 @@ class DiscoveryAgent(Agent):
                 opportunities.append(self.normalizer(signal))
             except Exception as exc:  # one bad normalization must not kill the cycle
                 logger.warning("skipped signal %r: %s", signal.title, exc)
+
+        # opt-in delegation: hand each opportunity to the evaluator as a
+        # child task so the lineage is real. No "then" -> inert, as before.
+        follow_ups: tuple[Task, ...] = ()
+        if task.payload.get("then") == "evaluate":
+            weights = task.payload.get("weights")
+            follow_ups = tuple(
+                Task(
+                    objective=f"evaluate opportunity: {opp.name}",
+                    capability="evaluate",
+                    payload={"opportunity": opp, "weights": weights},
+                )
+                for opp in opportunities
+            )
         return Result(
             task_id=task.id,
             agent=self.name,
             status="ok",
             output={"opportunities": opportunities, "count": len(opportunities)},
+            follow_ups=follow_ups,
         )
 
 

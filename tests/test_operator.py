@@ -143,6 +143,41 @@ class OperatorAgentTests(unittest.TestCase):
         self.assertEqual(actions.count("discover"), 1)
         self.assertEqual(actions[-1], "stop")
 
+    def test_discovery_delegates_through_the_team_and_logs_lineage(self):
+        from revenue_os.task_log import TaskLog
+        OperatorAgent(self.d, Goal()).run()
+        entries = TaskLog.load(self.d / "task_log.json").entries()
+        caps = [e["capability"] for e in entries]
+        self.assertIn("discover", caps)
+        self.assertIn("evaluate", caps)
+        self.assertIn("select", caps)
+        root = next(e for e in entries if e["capability"] == "discover")
+        self.assertIsNone(root["parent_id"])
+        self.assertTrue(
+            all(e["parent_id"] == root["task_id"]
+                for e in entries if e["capability"] == "evaluate")
+        )
+
+    def test_trend_hunter_opt_in_writes_report_and_task(self):
+        from revenue_os.task_log import TaskLog
+        agent = OperatorAgent(self.d, Goal(trend_hunter=True))
+        steps = agent.run()
+        actions = [s.decision.action for s in steps]
+        self.assertIn("analyze_trends", actions)
+        report = json.loads((self.d / "trend_report.json").read_text())
+        self.assertIn("keywords", report)
+        self.assertGreaterEqual(report["count"], 1)
+        agents = {e["agent"] for e in TaskLog.load(self.d / "task_log.json").entries()}
+        self.assertIn("trend_hunter", agents)
+        # runs once, then stops
+        self.assertEqual(actions.count("analyze_trends"), 1)
+
+    def test_trend_hunter_off_by_default(self):
+        steps = OperatorAgent(self.d, Goal()).run()
+        self.assertNotIn("analyze_trends",
+                         [s.decision.action for s in steps])
+        self.assertFalse((self.d / "trend_report.json").exists())
+
     def test_human_gated_capability_is_never_auto_executed(self):
         from revenue_os.operator import Decision
         agent = OperatorAgent(self.d, Goal())

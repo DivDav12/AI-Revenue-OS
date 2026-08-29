@@ -38,14 +38,18 @@ from .llm_workers import (
     build_researcher,
     record_llm_spend,
 )
+from .messages import Task
 from .normalize import to_opportunity
 from .offer import propose_offer
 from . import roster
+from .team import build_team
 from .report import STALE_AFTER_DAYS, _age_days, digest_line, pipeline_report
 from .revenue import RevenueLedger
 from .sources import FilteredSource, build_source
 from .spend import SpendLedger
 from .store import CandidateStore
+from .task_log import TaskLog
+from .trend import build_trend_report
 from .validation import plan_validation
 from .workflow import (
     investigate_approved,
@@ -54,7 +58,9 @@ from .workflow import (
     run_discovery_cycle,
 )
 
-_ACTIONS = ("discover", "investigate", "prepare_launch", "stop")
+_ACTIONS = ("discover", "research", "analyze_trends", "investigate",
+            "prepare_launch", "stop")
+_TREND_MIN_CANDIDATES = 3
 
 
 @dataclass(frozen=True)
@@ -67,6 +73,7 @@ class Goal:
     calibrated: bool = False
     target_validated: int | None = None
     discovery_stale_days: int = STALE_AFTER_DAYS
+    trend_hunter: bool = False           # opt-in deterministic trend analysis
     # opt-in LLM leaf workers (deterministic by default)
     evaluator: str = "keyword"          # keyword | llm
     planner: str = "template"           # template | llm
@@ -87,6 +94,7 @@ class Goal:
             "calibrated": self.calibrated,
             "target_validated": self.target_validated,
             "discovery_stale_days": self.discovery_stale_days,
+            "trend_hunter": self.trend_hunter,
             "evaluator": self.evaluator,
             "planner": self.planner,
             "proposer": self.proposer,
@@ -108,6 +116,7 @@ class Goal:
             calibrated=bool(d.get("calibrated", False)),
             target_validated=d.get("target_validated"),
             discovery_stale_days=int(d.get("discovery_stale_days", STALE_AFTER_DAYS)),
+            trend_hunter=bool(d.get("trend_hunter", False)),
             evaluator=d.get("evaluator", "keyword"),
             planner=d.get("planner", "template"),
             proposer=d.get("proposer", "template"),
@@ -230,7 +239,7 @@ def _unresearched_shortlisted(report: dict) -> int:
 def decide(
     obs: dict, goal: Goal, *,
     discovery_exhausted: bool = False, llm_capped: bool = False,
-    research_done: bool = False, policy=None,
+    research_done: bool = False, trend_done: bool = False, policy=None,
 ) -> Decision:
     """Pure: pick the next non-human action from the observed state."""
     report = obs["report"]
@@ -299,6 +308,12 @@ def decide(
                 f"{goal.discovery_stale_days}d)"
             )
 
+    if goal.trend_hunter and not trend_done and total >= _TREND_MIN_CANDIDATES:
+        return Decision(
+            "analyze_trends",
+            f"summarise themes across {total} discovered candidate(s)",
+        )
+
     return Decision("stop", f"only human-gated actions remain: {digest_line(queue)}")
 
 
@@ -309,6 +324,7 @@ class OperatorAgent:
         self._discovery_exhausted = False
         self._llm_capped = False
         self._research_done = False
+        self._trend_done = False
 
     # --- state -----------------------------------------------------------
 
@@ -339,13 +355,15 @@ class OperatorAgent:
         if spec is not None and spec.gate == "human":
             return {"skipped": f"{spec.name} is human-gated"}
 
+        tlog = TaskLog.load(self.data_dir / "task_log.json")
+
         if decision.action == "discover":
             store, _, _ = self._load()
             dlog = DiscoveryLog.load(self.data_dir / "discovery_runs.json")
             before = len(store.all())
             spent = 0.0
-            for spec in g.sources:
-                src = _source_for(spec)
+            for src_spec in g.sources:
+                src = _source_for(src_spec)
                 if g.filter:
                     src = FilteredSource(src, is_relevant)
                 normalizer, ev_name, est, cache = to_opportunity, "keyword", 0.0, None
@@ -358,18 +376,21 @@ class OperatorAgent:
                         )
                     except ValueError as exc:
                         self._llm_capped = True
+                        tlog.save()
                         return {"skipped": str(exc),
                                 "new_candidates": len(store.all()) - before}
                 run_discovery_cycle(
                     src, store, limit=g.limit, shortlist_n=g.shortlist_n,
                     min_score=g.min_score, log=dlog, normalizer=normalizer,
                     evaluator=ev_name, est_cost_usd=est, calibrated=g.calibrated,
+                    sink=tlog.record,
                 )
                 if cache is not None:
                     cache.save()
                 if ev_name == "llm":
                     record_llm_spend(self.data_dir, "evaluate", normalizer)
                     spent = round(spent + normalizer.meter.cost_usd, 4)
+            tlog.save()
             out = {
                 "new_candidates": len(store.all()) - before,
                 "total_candidates": len(store.all()),
@@ -377,6 +398,36 @@ class OperatorAgent:
             if spent:
                 out["llm_cost"] = spent
             return out
+
+        if decision.action == "analyze_trends":
+            store, _, _ = self._load()
+            dlog = DiscoveryLog.load(self.data_dir / "discovery_runs.json")
+            team = build_team(sink=tlog.record)
+            team.add_task(Task(
+                objective="analyze trends",
+                capability="analyze_trends",
+                payload={
+                    "candidates": [
+                        {"name": c.name, "description": c.description,
+                         "source": c.source, "total": c.total}
+                        for c in store.all()
+                    ],
+                    "runs": len(dlog.entries()),
+                },
+            ))
+            report = team.run_cycle()[0].output
+            tlog.save()
+            _atomic_write(
+                self.data_dir / "trend_report.json",
+                json.dumps(
+                    {**report, "ts": datetime.now(timezone.utc).isoformat()},
+                    indent=2,
+                ),
+            )
+            self._trend_done = True
+            return {"keywords": len(report.get("keywords", [])),
+                    "sources": len(report.get("sources", {})),
+                    "candidates": report.get("count", 0)}
 
         if decision.action == "research":
             store, _, _ = self._load()
@@ -388,10 +439,12 @@ class OperatorAgent:
                 )
             except ValueError as exc:
                 self._llm_capped = True
+                tlog.save()
                 return {"skipped": str(exc)}
-            noted = research_shortlisted(store, worker)
+            noted = research_shortlisted(store, worker, sink=tlog.record)
             if cache is not None:
                 cache.save()
+            tlog.save()
             record_llm_spend(self.data_dir, "research", worker)
             if not noted:
                 self._research_done = True
@@ -467,6 +520,7 @@ class OperatorAgent:
             discovery_exhausted=self._discovery_exhausted,
             llm_capped=self._llm_capped,
             research_done=self._research_done,
+            trend_done=self._trend_done,
             policy=policy,
         )
         result: dict = {}
@@ -507,6 +561,7 @@ class OperatorAgent:
         self._discovery_exhausted = False
         self._llm_capped = False
         self._research_done = False
+        self._trend_done = False
         steps: list[AgentStep] = []
         for _ in range(max(1, max_cycles)):
             step = self.step(now=now, log_noop_stop=log_noop_stop)
