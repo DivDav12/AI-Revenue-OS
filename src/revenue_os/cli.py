@@ -27,6 +27,7 @@ Read commands:
   agent-step / agent-log / agent-goal
   llm-costs        print recorded AI operating spend
   outcomes         retrospective on validated vs rejected candidates
+  blockers         list / add / resolve the blockers shown on the dashboard
   dashboard        write a static HTML pipeline snapshot (no discovery)
   dashboard-serve  serve an interactive dashboard on localhost (human gates only)
   candidate NAME   print one candidate's full state
@@ -1088,8 +1089,18 @@ def build_dashboard_html(
             "loop": _load_json("revenue_loop.json") or {},
             "experiments": _experiments_snapshot_safe(data_dir),
         },
+        blockers=_blockers_safe(data_dir),
         interactive=interactive, flash=flash, csrf=csrf,
     )
+
+
+def _blockers_safe(data_dir: Path) -> list:
+    """The human-maintained blocker register; never fail a dashboard build."""
+    try:
+        from .blockers import load_blockers
+        return load_blockers(data_dir).all()
+    except Exception:
+        return []
 
 
 def _acquisition_queue_safe(data_dir: Path) -> list:
@@ -1156,6 +1167,54 @@ def _cmd_dashboard(args) -> int:
     data_dir = _data_dir(args)
     out = _write_dashboard(data_dir, Path(args.out) if args.out else None)
     print(f"dashboard written: {out}")
+    return 0
+
+
+def _cmd_blockers(args) -> int:
+    """The blocker register is human-maintained: nothing here detects a
+    blocker, and the dashboard shows exactly what this command records."""
+    from .blockers import load_blockers
+
+    data_dir = _data_dir(args)
+    store = load_blockers(data_dir)
+    action = getattr(args, "action", "list")
+
+    if action == "add":
+        if not args.id or not args.title:
+            print("usage: blockers add ID --title TEXT [--detail TEXT] "
+                  "[--area TEXT] [--severity critical|warning|info]")
+            return 2
+        entry = store.add(args.id, args.title, area=args.area, detail=args.detail,
+                          severity=args.severity)
+        store.save()
+        print(f"blocker recorded: {entry['id']} [{entry['severity']}] {entry['title']}")
+        return 0
+
+    if action == "resolve":
+        if not args.id:
+            print("usage: blockers resolve ID")
+            return 2
+        try:
+            entry = store.resolve(args.id)
+        except ValueError as exc:
+            print(str(exc))
+            return 1
+        store.save()
+        print(f"blocker resolved: {entry['id']}")
+        return 0
+
+    rows = store.all() if args.all else store.open()
+    if not rows:
+        print("no blockers recorded"
+              if args.all else "no open blockers (nothing recorded, or all resolved)")
+        return 0
+    for entry in rows:
+        state = entry.get("status", "open")
+        area = f" ({entry['area']})" if entry.get("area") else ""
+        print(f"{entry.get('id')}  [{entry.get('severity')}] {state}{area}  "
+              f"{entry.get('title')}")
+        if entry.get("detail"):
+            print(f"    {entry['detail']}")
     return 0
 
 
@@ -1998,6 +2057,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--out", default=None, help="output path (default: <data-dir>/dashboard.html)"
     )
     dash.set_defaults(func=_cmd_dashboard)
+
+    blk = sub.add_parser(
+        "blockers", parents=[common],
+        help="list / record / resolve operational blockers shown on the dashboard",
+    )
+    blk.add_argument("action", nargs="?", default="list",
+                     choices=("list", "add", "resolve"))
+    blk.add_argument("id", nargs="?", default=None, help="blocker id (add / resolve)")
+    blk.add_argument("--title", default="", help="short title (add)")
+    blk.add_argument("--detail", default="", help="one-line explanation (add)")
+    blk.add_argument("--area", default="", help="what it blocks, e.g. payment (add)")
+    blk.add_argument("--severity", default="warning",
+                     choices=("critical", "warning", "info"))
+    blk.add_argument("--all", action="store_true", help="include resolved blockers")
+    blk.set_defaults(func=_cmd_blockers)
 
     dserve = sub.add_parser(
         "dashboard-serve", parents=[common],

@@ -261,6 +261,62 @@ generated `checkout.html` / `intake.html` copy it into a hidden
 is additive - the PayPal `custom_id` (candidate name) and the payment
 capture-id gate are unchanged.
 
+## Dashboard (`dashboard` / `dashboard-serve`)
+
+A single self-contained HTML command center. No JavaScript, no external
+requests, no images: every value is traceable to a file on disk, and an
+agent with no record on disk reads IDLE / no activity rather than being
+animated into looking busy.
+
+Top to bottom:
+
+- **Mission control** -- the primary objective (FIRST REAL CUSTOMER), the
+  secondary loop, real revenue booked, the launched offer, LLM spend, and
+  the candidate lifecycle rail (`discovered -> shortlisted -> approved ->
+  investigating -> validated -> launched -> earning`, plus `rejected`) with
+  the real counts from the candidate store. The stages whose transition is
+  a human decision are marked HUMAN.
+- **First sale readiness** -- unchanged; a per-item checklist computed only
+  from disk, explicit about the live PayPal path it cannot check.
+- **Agents** -- the orchestration map (a link is drawn only where a real
+  parent->child task lineage exists) beside the coordination readout, then
+  the **24-agent fleet grid** in six clusters. Each cell shows the agent's
+  name, cluster, real status (RUNNING / WAITING / IDLE / DISABLED /
+  HUMAN-GATED / BLOCKED / PLANNED), its recorded run count from
+  `task_log.json`, its latest real activity, its current task if one is in
+  flight, and a progress bar **only** if the agent itself persisted a
+  progress value.
+- **Customer acquisition** -- the Phase 2.3 chain Prospect Scout ->
+  Opportunity Scorer -> Outreach Drafter with the real store counts. The
+  drafter is human-gated and the gate is stated on the page: the system
+  drafts and stops; a person posts every reply.
+- Pipeline, agent outputs, task queue, activity, opportunities, trends,
+  LLM spend, outcomes, last discovery, revenue / ROI, revenue analysis and
+  candidates -- all unchanged.
+
+Revenue means payments booked in the revenue ledger. Until one is booked it
+reads `0` -- never an estimate, a projection, or a placeholder.
+
+### Blockers (`blockers`)
+
+Some real blockers leave no trace on disk -- a payment-account restriction,
+missing API credits, a provider outage. `data/blockers.json` is a
+human-maintained register for exactly those, rendered in Mission control.
+Nothing detects a blocker automatically, so an **empty register is reported
+as empty, not as all-clear**.
+
+```
+revenue_os blockers                       # open blockers (--all includes resolved)
+revenue_os blockers add paypal-payee-restricted \
+    --title "PayPal checkout blocked: PAYEE_ACCOUNT_RESTRICTED" \
+    --detail "The live payment path returns PAYEE_ACCOUNT_RESTRICTED." \
+    --area payment --severity critical
+revenue_os blockers resolve paypal-payee-restricted
+```
+
+`--severity` is `critical | warning | info`. Re-adding a known id updates it
+in place and reopens it.
+
 ## PayPal
 
 Read-only integration (`src/revenue_os/paypal.py`): it books payments PayPal
