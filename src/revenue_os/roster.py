@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-CLUSTERS = ("discovery", "build", "marketing", "revenue", "support")
+CLUSTERS = ("discovery", "build", "marketing", "acquisition", "revenue", "support")
 
 
 @dataclass(frozen=True)
@@ -82,6 +82,21 @@ AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec("automation_engineer", "Automation Engineer", "build", "Ops automation",
               "automate", node="decision", gate="human", status="live",
               depends_on=("opportunity_finder",)),
+    # --- acquisition cluster (Phase 2: autonomous customer acquisition) ---
+    # Finds public "how do I get my first customers" posts, scores them, and
+    # drafts a human-review outreach reply. The system never posts, DMs, or
+    # emails - `outreach_drafter` is human-gated: a person posts every reply.
+    # The LLM relevance knob for the scorer is CLI-side (`discover-* --score
+    # llm`), not an operator Goal field, so no mode_field here.
+    AgentSpec("prospect_scout", "Prospect Scout", "acquisition",
+              "Find public asks", "scout_prospects", node="discovery",
+              status="live"),
+    AgentSpec("opportunity_scorer", "Opportunity Scorer", "acquisition",
+              "Score & rank prospects", "score_prospects", node="finder",
+              status="live", depends_on=("prospect_scout",)),
+    AgentSpec("outreach_drafter", "Outreach Drafter", "acquisition",
+              "Draft the reply", "draft_outreach", node="copywriter",
+              gate="human", status="live", depends_on=("opportunity_scorer",)),
     # --- marketing cluster (all human-gated: real ad spend) -----------
     AgentSpec("ads_manager", "Ads Manager", "marketing", "Campaigns",
               "run_ads", node="offer", gate="human", status="live",

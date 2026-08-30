@@ -241,10 +241,11 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertIn("class='taskchip'", html)
         self.assertIn(">research</div>", html)
 
-    def test_roster_panel_shows_all_21_by_status(self):
+    def test_roster_panel_shows_every_agent_by_status(self):
         from revenue_os import roster
         html = render_html(_report(self.store, self.d), _FIXED_TS)
         self.assertIn("Target roster", html)
+        self.assertIn(f"{len(roster.AGENTS)} agents", html)
         for spec in roster.AGENTS:
             self.assertIn(spec.name, html)
         self.assertIn("class='ragent rlive'", html)
@@ -257,15 +258,16 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertNotIn("cs-working", panel)
         self.assertNotIn("class='meta'", panel)
 
-    def test_cluster_flow_shows_all_21_agents_by_cluster(self):
+    def test_cluster_flow_shows_every_agent_by_cluster(self):
         from revenue_os import roster
         html = render_html(_report(self.store, self.d), _FIXED_TS)
         self.assertIn("class='cflow'", html)
-        self.assertIn("All 21 agents", html)
+        self.assertIn(f"All {len(roster.AGENTS)} agents", html)
         flow = html.split("class='cflow'")[1].split("Target roster")[0]
         for spec in roster.AGENTS:
             self.assertIn(spec.name, flow, spec.id)
-        for label in ("Discovery", "Build", "Marketing", "Revenue", "Support"):
+        for label in ("Discovery", "Build", "Marketing", "Acquisition",
+                      "Revenue", "Support"):
             self.assertIn(label, flow)
         # human-gated agents keep the signal; nothing without a real output
         # is shown as "ran"
@@ -282,6 +284,36 @@ class RenderHtmlTests(unittest.TestCase):
         flow = html.split("class='cflow'")[1].split("Target roster")[0]
         self.assertIn("ran 2026-08-27", flow)          # supplier finder ran
         self.assertEqual(flow.count("cnode ran"), 1)   # exactly the one persisted
+
+    def test_acquisition_panel_empty_is_an_honest_note(self):
+        html = render_html(_report(self.store, self.d), _FIXED_TS)
+        self.assertIn("id='acquisition'", html)
+        panel = html.split("id='acquisition'")[1].split("</section>")[0]
+        self.assertIn("No acquisition run yet", panel)
+        self.assertNotIn("http", panel)
+
+    def test_acquisition_panel_shows_real_counts_no_urls(self):
+        acq = {
+            "leads": [
+                {"prospect_quality": "high", "human_review_status": "new",
+                 "url": "https://news.ycombinator.com/item?id=1", "title": "x"},
+                {"prospect_quality": "medium", "human_review_status": "reviewed"},
+                {"prospect_quality": "none", "human_review_status": "rejected"},
+            ],
+            "briefs": [
+                {"lead_id": "a", "status": "draft"},
+                {"lead_id": "b", "status": "posted"},
+            ],
+        }
+        html = render_html(_report(self.store, self.d), _FIXED_TS, acquisition=acq)
+        panel = html.split("id='acquisition'")[1].split("</section>")[0]
+        self.assertIn("prospects found", panel)
+        self.assertIn("high / medium quality", panel)
+        self.assertIn("awaiting a human post", panel)
+        # real counts, no fabricated prospect identity, no external URLs
+        self.assertNotIn("news.ycombinator.com", panel)
+        self.assertNotIn("http", panel)
+        self.assertIn("posts every reply", panel)
 
     def test_agent_outputs_panel_reads_persisted_data_newest_first(self):
         outputs = {

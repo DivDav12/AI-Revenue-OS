@@ -7,6 +7,7 @@ from pathlib import Path
 from revenue_os.acquisition import (
     AcquisitionAgent,
     AcquisitionStore,
+    ProspectScoutAgent,
     age_bucket,
     age_info,
     build_lead,
@@ -142,6 +143,42 @@ class ClassifyTests(unittest.TestCase):
     def test_no_positive_signal_scores_none(self):
         self.assertIsNone(score_lead(_rec(
             title="Show HN: my markdown editor", text="feedback welcome")))
+
+
+class ProspectScoutAgentTests(unittest.TestCase):
+    """Phase 2.3: the roster `prospect_scout`. Fetches from a source,
+    isolates a bad query, and (with then='score') emits the follow-up."""
+
+    def _task(self, **payload):
+        return Task(objective="scout", capability="scout_prospects", payload=payload)
+
+    def test_fetches_records_and_passes_since_ts(self):
+        src = _FakeSource({"q": [_rec(days=2)]})
+        r = ProspectScoutAgent(src, name="prospect_scout").run(
+            self._task(queries=["q"], limit=5, since_ts=123, politeness_delay=0))
+        self.assertEqual(r.status, "ok")
+        self.assertEqual(r.output["count"], 1)
+        self.assertEqual(src.since_seen, [123])
+        self.assertEqual(r.follow_ups, ())          # no then -> no follow-up
+
+    def test_bad_query_is_isolated_the_rest_continue(self):
+        src = _FakeSource({"good": [_rec(days=2)]}, fail_on=["bad"])
+        r = ProspectScoutAgent(src, name="s").run(
+            self._task(queries=["bad", "good"], limit=5, politeness_delay=0))
+        self.assertEqual(r.output["count"], 1)
+        self.assertEqual(r.output["query_errors"][0]["query"], "bad")
+
+    def test_then_score_emits_a_scorer_follow_up_task(self):
+        src = _FakeSource({"q": [_rec(days=2)]})
+        r = ProspectScoutAgent(src, name="s").run(
+            self._task(queries=["q"], limit=5, politeness_delay=0, then="score",
+                       min_score=10, max_age_days=20))
+        self.assertEqual(len(r.follow_ups), 1)
+        fu = r.follow_ups[0]
+        self.assertEqual(fu.capability, "score_prospects")
+        self.assertEqual(fu.payload["min_score"], 10)
+        self.assertEqual(fu.payload["max_age_days"], 20)
+        self.assertEqual(len(fu.payload["records"]), 1)
 
 
 class SolvedSignalTests(unittest.TestCase):

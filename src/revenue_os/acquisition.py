@@ -89,9 +89,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import tempfile
+import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -100,6 +102,8 @@ from urllib.parse import parse_qsl, urlsplit
 from .agent import Agent
 from .messages import Result, Task
 from .store import now_iso
+
+logger = logging.getLogger(__name__)
 
 # --- signal tables (phrase, weight) --------------------------------
 
@@ -814,15 +818,82 @@ def qc_lead(lead: AcquisitionLead) -> list[str]:
     return problems
 
 
-# --- the agent ------------------------------------------------
+# --- the agents ----------------------------------------------
+
+class ProspectScoutAgent(Agent):
+    """Roster `prospect_scout`. Fetches CURRENT public posts from a search
+    source, one query at a time, and hands the raw records on.
+
+    It only reads public APIs - it never posts, DMs, emails, or contacts
+    anyone, and it invents nothing (a record is emitted only for a hit the
+    source actually returned). A query whose fetch raises is recorded in
+    `query_errors` and the rest continue. With `payload['then'] == 'score'`
+    it emits a follow-up `score_prospects` task so the Orchestrator runs
+    the real scout -> scorer chain.
+    """
+
+    role = "prospect_scout"
+    objective = "Fetch current public posts from a search source; contact no one."
+    capabilities = ("scout_prospects",)
+
+    def __init__(self, source, name: str | None = None) -> None:
+        super().__init__(name=name)
+        self.source = source
+
+    def run(self, task: Task) -> Result:
+        queries = tuple(task.payload.get("queries") or ())
+        limit = int(task.payload.get("limit", 15))
+        since_ts = task.payload.get("since_ts")
+        politeness = float(task.payload.get("politeness_delay", 0) or 0)
+
+        records: list = []
+        query_errors: list[dict] = []
+        for i, query in enumerate(queries):
+            if i and politeness:
+                time.sleep(politeness)
+            try:
+                try:
+                    records.extend(self.source.search(query, limit, since_ts=since_ts))
+                except TypeError:  # a source without the since_ts kwarg
+                    records.extend(self.source.search(query, limit))
+            except Exception as exc:  # one bad fetch must not kill the run
+                logger.warning("prospect_scout: %r failed for %r: %s",
+                               getattr(self.source, "name", "source"), query, exc)
+                query_errors.append({"query": query, "error": str(exc)})
+
+        follow_ups: tuple[Task, ...] = ()
+        if task.payload.get("then") == "score":
+            follow_ups = (Task(
+                objective="score scouted prospects",
+                capability="score_prospects",
+                payload={
+                    "records": records,
+                    "min_score": task.payload.get("min_score", 0),
+                    "max_age_days": task.payload.get(
+                        "max_age_days", _DEFAULT_MAX_AGE_DAYS),
+                    "llm_scorer": task.payload.get("llm_scorer"),
+                },
+            ),)
+        return Result(
+            task_id=task.id, agent=self.name, status="ok",
+            output={"records": records, "query_errors": query_errors,
+                    "count": len(records)},
+            follow_ups=follow_ups,
+        )
+
 
 class AcquisitionAgent(Agent):
-    """Turns raw records into scored, quality-checked AcquisitionLeads.
-    Deterministic (unless an llm_scorer is supplied). Contacts no one."""
+    """Roster `opportunity_scorer`. Turns raw records into scored,
+    quality-checked AcquisitionLeads and ranks them. Deterministic unless
+    an `llm_scorer` is supplied. Contacts no one.
 
-    role = "acquisition_scout"
-    objective = "Find current public posts from founders struggling to get first customers."
-    capabilities = ("discover_acquisition",)
+    Handles both `score_prospects` (the Phase-2.3 named-agent capability)
+    and `discover_acquisition` (the original single-agent capability, kept
+    for back-compat)."""
+
+    role = "opportunity_scorer"
+    objective = "Score, quality-check and rank scouted prospects."
+    capabilities = ("discover_acquisition", "score_prospects")
 
     def run(self, task: Task) -> Result:
         records = task.payload.get("records")
