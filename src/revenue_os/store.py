@@ -39,6 +39,7 @@ class Candidate:
     competition: dict = field(default_factory=dict)
     launch_draft: dict = field(default_factory=dict)
     deliverable: dict = field(default_factory=dict)
+    public_url: str = ""          # live checkout page URL once deployed
     rationale: str = ""
     estimate_source: str = "keyword"
 
@@ -62,6 +63,7 @@ class Candidate:
             "competition": dict(self.competition),
             "launch_draft": dict(self.launch_draft),
             "deliverable": dict(self.deliverable),
+            "public_url": self.public_url,
             "rationale": self.rationale,
             "estimate_source": self.estimate_source,
         }
@@ -87,6 +89,7 @@ class Candidate:
             competition=dict(data.get("competition", {})),
             launch_draft=dict(data.get("launch_draft", {})),
             deliverable=dict(data.get("deliverable", {})),
+            public_url=data.get("public_url", ""),
             rationale=data.get("rationale", ""),
             estimate_source=data.get("estimate_source", "keyword"),
         )

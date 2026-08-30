@@ -122,6 +122,49 @@ class CycleTests(_OfflineSource):
         self.assertTrue(any("BLOCK" in n for n in r["notes"]))
         self.assertEqual(r["spend"]["external_spent_usd"], 3.2)
 
+    def test_paypal_check_books_a_live_capture_when_credentials_present(self):
+        import os
+
+        from revenue_os import paypal as pp
+        from revenue_os.store import Candidate, CandidateStore
+
+        store = CandidateStore(self.d / "candidates.json")
+        store.put(Candidate(name="cand", description="d", status="launched",
+                            offer={"price": 29.9, "currency": "EUR"}))
+        store.save()
+
+        def fake_sync(store, ledger, **kw):
+            from revenue_os.revenue import record_payment
+            record_payment(store, ledger, "cand", 29.9, actor="paypal",
+                           currency="EUR", ref="paypal:LIVECAP1", note="test")
+            return {"booked": [{"candidate": "cand", "amount": 29.9,
+                                "capture_id": "LIVECAP1"}],
+                    "skipped": [], "total_booked": 29.9}
+
+        env = {"PAYPAL_CLIENT_ID": "id", "PAYPAL_CLIENT_SECRET": "sec",
+               "PAYPAL_ENV": "live"}
+        old_env = {k: os.environ.get(k) for k in env}
+        old_sync = pp.sync_transactions
+        old_cfg = pp.PayPalConfig.from_env
+        os.environ.update(env)
+        pp.sync_transactions = fake_sync
+        pp.PayPalConfig.from_env = staticmethod(lambda environ=None: None)
+        try:
+            r = self._cycle()
+        finally:
+            pp.sync_transactions = old_sync
+            pp.PayPalConfig.from_env = old_cfg
+            for k, v in old_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+        self.assertTrue(r["payment"]["ok"])
+        self.assertEqual(len(r["payment"]["booked"]), 1)
+        self.assertTrue(r["sale"])
+        self.assertEqual(RevenueLedger.load(self.d / "revenue.json").total(), 29.9)
+
     def test_sale_flips_presale_off(self):
         RevenueLedger(self.d / "revenue.json")   # ensure dir
         led = RevenueLedger.load(self.d / "revenue.json")

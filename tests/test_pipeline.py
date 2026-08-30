@@ -49,8 +49,55 @@ class PipelineRunTests(unittest.TestCase):
         self.assertTrue(all(by[c] == "skipped" for c in _LLM_STEPS), by)
         hg = rep["human_gate"]
         self.assertIn("QC passed", hg["reason"])
-        self.assertIn("nothing published", hg["not_done"])
+        # no GitHub Pages credentials in the test env -> deploy is skipped,
+        # the page is not published, and payment is not yet possible
+        self.assertEqual(by["deploy"], "skipped")
+        self.assertFalse(hg["payment_ready"])
+        self.assertTrue(any("not published" in x for x in hg["not_done"]))
+        self.assertTrue(any("no money spent" in x for x in hg["not_done"]))
         self.assertTrue(any("store_builder" in x for x in hg["human_gated_next"]))
+
+    def test_deploy_step_publishes_and_marks_payment_ready(self):
+        from revenue_os import deploy as dep
+        from tests.test_deploy import CFG, _FakeGitHub
+
+        _seed(self.d, status="launched")
+        page_dir = self.d / "deliverables" / "dt"
+        page_dir.mkdir(parents=True)
+        (page_dir / "checkout.html").write_bytes(b"<html>pay</html>")
+        (page_dir / "intake.html").write_bytes(b"<html>intake</html>")
+
+        gh = _FakeGitHub(CFG)
+        orig_from_env = dep.GitHubPagesConfig.from_env
+        orig_deploy = dep.deploy_checkout
+        dep.GitHubPagesConfig.from_env = staticmethod(lambda environ=None: CFG)
+        dep.deploy_checkout = lambda dd, name, **kw: orig_deploy(
+            dd, name, client=gh, config=CFG)
+        try:
+            rep = run_pipeline(self.d, "dt")
+        finally:
+            dep.GitHubPagesConfig.from_env = orig_from_env
+            dep.deploy_checkout = orig_deploy
+
+        by = {s["step"]: s for s in rep["steps"]}
+        self.assertEqual(by["deploy"]["status"], "ok")
+        self.assertEqual(rep["status"], "prepared")
+        hg = rep["human_gate"]
+        self.assertTrue(hg["payment_ready"])
+        self.assertEqual(
+            hg["public_url"],
+            "https://divdav12.github.io/customer-launch-plan/checkout.html")
+        cand = CandidateStore.load(self.d / "candidates.json").get("dt")
+        self.assertEqual(cand.public_url, hg["public_url"])
+        # re-run: deploy is not repeated (idempotent)
+        n_puts = len(gh.puts)
+        dep.deploy_checkout = lambda dd, name, **kw: orig_deploy(
+            dd, name, client=gh, config=CFG)
+        try:
+            run_pipeline(self.d, "dt")
+        finally:
+            dep.deploy_checkout = orig_deploy
+        self.assertEqual(len(gh.puts), n_puts)
 
     def test_hand_off_outputs_are_real_agent_outputs(self):
         _seed(self.d)

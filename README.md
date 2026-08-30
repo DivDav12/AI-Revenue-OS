@@ -139,6 +139,89 @@ until `RevenueLedger.total() > 0`; the first booked sale flips
 `presale_active` to `False` and releases it (it is still never spent
 automatically). `autopilot status -> capital` shows the full picture.
 
+## Revenue supervisor (`revenue-step` / `revenue-loop`)
+
+`revenue-loop` is the OBSERVE -> DECIDE -> ACT loop that ties the existing
+pieces together for the first sale. Each step it reads the real
+candidate / pipeline / payment / intake / delivery state, runs **one**
+action that is allowed **without a human**, persists, and repeats until
+only human-gated actions remain - then it prints a concrete action
+queue and stops.
+
+```
+python -m revenue_os revenue-loop  --data-dir data [--max-steps 25] [--no-discovery]
+python -m revenue_os revenue-step  --data-dir data        # a single action
+python -m revenue_os revenue-status --data-dir data       # last state + human queue
+```
+
+Actions it takes on its own (all pre-existing, all safe - no money, no
+messages, no PayPal writes):
+
+| action | what it does |
+|---|---|
+| `stage_delivery` | render an approved plan to a PDF on disk (no send) |
+| `run_pipeline` | `select -> ... -> QC -> deploy` the checkout page |
+| `sync_payments` | read-only PayPal booking (only if credentials are set) |
+| `discover` | one free autopilot cycle (discovery + outreach drafts) |
+
+Everything else - approve, launch, `build-checkout`, post outreach,
+`intake-review`, `draft-launch-plan` (costs money), `plan-approve`,
+`plan-deliver --send` - stays a human gate and is surfaced, never done.
+State lives in `data/revenue_loop.json` and is restart-safe.
+
+## Deploying the checkout page (`deploy-checkout <candidate>`)
+
+`build-checkout` writes `deliverables/<candidate>/checkout.html` +
+`intake.html` to disk. `deploy-checkout` publishes them to **GitHub
+Pages** via the Contents API and stores the live URL on the candidate.
+
+```
+python -m revenue_os deploy-checkout <candidate> --data-dir data
+python -m revenue_os deploy-status   <candidate> --data-dir data
+```
+
+One-time setup (in `.env`, gitignored):
+
+```
+GITHUB_TOKEN=<fine-grained PAT: Contents read+write on the repo>
+GITHUB_PAGES_REPO=<owner>/<repo>          # e.g. divdav12/customer-launch-plan
+GITHUB_PAGES_BRANCH=main                  # optional
+GITHUB_PAGES_SUBDIR=                      # optional path prefix inside the repo
+```
+
+The repo must exist and have **Pages** enabled (Settings -> Pages ->
+Deploy from branch). Deploys are idempotent (an unchanged file is not
+re-committed) and the token never appears in output or logs. The
+pipeline runs this as its final `deploy` step; a missing token just
+records `deploy: skipped` and the pipeline still finishes at `prepared`.
+
+## Delivering the plan as a PDF (`plan-deliver <order-id>`)
+
+Once a plan is `approved`:
+
+- `revenue_os plan-deliver <order-id>` renders the approved plan to a
+  real PDF at `deliverables/<candidate>/plan-<order-id>.pdf` (a small
+  dependency-free PDF writer - no pandoc, no conversion step) and
+  records it in `data/deliveries.json` as `staged`. **Nothing is sent.**
+- `revenue_os plan-deliver <order-id> --send` emails that PDF to the
+  buyer (address from the intake) via SMTP. This is the human gate for
+  the actual send; it refuses to send twice for the same order
+  (`--force` overrides).
+- `revenue_os plan-deliver <order-id> --status` shows the delivery record.
+
+SMTP config (in `.env`): `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`,
+optional `SMTP_PORT` (587), `SMTP_FROM` (defaults to `BUSINESS_EMAIL`),
+`SMTP_STARTTLS` (true). For Gmail use `smtp.gmail.com` + an App Password.
+The send re-checks that the order's `capture_id` is still a booked
+`paypal:` payment for the candidate. No money moves.
+
+## `.env` loading
+
+`python -m revenue_os` now auto-loads `.env` from the working directory
+(or `$REVENUE_OS_ENV_FILE`) on startup - values already set in the real
+shell environment always win, and only key **names** are logged, never
+values. `.env` stays gitignored.
+
 ## Outreach brief (`outreach-brief <lead-id>`)
 
 ```

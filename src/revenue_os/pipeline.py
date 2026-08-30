@@ -39,6 +39,8 @@ logger = logging.getLogger(__name__)
 
 _QUALIFIED_STATUSES = ("validated", "launched", "earning")
 _LLM_ONLY = {"research", "analyze_competition", "write_copy"}
+# steps that are not routed through the roster / agent_runner
+_SPECIAL = {"deploy"}
 _GOAL_FLAG = {"research": "--research llm", "analyze_competition": "--competition llm",
               "write_copy": "--copywriter llm"}
 
@@ -53,6 +55,7 @@ _STEPS: tuple[tuple[str, bool, tuple[str, ...]], ...] = (
     ("design_assets", True, ("select",)),
     ("build_store", True, ("package_deliverable", "design_assets")),
     ("quality_check", True, ("package_deliverable", "design_assets", "build_store")),
+    ("deploy", False, ("quality_check",)),
 )
 _STEP_CAPS = [c for c, _, _ in _STEPS]
 STEP_ORDER = tuple(_STEP_CAPS)   # public: dashboard renders steps in this order
@@ -148,14 +151,26 @@ class PipelineState:
         }
 
     def prepare(self, qc_output: dict) -> None:
+        dep = self.data["steps"].get("deploy", {})
+        public_url = dep.get("public_url")
+        deployed = dep.get("status") == "ok" and bool(public_url)
         self.data["status"] = "prepared"
+        not_done = ["no ads launched", "no money spent", "no messages / emails sent"]
+        if deployed:
+            reason = ("pipeline complete - QC passed and the checkout page is LIVE; "
+                      "awaiting a human decision")
+        else:
+            reason = ("pipeline complete - QC passed; the checkout page is NOT "
+                      "deployed yet")
+            not_done.insert(0, f"checkout page not published ({dep.get('reason', 'deploy pending')})")
         self.data["human_gate"] = {
-            "reason": "pipeline complete - QC passed; awaiting a human decision",
+            "reason": reason,
             "qc_status": qc_output.get("qc_status"),
             "warnings": qc_output.get("warnings", []),
+            "public_url": public_url,
+            "payment_ready": deployed,
             "human_gated_next": list(_HUMAN_GATED_NEXT),
-            "not_done": ["nothing published", "no ads launched", "no money spent",
-                         "no messages / emails sent"],
+            "not_done": not_done,
         }
 
     # --- view ------------------------------------------------------
@@ -179,6 +194,37 @@ class PipelineState:
 
 def _state(data_dir) -> PipelineState:
     return PipelineState.load(Path(data_dir) / "pipeline.json")
+
+
+def _run_deploy_step(data_dir, candidate_name: str, st: "PipelineState") -> str:
+    """Publish deliverables/<candidate>/checkout.html to the static host.
+
+    Optional and retryable: a missing page, missing credentials, or a
+    transient host error is recorded as `skipped` (with the reason) and
+    the pipeline still finishes at `prepared`; the next run retries.
+    """
+    from . import deploy as _deploy
+
+    page = Path(data_dir) / "deliverables" / candidate_name / "checkout.html"
+    if not page.is_file():
+        st.mark("deploy", "skipped", reason=(
+            f"no checkout.html - run `revenue_os build-checkout {candidate_name} "
+            f"--price ...` (needs PAYPAL_ENV=live), then re-run the pipeline"))
+        return "skipped"
+    try:
+        cfg = _deploy.GitHubPagesConfig.from_env()
+    except _deploy.DeployError as exc:
+        st.mark("deploy", "skipped", reason=str(exc))
+        return "skipped"
+    try:
+        r = _deploy.deploy_checkout(data_dir, candidate_name, config=cfg)
+    except _deploy.DeployError as exc:
+        st.mark("deploy", "skipped",
+                reason=f"deploy failed (retried on re-run): {exc}")
+        return "skipped"
+    st.mark("deploy", "ok", public_url=r["public_url"],
+            summary={"deployed": r["deployed"], "unchanged": r["unchanged"]})
+    return "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -260,8 +306,9 @@ def run_pipeline(data_dir, candidate_name: str, *, restart: bool = False) -> dic
         existing = agent_runner.last_output(data_dir, cap)
 
         # --- idempotent / restart-safe skip --------------------------
-        if prev.get("status") == "ok" and existing is not None:
-            outs[cap] = existing
+        if prev.get("status") == "ok" and (existing is not None or cap in _SPECIAL):
+            if existing is not None:
+                outs[cap] = existing
             continue
         if prev.get("status") == "skipped" and cap in _LLM_ONLY:
             if existing is not None:                       # a real output appeared since
@@ -271,7 +318,12 @@ def run_pipeline(data_dir, candidate_name: str, *, restart: bool = False) -> dic
             continue
 
         # --- dependency checks (before every run) --------------------
-        unmet = roster.unmet_dependencies(spec) if spec else ("<no roster spec>",)
+        if cap in _SPECIAL:
+            unmet = ()
+        elif spec is None:
+            unmet = ("<no roster spec>",)
+        else:
+            unmet = roster.unmet_dependencies(spec)
         if unmet:
             st.fail(cap, f"roster dependencies not live: {list(unmet)}")
             st.save()
@@ -289,6 +341,12 @@ def run_pipeline(data_dir, candidate_name: str, *, restart: bool = False) -> dic
             st.fail(cap, f"predecessor(s) not complete: {incomplete_pred}")
             st.save()
             return st.report()
+
+        # --- deploy: publish the checkout page (optional, retryable) --
+        if cap == "deploy":
+            _run_deploy_step(data_dir, cand.name, st)
+            st.save()
+            continue
 
         # --- LLM-only steps: consume real output or skip -------------
         if cap in _LLM_ONLY:

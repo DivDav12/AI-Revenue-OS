@@ -10,6 +10,9 @@ Read commands:
   top-opportunities        the human-review shortlist, ranked by final_score
   outreach-brief ID        prepare a human-review outreach draft for one lead (never posts)
   autopilot start|status|pause|resume|stop   one orchestrator, EUR 3 pre-sale cap
+  revenue-step / revenue-loop / revenue-status   supervisor: one safe non-human
+                   action per step (pipeline -> deploy, payment sync, PDF staging),
+                   stops at every human gate with a concrete action queue
   review-opportunity ID --approve|--reject   record a human verdict (no contact)
   digest [-q]      one-line summary of what needs the human
   agent-run        operator agent: one loop to a fixed point (also the cron primitive)
@@ -29,6 +32,10 @@ Human decision commands (operate on the persistent --data-dir store):
   prepare-launch    (--proposer llm opt-in; template by default)
   launch NAME
   build-checkout NAME --price N [--currency EUR]   write a real PayPal checkout page
+  deploy-checkout NAME    publish checkout.html/intake.html to GitHub Pages (needs
+                          GITHUB_TOKEN + GITHUB_PAGES_REPO in .env); stores public_url
+  deploy-status NAME      is the checkout page built / deployed?
+  plan-deliver ORDER_ID [--send]   render the approved plan to PDF; --send emails it
   intake-import FILE      store buyer intake rows (JSON or CSV) that match a booked payment
   intake-list / intake-show ORDER_ID / intake-review ORDER_ID
   draft-launch-plan ORDER_ID   draft the Customer Launch Plan (web-grounded LLM)
@@ -459,6 +466,10 @@ def _cmd_pipeline(args) -> int:
     hg = rep.get("human_gate")
     if hg:
         print(f"\n  HUMAN GATE: {hg.get('reason', '')}")
+        if hg.get("public_url"):
+            print(f"    LIVE checkout: {hg['public_url']}")
+        if hg.get("payment_ready"):
+            print("    payment-ready: a real buyer can now pay on that page")
         for x in (hg.get("blocking_issues") or hg.get("human_gated_next") or []):
             print(f"    - {x}")
     if rep.get("error"):
@@ -526,6 +537,54 @@ def _cmd_autopilot(args) -> int:
         print(f"    - {a}")
     print("\n  The autopilot never posts, messages, emails, or spends past the "
           "EUR 3.00 pre-sale cap.")
+    return 0
+
+
+def _print_loop_step(s: dict) -> None:
+    print(f"  {s['action']}: {s['reason']}")
+    r = s.get("result") or {}
+    if r and not r.get("noop"):
+        compact = {k: v for k, v in r.items() if k != "observed"}
+        print(f"    -> {compact}")
+
+
+def _cmd_revenue_step(args) -> int:
+    from . import revenue_loop as rl
+
+    out = rl.step(_data_dir(args), allow_discovery=not args.no_discovery)
+    _print_loop_step(out)
+    if out["action"] == "stop":
+        print("\n  HUMAN ACTION QUEUE:")
+        for a in out["human_queue"] or ["    (nothing - waiting on discovery)"]:
+            print(f"    - {a}")
+    return 0
+
+
+def _cmd_revenue_loop(args) -> int:
+    from . import revenue_loop as rl
+
+    steps = rl.run(_data_dir(args), max_steps=args.max_steps,
+                   allow_discovery=not args.no_discovery)
+    print(f"REVENUE LOOP: {len(steps)} step(s)")
+    for s in steps:
+        _print_loop_step(s)
+    last = steps[-1]
+    if last["action"] == "stop":
+        print("\n  HUMAN ACTION QUEUE (loop stopped - only human steps remain):")
+        for a in last["human_queue"] or ["    (nothing - waiting on discovery)"]:
+            print(f"    - {a}")
+    print("\n  The loop published only the operator's own checkout page, sent no "
+          "messages, and spent no money.")
+    return 0
+
+
+def _cmd_revenue_status(args) -> int:
+    from . import revenue_loop as rl
+
+    data_dir = _data_dir(args)
+    state = rl.load_state(data_dir)
+    state["human_queue"] = rl._human_queue(rl.observe(data_dir))
+    print(json.dumps(state, indent=2))
     return 0
 
 
@@ -1000,6 +1059,38 @@ def _cmd_build_checkout(args) -> int:
     return 0
 
 
+def _cmd_deploy_checkout(args) -> int:
+    from .deploy import DeployError, deploy_checkout
+
+    try:
+        r = deploy_checkout(_data_dir(args), args.name)
+    except DeployError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"deployed: {args.name} -> {r['repo']}@{r['branch']}")
+    if r["deployed"]:
+        print(f"  updated: {', '.join(r['deployed'])}")
+    if r["unchanged"]:
+        print(f"  unchanged: {', '.join(r['unchanged'])}")
+    print(f"  public checkout URL: {r['public_url']}")
+    if r.get("intake_url"):
+        print(f"  public intake URL:   {r['intake_url']}")
+    print("  GitHub Pages may take ~1 min to serve the first change.")
+    return 0
+
+
+def _cmd_deploy_status(args) -> int:
+    from .deploy import DeployError, deploy_status
+
+    try:
+        r = deploy_status(_data_dir(args), args.name)
+    except DeployError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(r, indent=2))
+    return 0
+
+
 def _cmd_paypal_sync(args) -> int:
     from .paypal import sync_transactions
 
@@ -1145,6 +1236,33 @@ def _cmd_plan_approve(args) -> int:
     print(f"approved: {args.order_id} ({e['candidate']}) -> plan "
           f"{e['plan']['status']}")
     return 0
+
+
+def _cmd_plan_deliver(args) -> int:
+    from .delivery import DeliveryError, delivery_status, send_delivery, stage_delivery
+
+    data_dir = _data_dir(args)
+    if args.status:
+        print(json.dumps(delivery_status(data_dir, args.order_id), indent=2))
+        return 0
+    try:
+        if args.send:
+            r = send_delivery(data_dir, args.order_id, force=args.force)
+            print(f"SENT: order {r['order_id']} -> {r['to_email']} "
+                  f"(message {r['message_id']})")
+            print(f"  pdf: {r['pdf_path']} ({r['pdf_bytes']} bytes)")
+            return 0
+        r = stage_delivery(data_dir, args.order_id)
+        print(f"staged: order {r['order_id']} ({r['candidate']}) -> {r['status']}")
+        print(f"  pdf written: {r['pdf_path']} ({r['pdf_bytes']} bytes, "
+              f"sha256 {r['pdf_sha256'][:12]}...)")
+        print(f"  buyer: {r['to_name']} <{r['to_email']}>")
+        print("  review the PDF, then send it:")
+        print(f"    revenue_os plan-deliver {r['order_id']} --send")
+        return 0
+    except DeliveryError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 def _cmd_plan_render(args) -> int:
@@ -1384,6 +1502,28 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("report", parents=[common], help="print the report only").set_defaults(
         func=_cmd_report
     )
+
+    rstep = sub.add_parser(
+        "revenue-step", parents=[common],
+        help="supervisor: observe state, run ONE safe non-human action, persist",
+    )
+    rstep.add_argument("--no-discovery", action="store_true",
+                       help="do not fall back to a free discovery cycle")
+    rstep.set_defaults(func=_cmd_revenue_step)
+
+    rloop = sub.add_parser(
+        "revenue-loop", parents=[common],
+        help="supervisor: step until only human-gated actions remain "
+             "(publishes only your own checkout page; no messages, no spend)",
+    )
+    rloop.add_argument("--max-steps", type=int, default=25)
+    rloop.add_argument("--no-discovery", action="store_true")
+    rloop.set_defaults(func=_cmd_revenue_loop)
+
+    sub.add_parser(
+        "revenue-status", parents=[common],
+        help="supervisor: last state + the current human action queue",
+    ).set_defaults(func=_cmd_revenue_status)
 
     sub.add_parser(
         "llm-costs", parents=[common], help="print recorded AI operating spend"
@@ -1627,6 +1767,21 @@ def build_parser() -> argparse.ArgumentParser:
                     help="output path (default: <data-dir>/deliverables/<name>/checkout.html)")
     bc.set_defaults(func=_cmd_build_checkout)
 
+    dc = sub.add_parser(
+        "deploy-checkout", parents=[common],
+        help="publish deliverables/<name>/{checkout,intake}.html to GitHub Pages "
+             "and store the live URL on the candidate",
+    )
+    dc.add_argument("name")
+    dc.set_defaults(func=_cmd_deploy_checkout)
+
+    ds = sub.add_parser(
+        "deploy-status", parents=[common],
+        help="show whether a candidate's checkout page is built and deployed",
+    )
+    ds.add_argument("name")
+    ds.set_defaults(func=_cmd_deploy_status)
+
     ii = sub.add_parser(
         "intake-import", parents=[common],
         help="store buyer intake submissions that match a booked PayPal payment",
@@ -1668,6 +1823,20 @@ def build_parser() -> argparse.ArgumentParser:
                         help="approve a drafted Customer Launch Plan for delivery")
     pa.add_argument("order_id")
     pa.set_defaults(func=_cmd_plan_approve)
+
+    pd = sub.add_parser(
+        "plan-deliver", parents=[common],
+        help="render the approved plan to a real PDF (default), then "
+             "--send it to the buyer by email (human gate)",
+    )
+    pd.add_argument("order_id")
+    pd.add_argument("--send", action="store_true",
+                    help="actually email the staged PDF to the buyer")
+    pd.add_argument("--force", action="store_true",
+                    help="resend even if this order was already delivered")
+    pd.add_argument("--status", action="store_true",
+                    help="show the delivery record for this order and exit")
+    pd.set_defaults(func=_cmd_plan_deliver)
 
     pr = sub.add_parser("plan-render", parents=[common],
                         help="write an approved Customer Launch Plan to Markdown")
@@ -1717,6 +1886,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    # Auto-load .env only for a real CLI invocation (argv is None). Tests
+    # always pass an explicit argv list and manage their own environment,
+    # so this keeps the real credentials out of the test process.
+    if argv is None:
+        from .envfile import load_env
+
+        loaded = load_env()
+        if loaded:
+            logging.getLogger("revenue_os").info(
+                "loaded %d key(s) from .env: %s", len(loaded), ", ".join(sorted(loaded))
+            )
     parser = build_parser()
     args = parser.parse_args(argv)
     func = getattr(args, "func", None)
