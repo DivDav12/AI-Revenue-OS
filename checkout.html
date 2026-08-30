@@ -61,6 +61,7 @@ form.intake button{margin-top:1rem;font:inherit;font-weight:600;padding:.6rem 1.
 <input type='hidden' name='candidate' value='ask-hn-how-do-you-find-your-first-paying-customers'>
 <input type='hidden' name='order_id' value=''>
 <input type='hidden' name='capture_id' value=''>
+<input type='hidden' name='lead_id' value=''>
 <label>Your name *<br><input type='text' name='name' required></label>
 <label>Email *<br><input type='email' name='email' required></label>
 <label>Business name / website<br><input type='text' name='business'></label>
@@ -72,10 +73,10 @@ form.intake button{margin-top:1rem;font:inherit;font-weight:600;padding:.6rem 1.
 <label>Biggest customer-acquisition problem<br><textarea name='biggest_problem' rows='3'></textarea></label>
 <button type='submit'>Send my details</button>
 </form>
-<p class='intake-note'>If the form does not send, email your answers and your PayPal order ID to the address that sold you this plan.</p>
+<p class='intake-note'>If the form does not send, email your answers and your PayPal order ID to divdav12support@gmail.com.</p>
 </div>
 <p class='terms'>Payment is handled entirely by PayPal. If the plan cannot be delivered, the payment is refunded in full via PayPal.</p>
-<div class='foot'>Sold by the operator of this page. Order reference: <code>ask-hn-how-do-you-find-your-first-paying-customers</code>.</div>
+<div class='foot'>Sold by the operator of this page. Order reference: <code>ask-hn-how-do-you-find-your-first-paying-customers</code>. Contact: divdav12support@gmail.com.</div>
 </div>
 <script>
 paypal.Buttons({
@@ -101,11 +102,13 @@ paypal.Buttons({
       if (form) {
         form.querySelector("[name='order_id']").value = data.orderID;
         form.querySelector("[name='capture_id']").value = cap;
+        var lf = form.querySelector("[name='lead_id']");
+        if (lf) lf.value = (new URLSearchParams(location.search).get('lead') || '').replace(/[^A-Za-z0-9_-]/g, '');
         document.getElementById('intake').classList.remove('hidden');
         document.getElementById('intake').scrollIntoView();
         box.innerHTML = 'Payment received (order <code>' + oid + '</code>). Please complete the short form below so we can build your plan.';
       } else {
-        box.innerHTML = 'Payment received. Your order ID is <code>' + oid + '</code>. You will be contacted at your PayPal email to arrange delivery.';
+        box.innerHTML = 'Payment received. Your order ID is <code>' + oid + '</code>. You will be contacted at your PayPal email to arrange delivery. Questions: divdav12support@gmail.com.';
       }
     });
   },
