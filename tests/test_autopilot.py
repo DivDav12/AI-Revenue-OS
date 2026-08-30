@@ -82,6 +82,41 @@ class LifecycleTests(_OfflineSource):
         self.assertEqual(s["capital"]["presale_cap_eur"], 3.0)
 
 
+class QueueCliTests(_OfflineSource):
+    def _run(self, *args):
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main([*args, "--data-dir", str(self.d)])
+        return code, buf.getvalue()
+
+    def test_acquisition_queue_command(self):
+        ap.run_cycle(self.d, max_age_days=30, politeness_delay=0)
+        code, out = self._run("acquisition-queue")
+        self.assertEqual(code, 0)
+        self.assertIn("1 prospect(s) need a human", out)
+        self.assertIn("news.ycombinator.com/item?id=1", out)
+        self.assertIn("post every reply yourself", out)
+
+    def test_acquisition_queue_empty(self):
+        code, out = self._run("acquisition-queue")
+        self.assertEqual(code, 0)
+        self.assertIn("empty", out)
+
+    def test_outreach_status_posted_clears_the_queue(self):
+        ap.run_cycle(self.d, max_age_days=30, politeness_delay=0)
+        lid = OutreachStore.load(self.d / "outreach.json").all()[0]["lead_id"]
+        code, out = self._run("outreach-status", lid[:8], "posted")
+        self.assertEqual(code, 0)
+        self.assertIn("-> posted", out)
+        self.assertEqual(ap.acquisition_queue(self.d), [])
+
+    def test_outreach_status_unknown_id_errors(self):
+        code, _ = self._run("outreach-status", "ffffffffffff", "posted")
+        self.assertEqual(code, 1)
+
+
 class CycleTests(_OfflineSource):
     def _cycle(self, **kw):
         return ap.run_cycle(self.d, max_age_days=30, politeness_delay=0, **kw)
@@ -104,6 +139,51 @@ class CycleTests(_OfflineSource):
         self.assertEqual(len(OutreachStore.load(self.d / "outreach.json").all()), 1)
         st = json.loads((self.d / "autopilot.json").read_text())
         self.assertEqual(st["cycles"], 2)
+
+    def test_acquisition_queue_in_report_and_persisted_state(self):
+        r = self._cycle()
+        q = r["acquisition_queue"]
+        self.assertEqual(len(q), 1)
+        row = q[0]
+        self.assertEqual(row["prospect_quality"], "high")
+        self.assertEqual(row["stage"], "prepared")
+        self.assertEqual(row["url"], "https://news.ycombinator.com/item?id=1")
+        self.assertEqual(row["promo_allowed"], "caution")
+        self.assertIn("HN", row["promo_note"])
+        self.assertEqual(r["outreach"]["queue_len"], 1)
+        # persisted verbatim in autopilot.json -> last_report
+        st = json.loads((self.d / "autopilot.json").read_text())
+        self.assertEqual(len(st["last_report"]["acquisition_queue"]), 1)
+        # and the human action queue points at it
+        self.assertTrue(any("acquisition-queue" in a for a in r["actions"]))
+
+    def test_queue_does_not_grow_across_cycles(self):
+        self._cycle()
+        r2 = self._cycle()
+        self.assertEqual(len(r2["acquisition_queue"]), 1)
+
+    def test_posted_brief_drops_out_of_the_queue(self):
+        self._cycle()
+        briefs = OutreachStore.load(self.d / "outreach.json")
+        lid = briefs.all()[0]["lead_id"]
+        briefs.set_status(lid, "posted")
+        briefs.save()
+        self.assertEqual(ap.acquisition_queue(self.d), [])
+        # a later cycle does not re-surface it
+        r = self._cycle()
+        self.assertEqual(r["acquisition_queue"], [])
+
+    def test_rejected_lead_drops_out_of_the_queue(self):
+        self._cycle()
+        store = AcquisitionStore.load(self.d / "acquisition.json")
+        lid = store.ranked()[0]["lead_id"]
+        store.set_review(lid, "rejected", actor="me")
+        store.save()
+        self.assertEqual(ap.acquisition_queue(self.d), [])
+
+    def test_status_reports_the_queue_length(self):
+        self._cycle()
+        self.assertEqual(ap.status(self.d)["acquisition_queue_len"], 1)
 
     def test_paypal_missing_credentials_is_a_note_not_a_crash(self):
         r = self._cycle()

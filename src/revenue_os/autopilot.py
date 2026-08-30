@@ -2,8 +2,11 @@
 
 It does NOT replace any agent or store. One `run_cycle()` call:
 
-  1. free discovery  (AcquisitionAgent via workflow.discover_acquisition_opportunities)
-  2. outreach briefs  (outreach.outreach_brief) for high/medium-quality leads
+  1. free discovery  (prospect_scout -> opportunity_scorer via
+                       workflow.discover_acquisition_opportunities)
+  2. outreach briefs  (outreach.outreach_brief) for high/medium-quality leads,
+     then a durable, de-duped ACQUISITION REVIEW QUEUE of every prospect
+     still waiting on a human (`acquisition_queue()` / `acquisition-queue`)
   3. payment check    (paypal.sync_transactions -> RevenueLedger)   [read-only booking]
   4. intake / plan    (existing intake + LaunchPlanAgent, POST-SALE budget only)
   5. delivery queue   (plan approved but not rendered)
@@ -74,6 +77,63 @@ def _state(data_dir) -> AutopilotState:
     return AutopilotState.load(Path(data_dir) / "autopilot.json")
 
 
+# --- acquisition review queue -------------------------------------------
+
+_ACQ_DONE_BRIEF = ("posted", "skipped")
+
+
+def acquisition_queue(data_dir) -> list[dict]:
+    """Every high/medium-quality prospect that still needs a human, with the
+    facts a person needs to act on it: their own words, the community's
+    promo policy, and the drafted brief's status.
+
+    Recomputed from the two stores each call (no separate state to drift):
+      - a lead the human REJECTED, or whose brief is `posted`/`skipped`,
+        is finished and never re-surfaces;
+      - `stage` is `prepared` once a draft brief exists, else `surfaced`.
+    Ranked by the lead's final_score (freshest genuine asks first).
+    """
+    from .acquisition import AcquisitionStore
+    from .outreach import OutreachStore
+
+    data_dir = Path(data_dir)
+    leads = AcquisitionStore.load(data_dir / "acquisition.json").ranked()
+    briefs = OutreachStore.load(data_dir / "outreach.json")
+
+    queue: list[dict] = []
+    for lead in leads:
+        if lead.get("prospect_quality") not in _QUALITY_FOR_OUTREACH:
+            continue
+        lid = lead.get("lead_id")
+        brief = briefs.get(lid)
+        brief_status = (brief or {}).get("status")
+        if (lead.get("human_review_status") == "rejected"
+                or brief_status in _ACQ_DONE_BRIEF):
+            continue
+        queue.append({
+            "lead_id": lid,
+            "url": lead.get("url", ""),
+            "platform": lead.get("platform", ""),
+            "prospect_quality": lead.get("prospect_quality"),
+            "prospect_type": lead.get("prospect_type"),
+            "age_days": lead.get("age_days"),
+            "age_bucket": lead.get("age_bucket", "unknown"),
+            "final_score": lead.get("final_score", 0),
+            "their_words": str(lead.get("problem_summary")
+                               or lead.get("title") or "")[:240],
+            "promo_allowed": lead.get("promo_allowed", "unknown"),
+            "promo_note": lead.get("promo_note", ""),
+            "human_review_status": lead.get("human_review_status", "new"),
+            "brief_status": brief_status or "none",
+            "stage": "prepared" if brief else "surfaced",
+            "next_action": (
+                "review the drafted brief, check this community's rules, and "
+                "post your own helpful reply" if brief
+                else "a brief will be drafted on the next cycle"),
+        })
+    return queue
+
+
 def pause(data_dir, reason: str = "manual pause") -> dict:
     st = _state(data_dir)
     st.data["status"] = "paused"
@@ -110,6 +170,7 @@ def status(data_dir) -> dict:
     hi = [l for l in leads if l.get("prospect_quality") in _QUALITY_FOR_OUTREACH]
     return {
         "autopilot": st["status"],
+        "acquisition_queue_len": len(acquisition_queue(data_dir)),
         "pause_reason": st.get("pause_reason"),
         "cycles": st.get("cycles", 0),
         "last_cycle_at": st.get("last_cycle_at"),
@@ -231,16 +292,23 @@ def run_cycle(data_dir, *, allow_web: bool = False, max_age_days: int = 14,
             continue
         briefs.put(outreach_brief(lead, checkout_url=ck_url))
         prepared += 1
-        report["actions"].append(
-            f"HUMAN: review outreach brief for {lead.get('lead_id')} and, if "
-            f"the community allows it, post a helpful reply yourself -> "
-            f"{lead.get('url')}")
     if prepared:
         briefs.save()
-    report["outreach"] = {"prepared": prepared,
-                          "awaiting_post": sum(
-                              1 for b in briefs.all()
-                              if b.get("status") in ("draft", "approved"))}
+
+    # --- 2b. the acquisition review queue (durable, de-duped) ----------
+    queue = acquisition_queue(data_dir)
+    report["acquisition_queue"] = queue
+    report["outreach"] = {
+        "prepared": prepared,
+        "awaiting_post": sum(1 for b in briefs.all()
+                             if b.get("status") in ("draft", "approved")),
+        "queue_len": len(queue),
+    }
+    if queue:
+        report["actions"].append(
+            f"HUMAN: {len(queue)} outreach prospect(s) awaiting you - review "
+            "each drafted brief, check the community's rules, and post your "
+            "own reply (`revenue_os acquisition-queue`). The system never posts.")
 
     # --- 3. payment check (LIVE, read-only booking) --------------------
     pp = _paypal_check(data_dir)

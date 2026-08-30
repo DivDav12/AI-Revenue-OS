@@ -99,7 +99,10 @@ class OutreachDrafterAgentTests(unittest.TestCase):
         r = self._run({"lead": _LEAD, "checkout_url": _CHECKOUT})
         self.assertEqual(r.status, "ok")
         self.assertEqual(r.agent, "outreach_drafter")
-        self.assertEqual(r.output, outreach_brief(_LEAD, checkout_url=_CHECKOUT))
+        expected = outreach_brief(_LEAD, checkout_url=_CHECKOUT)
+        # identical bar the wall-clock `generated_at`
+        self.assertEqual({k: v for k, v in r.output.items() if k != "generated_at"},
+                         {k: v for k, v in expected.items() if k != "generated_at"})
         self.assertIn("?lead=abc123def456", r.output["checkout_link"])
         self.assertIn("never posts", r.output["human_approval"].lower())
 
