@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Customer Launch Plan - your details</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,
+  Helvetica,Arial,sans-serif;color:#1b2430;background:#f7f8fa}
+.wrap{max-width:560px;margin:0 auto;padding:3rem 1.25rem 4rem}
+h1{font-size:1.8rem;line-height:1.25;margin:0 0 .6rem}
+.sub{font-size:1.1rem;color:#4a5568;margin:0 0 1.75rem}
+p{margin:0 0 1rem}
+.card{border:1px solid #d9dee6;border-radius:12px;padding:1.4rem;background:#fff;
+  margin:1.75rem 0}
+.price{font-size:1.7rem;font-weight:700;margin:.2rem 0 .1rem}
+.what{font-weight:600;margin-bottom:.4rem}
+ul{margin:0 0 1.5rem;padding-left:1.2rem}
+li{margin:.4rem 0}
+.disclaimer{font-size:.9rem;color:#8a4b1f;background:#fdf4ec;border:1px solid #f0dcc8;
+  border-radius:8px;padding:.7rem .9rem;margin:.2rem 0 1rem}
+#paypal-button-container{margin-top:1rem;min-height:45px}
+#pay-result{margin-top:1rem;padding:.9rem 1rem;border-radius:8px;background:#eef6ee;
+  border:1px solid #cfe6cf;display:none}
+#pay-result.err{background:#fdeeee;border-color:#e6cfcf}
+#pay-result code{font-size:.9rem;word-break:break-all}
+.terms{font-size:.9rem;color:#4a5568}
+.foot{margin-top:2rem;font-size:.85rem;color:#718096;border-top:1px solid #e2e6ec;
+  padding-top:1rem}
+h2{font-size:1.3rem;margin:2rem 0 .5rem}
+.hidden{display:none}
+form.intake{margin:1.25rem 0}
+form.intake label{display:block;margin:.8rem 0;font-weight:600;font-size:.95rem}
+form.intake input,form.intake textarea{width:100%;font:inherit;font-weight:400;
+  padding:.5rem .6rem;border:1px solid #cdd4de;border-radius:8px}
+form.intake button{margin-top:1rem;font:inherit;font-weight:600;padding:.6rem 1.1rem;
+  background:#1b2430;color:#fff;border:1px solid #1b2430;border-radius:8px;cursor:pointer}
+.intake-note{font-size:.9rem;color:#4a5568;margin-top:.6rem}
+</style>
+</head>
+<body>
+<div class='wrap'>
+<h1>Customer Launch Plan - your details</h1>
+<p>You have completed payment. Tell us about your business so we can build your personalised plan. Fields marked * are required.</p>
+<form id='intake-form' class='intake' method='post' action='https://formspree.io/f/xvkogwgq'>
+<input type='hidden' name='candidate' value='ask-hn-how-do-you-find-your-first-paying-customers'>
+<input type='hidden' name='order_id' value=''>
+<input type='hidden' name='capture_id' value=''>
+<label>Your name *<br><input type='text' name='name' required></label>
+<label>Email *<br><input type='email' name='email' required></label>
+<label>Business name / website<br><input type='text' name='business'></label>
+<label>What you sell *<br><textarea name='sells' rows='3' required></textarea></label>
+<label>Current price<br><input type='text' name='current_price'></label>
+<label>Target audience<br><textarea name='target_audience' rows='3'></textarea></label>
+<label>Current customer situation<br><textarea name='customer_situation' rows='3'></textarea></label>
+<label>Previous customer-acquisition attempts<br><textarea name='previous_attempts' rows='3'></textarea></label>
+<label>Biggest customer-acquisition problem<br><textarea name='biggest_problem' rows='3'></textarea></label>
+<button type='submit'>Send my details</button>
+</form>
+<p class='intake-note'>If the form does not send, email your answers and your PayPal order ID to the address that sold you this plan.</p>
+</div>
+<script>
+(function(){
+  var q = new URLSearchParams(location.search);
+  var map = {order: 'order_id', capture: 'capture_id'};
+  Object.keys(map).forEach(function(k){
+    var v = (q.get(k) || '').replace(/[^A-Za-z0-9_-]/g, '');
+    var el = document.querySelector("[name='" + map[k] + "']");
+    if (el) el.value = v;
+  });
+})();
+</script>
+</body>
+</html>
