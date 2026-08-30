@@ -116,6 +116,40 @@ class QueueCliTests(_OfflineSource):
         code, _ = self._run("outreach-status", "ffffffffffff", "posted")
         self.assertEqual(code, 1)
 
+    def test_outreach_status_reason_recorded_and_lead_annotated(self):
+        ap.run_cycle(self.d, max_age_days=30, politeness_delay=0)
+        lid = OutreachStore.load(self.d / "outreach.json").all()[0]["lead_id"]
+        code, out = self._run("outreach-status", lid[:8], "skipped",
+                              "--reason", "against the subreddit rules")
+        self.assertEqual(code, 0)
+        self.assertIn("against the subreddit rules", out)
+        from revenue_os.experiments import ExperimentStore
+        e = ExperimentStore.load(self.d / "experiments.json").get(lid)
+        self.assertEqual(e["reason"], "against the subreddit rules")
+        # the acquisition lead got the additive breadcrumb; verdict untouched
+        lead = AcquisitionStore.load(self.d / "acquisition.json").by_id(lid)
+        self.assertEqual(lead["outreach_outcome"]["status"], "skipped")
+        self.assertEqual(lead["human_review_status"], "new")
+
+    def test_outreach_feedback_command(self):
+        ap.run_cycle(self.d, max_age_days=30, politeness_delay=0)
+        code, out = self._run("outreach-feedback")
+        self.assertEqual(code, 0)
+        self.assertIn("0/8 settled", out)
+        self.assertIn("no weighting", out.lower())
+        code, out = self._run("outreach-feedback", "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["ready"], False)
+
+    def test_experiment_close_reason(self):
+        ap.run_cycle(self.d, max_age_days=30, politeness_delay=0)
+        lid = OutreachStore.load(self.d / "outreach.json").all()[0]["lead_id"]
+        self._run("outreach-status", lid[:8], "posted")
+        code, out = self._run("experiment-close", lid, "no_sale",
+                              "--reason", "no reply after 3 weeks")
+        self.assertEqual(code, 0)
+        self.assertIn("no reply after 3 weeks", out)
+
 
 class CycleTests(_OfflineSource):
     def _cycle(self, **kw):

@@ -17,6 +17,22 @@ network, or anything that posts / sends / contacts a person. It performs
 no autonomous "act" - it only tracks what the rest of the system already
 did.
 
+Phase 2.6 (outreach feedback loop) adds, still deterministically and
+without any outside call:
+  - the lead's quality / type / age bucket / relevance at outreach time
+    are captured on the experiment row (from the brief);
+  - an optional human `reason` string on a status change;
+  - `feedback()` - a read-only aggregation of SETTLED experiments
+    (sale vs no_sale) by source / quality / type. It only REPORTS; it
+    computes no weights and changes no lead score, query or source. It
+    stays "not ready" until >=8 settled outcomes with both classes are
+    present (the same gate calibration.py uses) and even then nothing
+    consumes it automatically;
+  - `sync_lead_backrefs()` - best-effort annotation of the acquisition
+    lead (local JSON) with a compact `outreach_outcome` breadcrumb. It
+    never touches `human_review_status`, the score, or the acquisition
+    queue's own dedup.
+
 State: data/experiments.json (atomic write, restart-safe).
 """
 
@@ -33,6 +49,8 @@ from .store import now_iso
 STATUSES = ("drafted", "posted", "skipped", "intake", "sale", "no_sale")
 _OPEN = ("drafted", "posted", "intake")
 _CLOSED = ("skipped", "sale", "no_sale")
+_SETTLED = ("sale", "no_sale")       # a posted attempt whose outcome resolved
+_MIN_SETTLED = 8                     # feedback gate - mirrors calibration.py
 
 # allowed transitions (a closed experiment is terminal)
 _NEXT: dict[str, tuple[str, ...]] = {
@@ -119,10 +137,17 @@ class ExperimentStore:
 
     def open(self, lead_id: str, *, candidate: str, offer_price,
              currency: str, source: str, platform: str,
-             checkout_url: str = "", now: str | None = None) -> str:
+             checkout_url: str = "", prospect_quality: str = "",
+             prospect_type: str = "", age_bucket: str = "",
+             relevance_score=None, now: str | None = None) -> str:
         """Insert a `drafted` experiment. No-op if the lead already has one
         (open OR closed - one experiment per lead, ever). Returns
-        'opened' | 'exists'."""
+        'opened' | 'exists'.
+
+        `prospect_quality` / `prospect_type` / `age_bucket` /
+        `relevance_score` are the lead's state at outreach time (copied
+        from the brief); they are optional and default to empty so older
+        callers and older stored rows keep working unchanged."""
         lid = str(lead_id or "").strip()
         if not lid:
             raise ValueError("open() needs a lead_id")
@@ -137,6 +162,10 @@ class ExperimentStore:
             "source": str(source or ""),
             "platform": str(platform or ""),
             "checkout_url": str(checkout_url or ""),
+            "prospect_quality": str(prospect_quality or ""),
+            "prospect_type": str(prospect_type or ""),
+            "age_bucket": str(age_bucket or ""),
+            "relevance_score": relevance_score,
             "status": "drafted",
             "created_at": ts,
             "posted_at": None,
@@ -147,15 +176,17 @@ class ExperimentStore:
         return "opened"
 
     def advance(self, lead_id: str, status: str, *, note: str = "",
-                revenue_ref: str = "", now: str | None = None) -> dict:
+                reason: str = "", revenue_ref: str = "",
+                now: str | None = None) -> dict:
         entry = self._by_lead.get(str(lead_id))
         if entry is None:
             raise ValueError(f"no experiment for lead {lead_id!r}")
-        return self._advance_entry(entry, status, note=note,
+        return self._advance_entry(entry, status, note=note, reason=reason,
                                    revenue_ref=revenue_ref, now=now)
 
     def _advance_entry(self, entry: dict, status: str, *, note: str = "",
-                       revenue_ref: str = "", now: str | None = None) -> dict:
+                       reason: str = "", revenue_ref: str = "",
+                       now: str | None = None) -> dict:
         if status not in STATUSES:
             raise ValueError(f"status must be one of {STATUSES}")
         cur = entry["status"]
@@ -177,6 +208,8 @@ class ExperimentStore:
             entry["revenue_ref"] = revenue_ref
         if note:
             entry["note"] = note
+        if reason:
+            entry["reason"] = str(reason)
         return entry
 
 
@@ -220,6 +253,10 @@ def open_from_briefs(data_dir, *, now: str | None = None) -> dict:
             source=str(brief.get("source") or ""),
             platform=str(brief.get("platform") or ""),
             checkout_url=str(brief.get("checkout_link") or ""),
+            prospect_quality=str(brief.get("prospect_quality") or ""),
+            prospect_type=str(brief.get("prospect_type") or ""),
+            age_bucket=str(brief.get("age_bucket") or ""),
+            relevance_score=brief.get("relevance_score"),
             now=now)
         opened += outcome == "opened"
         existing += outcome == "exists"
@@ -229,13 +266,17 @@ def open_from_briefs(data_dir, *, now: str | None = None) -> dict:
 
 
 def advance(data_dir, lead_id: str, status: str, *, note: str = "",
-            revenue_ref: str = "") -> dict:
+            reason: str = "", revenue_ref: str = "") -> dict:
     """Move one experiment forward (used by `outreach-status` and
-    `experiment-close`). Invalid transitions raise ValueError."""
+    `experiment-close`). Invalid transitions raise ValueError. `reason` is
+    an optional human note stored alongside the system `note`."""
     data_dir = Path(data_dir)
     exp = ExperimentStore.load(data_dir / "experiments.json")
-    entry = exp.advance(lead_id, status, note=note, revenue_ref=revenue_ref)
+    entry = exp.advance(lead_id, status, note=note, reason=reason,
+                        revenue_ref=revenue_ref)
     exp.save()
+    if entry.get("status") in _CLOSED:
+        sync_lead_backrefs(data_dir)
     return entry
 
 
@@ -289,6 +330,7 @@ def correlate_sale(data_dir) -> dict:
             changed = True
     if changed:
         exp.save()
+        sync_lead_backrefs(data_dir)
     return {"sale": sales, "intake": intakes_marked}
 
 
@@ -321,6 +363,7 @@ def sweep(data_dir, *, now: datetime | None = None,
             closed += 1
     if closed:
         exp.save()
+        sync_lead_backrefs(data_dir)
     return {"closed": closed, "disabled": False}
 
 
@@ -353,3 +396,100 @@ def rollup(data_dir, *, now: datetime | None = None) -> dict:
             for e in rows
         ],
     }
+
+
+# --- Phase 2.6: the outreach feedback view --------------------------
+
+def feedback(data_dir, *, min_settled: int = _MIN_SETTLED) -> dict:
+    """Deterministic, read-only aggregation of SETTLED outreach
+    experiments (sale vs no_sale) by source / prospect quality / prospect
+    type.
+
+    It REPORTS conversion counts only. It computes no weights and changes
+    no lead score, query, or source ordering. `ready` stays False until at
+    least `min_settled` settled experiments exist with BOTH outcomes
+    present - the same ">=8 with both classes" gate calibration.py uses -
+    and even then nothing consumes the result automatically. A human reads
+    it and decides.
+    """
+    data_dir = Path(data_dir)
+    rows = ExperimentStore.load(data_dir / "experiments.json").all()
+    settled = [e for e in rows if e.get("status") in _SETTLED]
+    sales = sum(1 for e in settled if e.get("status") == "sale")
+    no_sales = len(settled) - sales
+
+    def _dim(key: str, default: str = "unknown") -> dict:
+        out: dict[str, dict] = {}
+        for e in settled:
+            k = str(e.get(key) or default)
+            b = out.setdefault(k, {"settled": 0, "sale": 0, "no_sale": 0})
+            b["settled"] += 1
+            b[e["status"]] += 1
+        for b in out.values():
+            b["sale_rate"] = (round(b["sale"] / b["settled"], 3)
+                              if b["settled"] else 0.0)
+        return dict(sorted(out.items()))
+
+    ready = len(settled) >= int(min_settled) and sales >= 1 and no_sales >= 1
+    note = ("enough settled outcomes - but this is advisory only; no "
+            "weighting, query or source change is applied automatically"
+            if ready else
+            f"not enough settled outcomes yet ({len(settled)}/{int(min_settled)}, "
+            "both a sale and a no_sale required); lead scoring, queries and "
+            "sources stay unchanged")
+    return {
+        "settled": len(settled),
+        "needed": int(min_settled),
+        "sale": sales,
+        "no_sale": no_sales,
+        "ready": ready,
+        "advisory_only": True,
+        "note": note,
+        "by_source": _dim("source"),
+        "by_quality": _dim("prospect_quality"),
+        "by_type": _dim("prospect_type"),
+    }
+
+
+# --- Phase 2.6: acquisition-lead back-reference (additive breadcrumb) ---
+
+def sync_lead_backrefs(data_dir) -> dict:
+    """Best-effort: annotate each acquisition lead whose experiment has
+    CLOSED with a compact `outreach_outcome` reference.
+
+    Purely additive. It never changes `human_review_status`, the score,
+    the age, or the acquisition queue's own dedup logic - it only leaves a
+    breadcrumb a human and the dashboard can read. Local JSON only; no
+    network, PayPal, or LLM. A failure here is swallowed: the experiment
+    ledger is the source of truth, this is a convenience mirror.
+    """
+    data_dir = Path(data_dir)
+    try:
+        from .acquisition import AcquisitionStore
+        store = AcquisitionStore.load(data_dir / "acquisition.json")
+        if not store.all():
+            return {"annotated": 0}
+        exp = ExperimentStore.load(data_dir / "experiments.json")
+        annotated = 0
+        for e in exp.all():
+            if e.get("status") not in _CLOSED:
+                continue
+            lid = str(e.get("lead_id") or "")
+            lead = store.by_id(lid)
+            if lead is None:
+                continue
+            ref = {
+                "status": e["status"],
+                "source": e.get("source", ""),
+                "prospect_quality": e.get("prospect_quality", ""),
+                "closed_at": e.get("outcome_at") or "",
+                "revenue_ref": e.get("revenue_ref", ""),
+            }
+            if lead.get("outreach_outcome") != ref:
+                store.record_outreach_outcome(lid, ref)
+                annotated += 1
+        if annotated:
+            store.save()
+        return {"annotated": annotated}
+    except Exception:  # advisory mirror - never break the caller
+        return {"annotated": 0}

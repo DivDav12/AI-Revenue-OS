@@ -1111,6 +1111,17 @@ class AcquisitionStore:
             entry["reviewed_by"] = actor
         return entry
 
+    def record_outreach_outcome(self, lead_id_prefix: str, outcome: dict) -> dict:
+        """Phase 2.6: attach a compact `outreach_outcome` breadcrumb to a
+        lead (written by experiments.sync_lead_backrefs). Purely additive -
+        it does NOT change `human_review_status`, the score, or anything
+        the acquisition queue's dedup reads. Call `save()` to persist."""
+        entry = self.by_id(lead_id_prefix)
+        if entry is None:
+            raise ValueError(f"no single lead matches id {lead_id_prefix!r}")
+        entry["outreach_outcome"] = dict(outcome)
+        return entry
+
     def rescore(self, *, max_age_days: int = _DEFAULT_MAX_AGE_DAYS,
                 now: datetime | None = None) -> dict:
         """Re-derive every stored lead's score from its OWN persisted fields
