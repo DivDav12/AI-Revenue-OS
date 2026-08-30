@@ -1001,10 +1001,56 @@ def build_dashboard_html(
         revenue_analysis=_load_json("revenue_analysis.json"),
         agent_outputs=_load_json("agent_outputs.json"),
         pipeline=_load_json("pipeline.json"),
-        acquisition={"leads": _load_json("acquisition.json") or [],
-                     "briefs": _load_json("outreach.json") or []},
+        acquisition={
+            "leads": _load_json("acquisition.json") or [],
+            "briefs": _load_json("outreach.json") or [],
+            "queue": _acquisition_queue_safe(data_dir),
+            "readiness": _first_sale_readiness(data_dir, store, report),
+        },
         interactive=interactive, flash=flash, csrf=csrf,
     )
+
+
+def _acquisition_queue_safe(data_dir: Path) -> list:
+    """autopilot.acquisition_queue, but never let a dashboard build fail."""
+    try:
+        from . import autopilot as _ap
+        return _ap.acquisition_queue(data_dir)
+    except Exception:
+        return []
+
+
+def _first_sale_readiness(data_dir: Path, store, report: dict) -> dict | None:
+    """Disk-only facts the 'first sale readiness' panel needs. No API calls."""
+    launched = next(
+        (c for c in store.all()
+         if c.status in ("launched", "earning") and c.offer), None)
+    if launched is None:
+        return None
+    from .outreach import DEFAULT_CHECKOUT_URL
+
+    spend = _llm_spend_log(data_dir)
+    r = {
+        "candidate": launched.name,
+        "candidate_status": launched.status,
+        "offer_price": launched.offer.get("price"),
+        "offer_currency": launched.offer.get("currency", "EUR"),
+        "candidate_public_url": launched.public_url or "",
+        "outreach_default_url": DEFAULT_CHECKOUT_URL,
+        "revenue_eur": report["totals"]["grand_revenue"],
+        "llm_api_calls": sum(int(e.get("api_calls", 0)) for e in spend.entries()),
+        "llm_cost_usd": spend.summary()["total_cost_usd"],
+        "checkout_built": False,
+        "checkout_deployed": False,
+    }
+    try:
+        from .deploy import deploy_status
+        ds = deploy_status(data_dir, launched.name)
+        r["checkout_built"] = bool(ds.get("checkout_built"))
+        r["checkout_deployed"] = bool(ds.get("deployed"))
+    except Exception:
+        pass
+    return r
 
 
 def _write_dashboard(data_dir: Path, out: Path | None = None) -> Path:

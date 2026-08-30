@@ -315,6 +315,80 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertNotIn("http", panel)
         self.assertIn("posts every reply", panel)
 
+    def test_acquisition_panel_shows_the_review_queue_without_urls(self):
+        acq = {
+            "leads": [{"prospect_quality": "medium", "human_review_status": "new"}],
+            "briefs": [{"lead_id": "78f0", "status": "draft",
+                        "brief": {"draft_reply": {"reply_draft": "hi",
+                                                  "promise_language_flagged": []}}}],
+            "queue": [{"lead_id": "78f0dbfe24e9", "prospect_quality": "medium",
+                       "stage": "prepared", "brief_status": "draft",
+                       "promo_allowed": "caution", "age_days": 47,
+                       "age_bucket": "stale",
+                       "url": "https://news.ycombinator.com/item?id=48905763"}],
+        }
+        html = render_html(_report(self.store, self.d), _FIXED_TS, acquisition=acq)
+        panel = html.split("id='acquisition'")[1].split("</section>")[0]
+        self.assertIn("review queue (de-duped, still open)", panel)
+        self.assertIn("with a tailored LLM draft", panel)
+        self.assertIn("78f0dbfe24e9", panel)          # lead id shown
+        self.assertIn("promo:caution", panel)
+        self.assertNotIn("news.ycombinator.com", panel)  # never the URL
+        self.assertNotIn("http", panel)
+
+    def test_first_sale_panel_without_readiness_is_an_honest_note(self):
+        html = render_html(_report(self.store, self.d), _FIXED_TS)
+        self.assertIn("id='first-sale'", html)
+        panel = html.split("id='first-sale'")[1].split("</section>")[0]
+        self.assertIn("Readiness not computed", panel)
+        self.assertNotIn("http", panel)
+
+    def test_first_sale_panel_flags_the_checkout_url_mismatch_and_stale_lead(self):
+        acq = {
+            "leads": [{"prospect_quality": "medium", "age_days": 47,
+                       "human_review_status": "new"}],
+            "briefs": [], "queue": [],
+            "readiness": {
+                "candidate": "ask-hn-x", "candidate_status": "launched",
+                "offer_price": 29.9, "offer_currency": "EUR",
+                "candidate_public_url": "https://divdav12.github.io/AI-Revenue-OS/checkout.html",
+                "outreach_default_url": "https://divdav12.github.io/customer-launch-plan/checkout.html",
+                "revenue_eur": 0, "llm_api_calls": 0, "llm_cost_usd": 0.0,
+                "checkout_built": True, "checkout_deployed": True,
+            },
+        }
+        html = render_html(_report(self.store, self.d), _FIXED_TS, acquisition=acq)
+        panel = html.split("id='first-sale'")[1].split("</section>")[0]
+        # no external URLs - only paths
+        self.assertNotIn("http", panel)
+        self.assertIn("/AI-Revenue-OS/checkout.html", panel)
+        self.assertIn("/customer-launch-plan/checkout.html", panel)
+        self.assertIn("hits the wrong page", panel)              # URL mismatch flagged
+        self.assertIn("freshest is 47d old", panel)              # stale lead flagged
+        self.assertIn("does NOT check the live PayPal", panel)   # honest blind spot
+        self.assertIn("Offer live", panel)
+        self.assertIn("item(s) need attention", panel)
+
+    def test_first_sale_panel_all_ready_when_urls_match_and_lead_fresh(self):
+        url = "https://divdav12.github.io/AI-Revenue-OS/checkout.html"
+        acq = {
+            "leads": [{"prospect_quality": "high", "age_days": 3,
+                       "human_review_status": "new"}],
+            "briefs": [], "queue": [{"stage": "prepared", "lead_id": "a"}],
+            "readiness": {
+                "candidate": "c", "candidate_status": "launched",
+                "offer_price": 29.9, "offer_currency": "EUR",
+                "candidate_public_url": url, "outreach_default_url": url,
+                "revenue_eur": 0, "llm_api_calls": 2, "llm_cost_usd": 0.01,
+                "checkout_built": True, "checkout_deployed": True,
+            },
+        }
+        html = render_html(_report(self.store, self.d), _FIXED_TS, acquisition=acq)
+        panel = html.split("id='first-sale'")[1].split("</section>")[0]
+        self.assertIn("All disk-checkable items look ready", panel)
+        self.assertNotIn("hits the wrong page", panel)
+        self.assertNotIn("http", panel)
+
     def test_agent_outputs_panel_reads_persisted_data_newest_first(self):
         outputs = {
             "find_suppliers": {"ts": "2026-08-25T09:00:00+00:00",
