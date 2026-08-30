@@ -222,14 +222,19 @@ def run_cycle(data_dir, *, allow_web: bool = False, max_age_days: int = 14,
     from . import budget
     from .acquisition import SEARCH_QUERIES, AcquisitionStore
     from .acquisition_sources import FREE_SOURCES, build_acquisition_source
-    from .outreach import DEFAULT_CHECKOUT_URL, OutreachStore, outreach_brief
+    from .outreach import OutreachStore, outreach_brief, resolve_checkout_url
+    from .store import CandidateStore
     from .workflow import discover_acquisition_opportunities
 
     data_dir = Path(data_dir)
     st = _state(data_dir)
     if checkout_url:
         st.data["checkout_url"] = checkout_url
-    ck_url = st.data.get("checkout_url") or DEFAULT_CHECKOUT_URL
+    # explicit override wins, then a prior override, then the deployed
+    # candidate's public_url, then the last-resort constant.
+    ck_url = (st.data.get("checkout_url")
+              or resolve_checkout_url(
+                  CandidateStore.load(data_dir / "candidates.json")))
 
     if st.data["status"] == "paused":
         return {"skipped": "autopilot is paused", "pause_reason":
