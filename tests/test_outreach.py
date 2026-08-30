@@ -85,6 +85,29 @@ class BriefTests(unittest.TestCase):
         self.assertIn("distribution", marketing["answer_angle"].lower())
 
 
+class OutreachDrafterAgentTests(unittest.TestCase):
+    """Phase 2.3: the roster `outreach_drafter` wrapper. Delegates to
+    outreach_brief; produces a draft only; never posts."""
+
+    def _run(self, payload):
+        from revenue_os.messages import Task
+        from revenue_os.outreach_agent import OutreachDrafterAgent
+        return OutreachDrafterAgent(name="outreach_drafter").run(
+            Task(objective="draft", capability="draft_outreach", payload=payload))
+
+    def test_wraps_outreach_brief_and_tracks_the_link(self):
+        r = self._run({"lead": _LEAD, "checkout_url": _CHECKOUT})
+        self.assertEqual(r.status, "ok")
+        self.assertEqual(r.agent, "outreach_drafter")
+        self.assertEqual(r.output, outreach_brief(_LEAD, checkout_url=_CHECKOUT))
+        self.assertIn("?lead=abc123def456", r.output["checkout_link"])
+        self.assertIn("never posts", r.output["human_approval"].lower())
+
+    def test_rejects_a_payload_without_a_lead(self):
+        self.assertEqual(self._run({"lead": None}).status, "error")
+        self.assertEqual(self._run({"lead": {"no": "id"}}).status, "error")
+
+
 class StoreTests(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()

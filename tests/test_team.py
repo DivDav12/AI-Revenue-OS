@@ -60,6 +60,7 @@ class TeamTests(unittest.TestCase):
             {"evaluator", "opportunity_finder", "product_researcher",
              "competitor_analyzer", "copywriter", "content_creator",
              "revenue_analyst", "trend_hunter",
+             "opportunity_scorer", "outreach_drafter",
              "supplier_finder", "designer", "store_builder", "developer",
              "automation_engineer", "ads_manager", "campaign_optimizer",
              "budget_allocator", "sales_tracker", "profit_master",
@@ -81,7 +82,9 @@ class TeamTests(unittest.TestCase):
                           ("manage_profit", "profit_master"),
                           ("support_customers", "customer_support"),
                           ("manage_reviews", "review_manager"),
-                          ("quality_check", "quality_control")):
+                          ("quality_check", "quality_control"),
+                          ("score_prospects", "opportunity_scorer"),
+                          ("draft_outreach", "outreach_drafter")):
             self.assertEqual(
                 team.registry.find_for(_T(objective="x", capability=cap)).name, name
             )

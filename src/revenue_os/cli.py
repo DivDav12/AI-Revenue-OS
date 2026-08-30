@@ -883,6 +883,8 @@ def build_dashboard_html(
         revenue_analysis=_load_json("revenue_analysis.json"),
         agent_outputs=_load_json("agent_outputs.json"),
         pipeline=_load_json("pipeline.json"),
+        acquisition={"leads": _load_json("acquisition.json") or [],
+                     "briefs": _load_json("outreach.json") or []},
         interactive=interactive, flash=flash, csrf=csrf,
     )
 

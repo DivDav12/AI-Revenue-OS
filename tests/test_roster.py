@@ -6,29 +6,45 @@ from revenue_os.team import build_team
 
 
 class RosterTests(unittest.TestCase):
-    def test_twenty_one_agents_grouped_in_five_clusters(self):
-        self.assertEqual(len(roster.AGENTS), 21)
+    def test_twentyfour_agents_grouped_in_six_clusters(self):
+        self.assertEqual(len(roster.AGENTS), 24)
         self.assertEqual(set(roster.CLUSTERS),
                          {a.cluster for a in roster.AGENTS})
         counts = {c: len(v) for c, v in roster.by_cluster().items()}
         self.assertEqual(counts,
                          {"discovery": 6, "build": 6, "marketing": 3,
-                          "revenue": 3, "support": 3})
+                          "acquisition": 3, "revenue": 3, "support": 3})
 
     def test_ids_and_capabilities_are_unique(self):
-        self.assertEqual(len({a.id for a in roster.AGENTS}), 21)
-        self.assertEqual(len({a.capability for a in roster.AGENTS}), 21)
+        self.assertEqual(len({a.id for a in roster.AGENTS}), 24)
+        self.assertEqual(len({a.capability for a in roster.AGENTS}), 24)
 
     def test_live_agents_are_the_implemented_workers(self):
-        # every live agent except market_scanner (which needs a source) is
-        # registered in the team by its roster id.
+        # every live agent except the ones that need a live search source
+        # (market_scanner, prospect_scout) is registered in the team by its
+        # roster id.
         registered = {a.name for a in build_team().registry.agents}
         for a in roster.live():
-            if a.id == "market_scanner":
+            if a.id in ("market_scanner", "prospect_scout"):
                 continue
             self.assertIn(a.id, registered, a.id)
         for a in roster.planned():
             self.assertEqual(a.status, "planned")
+
+    def test_acquisition_cluster_is_live_with_a_scout_score_draft_chain(self):
+        scout = roster.get("prospect_scout")
+        scorer = roster.get("opportunity_scorer")
+        drafter = roster.get("outreach_drafter")
+        for a in (scout, scorer, drafter):
+            self.assertEqual(a.status, "live", a.id)
+            self.assertEqual(a.cluster, "acquisition", a.id)
+        self.assertEqual(scout.depends_on, ())
+        self.assertEqual(scorer.depends_on, ("prospect_scout",))
+        self.assertEqual(drafter.depends_on, ("opportunity_scorer",))
+        # the drafter is human-gated: the system never posts
+        self.assertEqual(drafter.gate, "human")
+        self.assertEqual(scout.gate, "autonomous")
+        self.assertEqual(scorer.gate, "autonomous")
 
     def test_phase_a_build_agents_are_live(self):
         for agent_id in ("supplier_finder", "designer", "store_builder",
@@ -45,10 +61,10 @@ class RosterTests(unittest.TestCase):
         for agent_id in ("sales_tracker", "profit_master"):
             self.assertEqual(roster.get(agent_id).status, "live", agent_id)
 
-    def test_phase_d_support_agents_are_live_and_all_21_live(self):
+    def test_phase_d_support_agents_are_live_and_all_agents_live(self):
         for agent_id in ("customer_support", "review_manager", "quality_control"):
             self.assertEqual(roster.get(agent_id).status, "live", agent_id)
-        self.assertEqual(len(roster.live()), 21)
+        self.assertEqual(len(roster.live()), 24)
         self.assertEqual(roster.planned(), ())
         self.assertEqual(roster.blocked(), ())
 
@@ -65,6 +81,9 @@ class RosterTests(unittest.TestCase):
         self.assertEqual(roster.by_capability("write_copy").id, "copywriter")
         self.assertEqual(roster.by_capability("analyze_revenue").id, "revenue_analyst")
         self.assertEqual(roster.by_capability("package_deliverable").id, "content_creator")
+        self.assertEqual(roster.by_capability("scout_prospects").id, "prospect_scout")
+        self.assertEqual(roster.by_capability("score_prospects").id, "opportunity_scorer")
+        self.assertEqual(roster.by_capability("draft_outreach").id, "outreach_drafter")
         self.assertIsNone(roster.get("nope"))
 
     def test_money_touching_clusters_are_human_gated(self):

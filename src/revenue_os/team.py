@@ -9,6 +9,7 @@ lineage.
 
 from __future__ import annotations
 
+from .acquisition import AcquisitionAgent
 from .agent import DiscoveryAgent, EvaluatorAgent
 from .ads_manager import AdsManagerAgent
 from .automation_engineer import AutomationEngineerAgent
@@ -23,6 +24,7 @@ from .developer import DeveloperAgent
 from .normalize import to_opportunity
 from .opportunity_finder import OpportunityFinderAgent
 from .orchestrator import Orchestrator
+from .outreach_agent import OutreachDrafterAgent
 from .profit_master import ProfitMasterAgent
 from .quality_control import QualityControlAgent
 from .registry import AgentRegistry
@@ -47,7 +49,11 @@ TREND_HUNTER = "trend_hunter"
 
 # Deterministic roster agents added from Phase A onward. Registered by
 # roster id; each has a unique capability so registry routing is exact.
+# (prospect_scout is NOT here - like market_scanner it needs a live search
+# source, so the acquisition workflow builds it per run.)
 _ROSTER_AGENT_CLASSES = {
+    "opportunity_scorer": AcquisitionAgent,
+    "outreach_drafter": OutreachDrafterAgent,
     "supplier_finder": SupplierFinderAgent,
     "designer": DesignerAgent,
     "store_builder": StoreBuilderAgent,

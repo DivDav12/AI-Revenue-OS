@@ -479,11 +479,17 @@ def discover_acquisition_opportunities(store, source, *, queries, limit=15,
     raises is recorded in `query_errors` and the rest continue; a dead
     sub-source is recorded in `sources_status`. Returns a summary dict;
     `leads` is the full store, ranked by final_score.
+
+    The work runs as a real Orchestrator chain of the named roster agents:
+    `prospect_scout` (fetch) -> `opportunity_scorer` (score + rank). The
+    `outreach_drafter` is registered too so the acquisition cluster is
+    fully routable, though this entry point does not draft (that is a
+    per-lead, human-reviewed step - `outreach-brief`).
     """
-    import time
     from datetime import datetime, timedelta, timezone
 
-    from .acquisition import AcquisitionAgent
+    from .acquisition import AcquisitionAgent, ProspectScoutAgent
+    from .outreach_agent import OutreachDrafterAgent
 
     now = now or datetime.now(timezone.utc)
     # Fetch a slightly wider window than --max-age-days (min 60d) so the
@@ -492,43 +498,40 @@ def discover_acquisition_opportunities(store, source, *, queries, limit=15,
     fetch_days = max(60, max_age_days)
     since_ts = int((now - timedelta(days=fetch_days)).timestamp())
 
-    records: list = []
-    query_errors: list[dict] = []
-    for i, query in enumerate(queries):
-        if i and politeness_delay:
-            time.sleep(politeness_delay)
-        try:
-            records.extend(source.search(query, limit, since_ts=since_ts))
-        except TypeError:  # a source without the since_ts kwarg
-            records.extend(source.search(query, limit))
-        except Exception as exc:  # one bad fetch must not kill the run
-            logger.warning("acquisition search failed for %r: %s", query, exc)
-            query_errors.append({"query": query, "error": str(exc)})
-
     orchestrator = Orchestrator(registry=AgentRegistry(), sink=sink)
-    orchestrator.register(AcquisitionAgent(name="acquisition_scout"))
+    orchestrator.register(ProspectScoutAgent(source, name="prospect_scout"))
+    orchestrator.register(AcquisitionAgent(name="opportunity_scorer"))
+    orchestrator.register(OutreachDrafterAgent(name="outreach_drafter"))
     orchestrator.add_task(Task(
-        objective="discover acquisition opportunities",
-        capability="discover_acquisition",
-        payload={"records": records, "min_score": min_score,
-                 "max_age_days": max_age_days, "llm_scorer": llm_scorer},
+        objective="scout current public posts for acquisition",
+        capability="scout_prospects",
+        payload={"queries": tuple(queries), "limit": limit, "since_ts": since_ts,
+                 "politeness_delay": politeness_delay, "then": "score",
+                 "min_score": min_score, "max_age_days": max_age_days,
+                 "llm_scorer": llm_scorer},
     ))
 
+    records: list = []
+    query_errors: list[dict] = []
     scored: list[dict] = []
     dropped: list[dict] = []
     considered = collapsed = no_match = too_old = 0
     mode = "deterministic"
     for result in orchestrator.run_cycle():
         if result.status != "ok":
-            logger.warning("acquisition scoring failed: %s", result.error)
+            logger.warning("acquisition %s failed: %s", result.agent, result.error)
             continue
-        scored = result.output["leads"]
-        dropped = result.output["dropped"]
-        considered = result.output["considered"]
-        collapsed = result.output["collapsed"]
-        no_match = result.output["no_match"]
-        too_old = result.output["too_old"]
-        mode = result.output["scoring_mode"]
+        if result.agent == "prospect_scout":
+            records = result.output.get("records", [])
+            query_errors = result.output.get("query_errors", [])
+        elif result.agent == "opportunity_scorer":
+            scored = result.output["leads"]
+            dropped = result.output["dropped"]
+            considered = result.output["considered"]
+            collapsed = result.output["collapsed"]
+            no_match = result.output["no_match"]
+            too_old = result.output["too_old"]
+            mode = result.output["scoring_mode"]
 
     added = updated = unchanged = 0
     for lead in scored:

@@ -637,18 +637,73 @@ def _roster_panel() -> str:
     )
 
 
+def _acquisition_panel(acquisition: dict | None) -> str:
+    """Phase 2 acquisition cluster - real counts only, straight from
+    data/acquisition.json + data/outreach.json. No prospect URLs, titles,
+    or invented status: the stores either hold these numbers or they do
+    not. The system finds and drafts only; a person posts every reply.
+
+    `acquisition` is {"leads": [...], "briefs": [...]} or None.
+    """
+    data = acquisition if isinstance(acquisition, dict) else {}
+    leads = [d for d in (data.get("leads") or []) if isinstance(d, dict)]
+    briefs = [d for d in (data.get("briefs") or []) if isinstance(d, dict)]
+    if not leads and not briefs:
+        return (
+            "<p class='muted'>No acquisition run yet - "
+            "<span class='mono'>data/acquisition.json</span> is empty. Run "
+            "<span class='mono'>discover-free</span> to find current public "
+            "posts from founders looking for their first customers. The system "
+            "never posts, DMs, or emails - it drafts, a person sends.</p>"
+        )
+
+    def _c(items, key, val):
+        return sum(1 for d in items if d.get(key) == val)
+
+    q = {k: _c(leads, "prospect_quality", k)
+         for k in ("high", "medium", "low", "none")}
+    rev = {k: _c(leads, "human_review_status", k)
+           for k in ("new", "reviewed", "rejected")}
+    awaiting = sum(1 for b in briefs if b.get("status") in ("draft", "approved"))
+    posted = _c(briefs, "status", "posted")
+
+    rows = [
+        ("prospects found", len(leads)),
+        ("high / medium quality", q["high"] + q["medium"]),
+        ("awaiting human review", rev["new"]),
+        ("reviewed / rejected", f"{rev['reviewed']} / {rev['rejected']}"),
+        ("outreach drafts prepared", len(briefs)),
+        ("awaiting a human post", awaiting),
+        ("marked posted", posted),
+    ]
+    body = "".join(
+        f"<tr><td>{_esc(label)}</td><td class='hl'>{_esc(value)}</td></tr>"
+        for label, value in rows
+    )
+    return (
+        f"<div class='aout'><table>{body}</table></div>"
+        f"<p class='muted'>Quality split: high {q['high']} &middot; medium "
+        f"{q['medium']} &middot; low {q['low']} &middot; none {q['none']}. "
+        "Straight from <span class='mono'>data/acquisition.json</span> + "
+        "<span class='mono'>data/outreach.json</span> - no prospect is named "
+        "here. The system finds and drafts only; a person reviews every "
+        "prospect and posts every reply.</p>"
+    )
+
+
 _CLUSTER_FLOW_LABEL = {
     "discovery": "1 &middot; Discovery", "build": "2 &middot; Build",
-    "marketing": "3 &middot; Marketing", "revenue": "4 &middot; Revenue",
-    "support": "5 &middot; Support",
+    "marketing": "3 &middot; Marketing", "acquisition": "4 &middot; Acquisition",
+    "revenue": "5 &middot; Revenue", "support": "6 &middot; Support",
 }
 
 
 def _cluster_flow(agent_outputs: dict | None) -> str:
-    """All 21 roster agents laid out Discovery -> Build -> Marketing ->
-    Revenue -> Support. Status is real only: "ran" when
-    agent_outputs.json holds a persisted output for that capability,
-    otherwise "human-gated" or "ready". No metrics are invented."""
+    """Every roster agent laid out by cluster (Discovery -> Build ->
+    Marketing -> Acquisition -> Revenue -> Support). Status is real only:
+    "ran" when agent_outputs.json holds a persisted output for that
+    capability, otherwise "human-gated" or "ready". No metrics are
+    invented."""
     outs = agent_outputs if isinstance(agent_outputs, dict) else {}
     bands = ""
     for cluster in roster.CLUSTERS:
@@ -675,8 +730,9 @@ def _cluster_flow(agent_outputs: dict | None) -> str:
             f"<span>{ran}/{len(agents)}</span></div>{rows}</div>"
         )
     return (
-        "<p class='muted'>All 21 agents by cluster. &ldquo;ran&rdquo; means a real "
-        "output is persisted in <span class='mono'>agent_outputs.json</span>; "
+        f"<p class='muted'>All {len(roster.AGENTS)} agents by cluster. "
+        "&ldquo;ran&rdquo; means a real output is persisted in "
+        "<span class='mono'>agent_outputs.json</span>; "
         "human-gated agents produce drafts only.</p>"
         f"<div class='cflow'>{bands}</div>"
     )
@@ -1323,6 +1379,7 @@ def _roi(roi: dict, report: dict, goal: dict | None) -> str:
 _NAV = (
     ("Dashboard", "#top", "operator"),
     ("Agents", "#agents", "generic"),
+    ("Acquisition", "#acquisition", "finder"),
     ("Pipeline", "#pipeline", "finder"),
     ("Outputs", "#agent-outputs", "content"),
     ("Tasks", "#tasks", "planner"),
@@ -1358,6 +1415,7 @@ def render_html(report: dict, generated_at: str, *,
                 revenue_analysis: dict | None = None,
                 agent_outputs: dict | None = None,
                 pipeline: dict | None = None,
+                acquisition: dict | None = None,
                 interactive: bool = False,
                 flash: str | None = None,
                 csrf: str | None = None) -> str:
@@ -1381,11 +1439,13 @@ def render_html(report: dict, generated_at: str, *,
         + "<section id='agents'><h2>Agents</h2>"
         + _agent_map(agent_log or [], spend_entries, goal, session, report,
                      bool(queue), task_log or [])
-        + "<h3>All 21 agents</h3>"
+        + f"<h3>All {len(roster.AGENTS)} agents</h3>"
         + _cluster_flow(agent_outputs)
         + "<h3>Target roster</h3>"
         + _roster_panel()
         + "</section>"
+        + "<section id='acquisition'><h2>Customer acquisition</h2>"
+        + _acquisition_panel(acquisition) + "</section>"
         + "<section id='pipeline'><h2>Agent pipeline</h2>"
         + _agent_pipeline_panel(pipeline) + "</section>"
         + "<section id='agent-outputs'><h2>Agent outputs</h2>"
