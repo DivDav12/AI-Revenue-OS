@@ -8,7 +8,8 @@ Read commands:
                            to get first customers (free sources; --source web optional)
   discover-free            same, but ONLY free keyless sources ($0, no Anthropic)
   top-opportunities        the human-review shortlist, ranked by final_score
-  outreach-brief ID        prepare a human-review outreach draft for one lead (never posts)
+  outreach-brief ID [--draft llm]   human-review outreach draft for one lead;
+                           --draft llm adds a metered, tailored reply draft (never posts)
   autopilot start|status|pause|resume|stop   one orchestrator, EUR 3 pre-sale cap
   revenue-step / revenue-loop / revenue-status   supervisor: one safe non-human
                    action per step (pipeline -> deploy, payment sync, PDF staging),
@@ -202,6 +203,27 @@ def _acq_web_source(data_dir: Path, *, model: str, max_cost: float,
     src = WebSearchSource(client=build_client(), model=model,
                           max_cost_usd=ceiling, cache=cache, refresh=refresh)
     return src, cache
+
+
+def _outreach_drafter(data_dir: Path, *, model: str, max_cost: float,
+                      refresh: bool, lead: dict, checkout_url: str):
+    """Build the opt-in tailored-reply drafter, budget-gated like --score llm."""
+    from .llm_cache import LlmCache
+    from .llm_normalize import build_client
+    from .outreach_llm import OutreachDrafter, estimate_draft_cost_usd
+
+    cache = LlmCache.load(data_dir / "llm_outreach_cache.json")
+    est = estimate_draft_cost_usd(
+        [lead], model, cache=None if refresh else cache, checkout_url=checkout_url)
+    if est > max_cost:
+        raise ValueError(
+            f"estimated outreach-draft cost ${est} exceeds the ${max_cost} "
+            "ceiling; run without --draft llm or raise --max-cost")
+    ceiling = _llm_budget_gate(data_dir, est, max_cost)
+    drafter = OutreachDrafter(
+        client=build_client(), model=model, max_cost_usd=ceiling,
+        checkout_url=checkout_url, cache=cache, refresh=refresh)
+    return drafter, cache
 
 
 def _print_lead_row(d: dict) -> None:
@@ -450,10 +472,21 @@ def _cmd_outreach_brief(args) -> int:
     lead = store.by_id(args.lead_id)
     if lead is None:
         raise ValueError(f"no single lead matches id {args.lead_id!r}")
-    brief = outreach_brief(lead, checkout_url=args.checkout_url or DEFAULT_CHECKOUT_URL)
+    checkout_url = args.checkout_url or DEFAULT_CHECKOUT_URL
+
+    drafter = cache = None
+    if getattr(args, "draft", "template") == "llm":
+        drafter, cache = _outreach_drafter(
+            data_dir, model=args.model, max_cost=args.max_cost,
+            refresh=args.refresh, lead=lead, checkout_url=checkout_url)
+
+    brief = outreach_brief(lead, checkout_url=checkout_url, drafter=drafter)
     briefs = OutreachStore.load(data_dir / "outreach.json")
     briefs.put(brief)
     briefs.save()
+    if drafter is not None:
+        cache.save()
+        _record_llm_spend(data_dir, "acquisition", drafter)
 
     if args.json:
         print(json.dumps(brief, indent=2))
@@ -474,6 +507,24 @@ def _cmd_outreach_brief(args) -> int:
     print(f"\n  {b['help_first']}")
     print(f"\n  OPTIONAL CTA (last line, after you've actually helped):\n    {b['optional_cta']}")
     print(f"\n  COMMUNITY RULES: {b['promo_note']}")
+    dr = b.get("draft_reply")
+    if isinstance(dr, dict) and dr.get("error"):
+        print(f"\n  TAILORED DRAFT: (llm draft failed: {dr['error']})")
+    elif isinstance(dr, dict):
+        print("\n  TAILORED DRAFT (llm - edit into your own voice before posting):")
+        for line in dr.get("reply_draft", "").splitlines() or [""]:
+            print(f"    {line}")
+        if dr.get("help_summary"):
+            print(f"\n    core advice: {dr['help_summary']}")
+        print(f"    soft CTA included: {dr.get('cta_included')}")
+        if dr.get("promise_language_flagged"):
+            print(f"    !! CHECK - possible promise language: "
+                  f"{dr['promise_language_flagged']}")
+        for c in dr.get("caveats_for_the_human", []):
+            print(f"    - {c}")
+    if drafter is not None:
+        print(f"\n  llm draft cost: ${round(drafter.meter.cost_usd, 4)} "
+              f"({drafter.cache_hits} hit / {drafter.cache_misses} miss)")
     print(f"\n  {b['human_approval']}")
     print(f"  {b['no_fabrication_note']}")
     return 0
@@ -1584,6 +1635,14 @@ def build_parser() -> argparse.ArgumentParser:
     obrief.add_argument("lead_id", help="lead id (or a unique prefix)")
     obrief.add_argument("--checkout-url", default=None,
                         help="checkout URL for the tracked link (default: the live one)")
+    obrief.add_argument("--draft", choices=("template", "llm"), default="template",
+                        help="'llm' adds one metered Claude call that drafts a "
+                             "tailored reply (paid, budget-gated; still a draft)")
+    obrief.add_argument("--model", default="claude-sonnet-5")
+    obrief.add_argument("--max-cost", type=float, default=0.10,
+                        help="USD ceiling for --draft llm (default 0.10)")
+    obrief.add_argument("--refresh", action="store_true",
+                        help="ignore the cached draft and re-call the API")
     obrief.add_argument("--json", action="store_true")
     obrief.set_defaults(func=_cmd_outreach_brief)
 

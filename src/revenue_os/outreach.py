@@ -89,12 +89,20 @@ def tracked_checkout_link(checkout_url: str, lead_id: str) -> str:
     return f"{checkout_url}{sep}lead={lid}"
 
 
-def outreach_brief(lead: dict, *, checkout_url: str = DEFAULT_CHECKOUT_URL) -> dict:
-    """A human-review draft. Contains no invented facts about the lead."""
+def outreach_brief(lead: dict, *, checkout_url: str = DEFAULT_CHECKOUT_URL,
+                   drafter=None) -> dict:
+    """A human-review draft. Contains no invented facts about the lead.
+
+    `drafter` (optional): a callable (lead dict) -> tailored reply-draft
+    dict. When given, its result is attached as `draft_reply`; the
+    deterministic angle/points stay as the fallback. A drafter failure is
+    recorded, never raised - the brief is still useful without it. The
+    drafter must never post; it only writes a draft for a person.
+    """
     lid = str(lead.get("lead_id") or "")
     angle, points = _angle_for(lead)
     link = tracked_checkout_link(checkout_url, lid)
-    return {
+    brief = {
         "lead_id": lid,
         "url": lead.get("url", ""),
         "platform": lead.get("platform", ""),
@@ -124,6 +132,12 @@ def outreach_brief(lead: dict, *, checkout_url: str = DEFAULT_CHECKOUT_URL) -> d
                                "business beyond their own words above.",
         "generated_at": now_iso(),
     }
+    if drafter is not None:
+        try:
+            brief["draft_reply"] = drafter(lead)
+        except Exception as exc:  # a drafter failure never breaks the brief
+            brief["draft_reply"] = {"error": f"llm draft failed: {exc}"}
+    return brief
 
 
 class OutreachStore:
