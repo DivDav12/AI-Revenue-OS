@@ -255,6 +255,183 @@ h3{font-size:.58rem;letter-spacing:.15em;text-transform:uppercase;color:var(--di
 .fsm-ok{color:var(--good)}
 .fsm-warn{color:var(--warn)}
 .fsm-off{color:var(--dim)}
+
+/* ---------------------------------------------------------------- */
+/* command core - the objective, the real lifecycle rail, blockers   */
+/* ---------------------------------------------------------------- */
+#command{background:linear-gradient(180deg,var(--surface2),var(--surface));
+  border-color:var(--edge-hi);box-shadow:0 0 46px -22px var(--glow)}
+.core{display:grid;grid-template-columns:minmax(240px,.9fr) minmax(0,1.6fr);gap:1rem}
+@media (max-width:980px){.core{grid-template-columns:1fr}}
+.obj{position:relative;overflow:hidden;border-radius:10px;padding:.85rem .95rem;
+  border:1px solid color-mix(in srgb,var(--glow) 42%,var(--edge));
+  background:linear-gradient(150deg,color-mix(in srgb,var(--glow) 13%,transparent),
+    transparent 62%),var(--surface2);
+  box-shadow:inset 0 0 44px -20px var(--glow)}
+.obj::after{content:"";position:absolute;top:0;left:0;right:0;height:2px;
+  background:linear-gradient(90deg,transparent,var(--glow),transparent);
+  background-size:220% 100%;opacity:.5;animation:scan 4.2s linear infinite}
+.obj .k{font-size:.58rem;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);
+  font-weight:700}
+.obj .prime{font-size:1.22rem;font-weight:800;letter-spacing:.05em;color:var(--glow);
+  margin:.15rem 0 .1rem;text-shadow:0 0 18px color-mix(in srgb,var(--glow) 55%,transparent)}
+.obj .second{font-size:.72rem;color:var(--text);line-height:1.5}
+.obj .facts{margin-top:.6rem;border-top:1px solid var(--edge);padding-top:.5rem;
+  display:flex;flex-direction:column;gap:.18rem;font-size:.74rem}
+.obj .facts .frow{display:flex;justify-content:space-between;gap:.7rem;align-items:baseline}
+.obj .facts .fk{color:var(--dim);flex:none}
+.obj .facts .fv{text-align:right;color:var(--dim);min-width:0}
+.obj .facts b{color:var(--text);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.obj .facts b.zero{color:var(--warn)}
+
+.rail7{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:.35rem;
+  align-items:stretch}
+@media (max-width:760px){.rail7{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.stage{position:relative;border-radius:9px;padding:.55rem .4rem .5rem;text-align:center;
+  border:1px solid var(--edge);background:var(--surface2);overflow:hidden}
+.stage .sn{font-size:.53rem;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);
+  font-weight:700;line-height:1.25}
+.stage .sv{font-size:1.15rem;font-weight:700;margin-top:.2rem;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--dim)}
+.stage.has{border-color:color-mix(in srgb,var(--glow) 48%,var(--edge));
+  box-shadow:0 0 22px -10px var(--glow),inset 0 0 26px -18px var(--glow)}
+.stage.has .sv{color:var(--glow)}
+.stage.gate::after{content:"HUMAN";position:absolute;left:0;right:0;bottom:0;
+  font-size:.44rem;letter-spacing:.1em;font-weight:700;color:var(--warn);
+  background:color-mix(in srgb,var(--warn) 16%,transparent);padding:.06rem 0}
+.stage.term{border-style:dashed}
+.stage.term.has .sv{color:var(--bad)}
+.railcap{font-size:.66rem;color:var(--dim);margin:.5rem 0 0}
+
+.blockers{margin-top:.85rem;border-top:1px solid var(--edge);padding-top:.7rem}
+.blk{display:flex;gap:.6rem;align-items:flex-start;padding:.42rem .6rem;margin:.3rem 0;
+  border-radius:8px;border:1px solid var(--edge);border-left:3px solid var(--dim);
+  background:var(--surface2)}
+.blk.sev-critical{border-left-color:var(--bad);
+  background:linear-gradient(90deg,color-mix(in srgb,var(--bad) 12%,transparent),var(--surface2))}
+.blk.sev-warning{border-left-color:var(--warn);
+  background:linear-gradient(90deg,color-mix(in srgb,var(--warn) 11%,transparent),var(--surface2))}
+.blk .bsev{font-size:.53rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
+  padding:.12rem .4rem;border-radius:12px;border:1px solid currentColor;flex:none;
+  margin-top:.1rem}
+.blk.sev-critical .bsev{color:var(--bad)}
+.blk.sev-warning .bsev{color:var(--warn)}
+.blk.sev-info .bsev{color:var(--dim)}
+.blk .bt{display:block;font-size:.8rem;font-weight:600;line-height:1.35}
+.blk .bd{display:block;font-size:.72rem;color:var(--dim);margin-top:.12rem}
+.blk .barea{font-size:.58rem;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);
+  margin-left:auto;flex:none}
+
+/* ---------------------------------------------------------------- */
+/* the 24-agent fleet grid (6 clusters)                              */
+/* ---------------------------------------------------------------- */
+.cflow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.7rem;
+  grid-auto-flow:dense;align-items:start;overflow:visible;margin:.2rem 0 1.2rem;
+  padding-bottom:0}
+@media (max-width:1240px){.cflow{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:780px){.cflow{grid-template-columns:1fr}}
+.cband{min-width:0;border:1px solid var(--edge);border-radius:11px;
+  background:linear-gradient(180deg,var(--surface2),var(--surface));padding:.55rem;
+  box-shadow:inset 0 0 40px -26px var(--glow)}
+.cband.wide{grid-column:span 2}
+@media (max-width:780px){.cband.wide{grid-column:span 1}}
+.cband-h{font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.09em;
+  color:var(--dim);margin-bottom:.45rem;display:flex;justify-content:space-between;
+  align-items:center;gap:.5rem;padding:.1rem .15rem}
+.cband-h b{color:var(--glow);font-weight:700}
+.cband-cells{display:grid;grid-template-columns:1fr;gap:.45rem}
+.cband.wide .cband-cells{grid-template-columns:repeat(2,minmax(0,1fr))}
+@media (max-width:780px){.cband.wide .cband-cells{grid-template-columns:1fr}}
+
+.cnode{display:block;position:relative;overflow:hidden;min-width:0;
+  padding:.5rem .55rem .45rem;border-radius:9px;margin:0;
+  border:1px solid var(--edge);
+  background:linear-gradient(165deg,var(--surface),var(--bg2))}
+.cnode::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;
+  background:var(--acc);opacity:.7}
+.cnode.fs-running{border-color:color-mix(in srgb,var(--glow) 50%,var(--edge));
+  box-shadow:0 0 24px -11px var(--glow)}
+.cnode.fs-running::after{content:"";position:absolute;top:0;left:0;right:0;height:2px;
+  background:linear-gradient(90deg,transparent,var(--acc),transparent);
+  background-size:220% 100%;animation:scan 2.6s linear infinite}
+.cnode.fs-waiting{border-color:color-mix(in srgb,var(--warn) 52%,var(--edge));
+  box-shadow:0 0 24px -12px var(--warn)}
+.cnode.fs-blocked{border-color:color-mix(in srgb,var(--bad) 52%,var(--edge));
+  box-shadow:0 0 24px -12px var(--bad)}
+.cnode.fs-disabled,.cnode.fs-planned{opacity:.52}
+.cnode-h{display:flex;align-items:center;gap:.45rem;min-width:0}
+.cnode .avatar{width:24px;height:24px;border-radius:7px;box-shadow:none}
+.cnode .avatar svg{width:13px;height:13px}
+.cnode .cn{font-size:.72rem;font-weight:600;line-height:1.2;display:block;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cnode .cr{font-size:.55rem;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);
+  display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cnode .ct{margin-left:auto;flex:none;font-size:.5rem;font-weight:700;letter-spacing:.05em;
+  padding:.1rem .3rem;border-radius:10px;border:1px solid var(--edge-hi);color:var(--dim);
+  white-space:nowrap}
+.cnode.ran .ct{color:var(--good);border-color:color-mix(in srgb,var(--good) 45%,var(--edge))}
+.cnode.gated .ct{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 52%,var(--edge));
+  background:color-mix(in srgb,var(--warn) 14%,transparent)}
+.cnode-st{margin-top:.4rem}
+.cnode-st .pill{font-size:.55rem;padding:.14rem .42rem}
+.cnode-task{font-size:.68rem;color:var(--text);margin-top:.32rem;line-height:1.35;
+  min-height:1.7rem;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;
+  -webkit-box-orient:vertical}
+.cnode-task.none{color:var(--dim)}
+.cnode-foot{display:flex;flex-wrap:wrap;gap:.1rem .6rem;font-size:.6rem;color:var(--dim);
+  border-top:1px solid var(--edge);padding-top:.32rem;margin-top:.35rem}
+.cnode-foot b{color:var(--text);font-weight:600;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.cnode-prog{margin-top:.32rem}
+.st-running{color:var(--glow);border-color:color-mix(in srgb,var(--glow) 50%,var(--edge))}
+.st-running .dot{animation:pulse 1.6s ease-in-out infinite}
+.st-human{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 42%,var(--edge))}
+.st-blocked{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 50%,var(--edge))}
+.st-planned{color:var(--dim);opacity:.7}
+
+/* acquisition chain: scout -> scorer -> drafter (human gate) */
+.chain{display:flex;align-items:stretch;gap:.4rem;flex-wrap:wrap;margin:.2rem 0 .9rem}
+.chain-step{flex:1 1 200px;min-width:0;border-radius:10px;padding:.55rem .65rem;
+  border:1px solid var(--edge);background:var(--surface2);position:relative}
+.chain-step.gate{border-color:color-mix(in srgb,var(--warn) 55%,var(--edge));
+  box-shadow:0 0 26px -12px var(--warn);
+  background:linear-gradient(160deg,color-mix(in srgb,var(--warn) 12%,transparent),var(--surface2))}
+.chain-step .csn{font-size:.7rem;font-weight:700;display:flex;align-items:center;gap:.4rem}
+.chain-step .csr{font-size:.56rem;letter-spacing:.07em;text-transform:uppercase;color:var(--dim);
+  margin:.1rem 0 .35rem}
+.chain-step .csv{font-size:.74rem;color:var(--text)}
+.chain-step .csv b{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.chain-arrow{align-self:center;color:var(--edge-hi);font-size:1rem;flex:none;padding:0 .1rem}
+.gatebar{margin-top:.5rem;border-radius:8px;padding:.4rem .6rem;font-size:.72rem;
+  border:1px solid color-mix(in srgb,var(--warn) 50%,var(--edge));color:var(--warn);
+  background:color-mix(in srgb,var(--warn) 10%,transparent)}
+.gatebar b{color:var(--warn)}
+
+/* orchestration band: map beside the real coordination readout */
+.oband{display:grid;grid-template-columns:minmax(0,1fr) 232px;gap:1.1rem;
+  align-items:start}
+@media (max-width:1000px){.oband{grid-template-columns:1fr}}
+.oband .amap{max-width:none;margin:0 0 .6rem}
+/* compact map cards so the fixed logical positions never collide */
+.node{width:176px}
+.node .acard{padding:.48rem .55rem}
+.node .acard .top{gap:.45rem;margin-bottom:.35rem}
+.node .avatar{width:27px;height:27px;border-radius:8px}
+.node .avatar svg{width:15px;height:15px}
+.node .acard .name{font-size:.72rem;line-height:1.2;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
+.node .acard .role{font-size:.5rem}
+.node .acard .task{font-size:.6rem;margin:.1rem 0 .26rem;min-height:0;line-height:1.3}
+.node .acard .pill{font-size:.48rem;padding:.08rem .34rem}
+.node .acard .meta{font-size:.53rem;gap:.02rem .45rem;padding-top:.24rem;margin-top:.26rem;
+  line-height:1.3}
+.node .taskchip,.taskchip{font-size:.55rem}
+.oread{display:flex;flex-direction:column;gap:.3rem}
+.oread .orow{display:flex;justify-content:space-between;gap:.6rem;font-size:.74rem;
+  padding:.28rem .1rem;border-bottom:1px solid var(--edge)}
+.oread .orow b{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  color:var(--text)}
+.oread .orow span{color:var(--dim)}
 """.strip()
 
 # ---------------------------------------------------------------------------
@@ -380,7 +557,9 @@ _MAP_POS = {
     "discovery":   (400, 70),
     "researcher":  (150, 232),
     "evaluator":   (650, 232),
-    "trendhunter": (150, 400),
+    # kept clear of the decision node at (120, 368) so the two cards never
+    # overlap; only `finder` (650, 400) is pinned to this row.
+    "trendhunter": (150, 470),
     "finder":      (650, 400),
     "competitor":  (650, 560),
     "copywriter":  (150, 560),
@@ -965,44 +1144,509 @@ _CLUSTER_FLOW_LABEL = {
     "revenue": "5 &middot; Revenue", "support": "6 &middot; Support",
 }
 
+# ---------------------------------------------------------------------------
+# per-agent fleet state - every field traced to a file on disk
+# ---------------------------------------------------------------------------
 
-def _cluster_flow(agent_outputs: dict | None) -> str:
-    """Every roster agent laid out by cluster (Discovery -> Build ->
-    Marketing -> Acquisition -> Revenue -> Support). Status is real only:
-    "ran" when agent_outputs.json holds a persisted output for that
-    capability, otherwise "human-gated" or "ready". No metrics are
-    invented."""
+# roster id -> other names the same agent is logged under in task_log.json
+_TASK_ALIASES = {"market_scanner": ("discovery",)}
+
+# roster id -> boolean Goal field that switches the agent on (roster.py
+# carries the string mode knobs; these three are plain opt-in booleans)
+_BOOL_FLAG = {
+    "trend_hunter": "trend_hunter",
+    "revenue_analyst": "revenue_analyst",
+    "content_creator": "content_creator",
+}
+
+_FLEET_TEXT = {
+    "running": "RUNNING", "waiting": "WAITING", "idle": "IDLE",
+    "disabled": "DISABLED", "human": "HUMAN-GATED",
+    "blocked": "BLOCKED (COST)", "planned": "PLANNED",
+}
+
+
+def _fpill(state: str) -> str:
+    return (f"<span class='pill st-{state}'><span class='dot'></span>"
+            f"{_FLEET_TEXT.get(state, state.upper())}</span>")
+
+
+def _ts_short(ts: object) -> str:
+    return str(ts or "")[:16].replace("T", " ")
+
+
+def _real_progress(output: object) -> int | None:
+    """A progress percentage ONLY when an agent actually persisted one.
+    Nothing is derived, estimated, or animated - no field, no bar."""
+    if not isinstance(output, dict):
+        return None
+    value = output.get("progress_pct", output.get("progress"))
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return max(0, min(100, int(round(float(value)))))
+
+
+def _fleet_states(*, goal=None, session=None, task_log=None, agent_outputs=None,
+                  spend_entries=None, pipeline=None,
+                  acquisition=None) -> dict[str, dict]:
+    """Real runtime state for every roster agent, keyed by roster id.
+
+    Sources, in order of authority: task_log.json (dispatched runs and
+    their lineage), agent_outputs.json (last persisted output), the
+    running pipeline.json, llm_spend.json, the acquisition/outreach
+    stores, and the operator Goal. An agent with no record anywhere is
+    IDLE with "no activity recorded" - it is never animated into looking
+    busy, and it never gets a progress bar it did not report itself.
+    """
+    goal = goal or {}
+    session_running = bool(session) and not session.get("ended_at")
+
+    by_agent: dict[str, list[dict]] = {}
+    for entry in task_log or []:
+        by_agent.setdefault(str(entry.get("agent") or ""), []).append(entry)
+
     outs = agent_outputs if isinstance(agent_outputs, dict) else {}
+
+    by_activity: dict[str, list[dict]] = {}
+    for entry in spend_entries or []:
+        by_activity.setdefault(entry.get("activity"), []).append(entry)
+
+    pipe = pipeline if isinstance(pipeline, dict) else {}
+    steps = pipe.get("steps") if isinstance(pipe.get("steps"), dict) else {}
+    gate = pipe.get("human_gate") if isinstance(pipe.get("human_gate"), dict) else {}
+    gate_text = " ".join(
+        str(x) for x in (list(gate.get("human_gated_next") or [])
+                         + list(gate.get("blocking_issues") or []))
+    )
+
+    acq = acquisition if isinstance(acquisition, dict) else {}
+    briefs = [b for b in (acq.get("briefs") or []) if isinstance(b, dict)]
+    queue = [q for q in (acq.get("queue") or []) if isinstance(q, dict)]
+    leads = [d for d in (acq.get("leads") or []) if isinstance(d, dict)]
+    awaiting_post = sum(1 for b in briefs if b.get("status") in ("draft", "approved"))
+    surfaced = sum(1 for q in queue if q.get("stage") == "surfaced")
+
+    states: dict[str, dict] = {}
+    for spec in roster.AGENTS:
+        tasks = list(by_agent.get(spec.id, []))
+        for alias in _TASK_ALIASES.get(spec.id, ()):
+            tasks += by_agent.get(alias, [])
+        tasks.sort(key=lambda e: str(e.get("ts", "")))
+        runs = len(tasks)
+
+        out = outs.get(spec.capability)
+        out = out if isinstance(out, dict) else None
+
+        entries = by_activity.get(spec.spend_activity, []) if spec.spend_activity else []
+        api_calls = sum(int(e.get("api_calls", 0)) for e in entries)
+        cost = round(sum(float(e.get("cost_usd", 0.0)) for e in entries), 4)
+        ceiling = bool(entries and entries[-1].get("ceiling_hit"))
+
+        # --- configured mode (a real Goal field, or None if not configurable)
+        mode = None
+        off = False
+        if spec.mode_field:
+            mode = goal.get(spec.mode_field)
+            off = mode is not None and mode == spec.off_value
+        elif spec.id in _BOOL_FLAG and _BOOL_FLAG[spec.id] in goal:
+            enabled = bool(goal.get(_BOOL_FLAG[spec.id]))
+            mode = "on" if enabled else "off"
+            off = not enabled
+
+        step = steps.get(spec.capability) if isinstance(steps.get(spec.capability), dict) else {}
+        step_status = step.get("status")
+
+        # --- what a human currently owes this agent (only from real records)
+        waiting = ""
+        if spec.id == "outreach_drafter" and awaiting_post:
+            waiting = (f"{awaiting_post} drafted reply/replies awaiting your review "
+                       "and your own post")
+        elif spec.gate == "human" and gate_text and spec.id in gate_text:
+            waiting = str(gate.get("reason") or "pipeline stopped at this human gate")
+        elif out is not None and out.get("human_gate_required") is True:
+            waiting = "last output needs a human decision before anything happens"
+        elif step_status == "blocked":
+            waiting = str(gate.get("reason") or "pipeline step blocked")
+
+        # --- status: real records first, configuration second
+        if spec.status != "live":
+            state = "planned"
+        elif ceiling:
+            state = "blocked"
+        elif step_status == "running" or (session_running and tasks):
+            state = "running"
+        elif off:
+            state = "disabled"
+        elif waiting:
+            state = "waiting"
+        elif spec.gate == "human":
+            state = "human"
+        else:
+            state = "idle"
+
+        # --- current task (only while something is genuinely in flight)
+        task = ""
+        if step_status == "running" and pipe.get("candidate"):
+            task = f"pipeline step for {_esc(pipe['candidate'])}"
+        elif state == "running" and tasks:
+            task = _esc(tasks[-1].get("objective") or tasks[-1].get("capability") or "")
+
+        # --- last real activity
+        last = ""
+        if tasks:
+            newest = tasks[-1]
+            detail = _summary_text(newest.get("summary") or {}) or newest.get("error") or ""
+            last = (f"{_ts_short(newest.get('ts'))} &middot; "
+                    f"{_esc(newest.get('capability') or '')}"
+                    + (f" &mdash; {_esc(_clip(detail, 60))}" if detail else ""))
+        elif out is not None:
+            last = (f"{_ts_short(out.get('ts'))} &middot; "
+                    f"{_esc(_clip(out.get('objective') or 'output persisted', 60))}")
+        elif entries:
+            last = f"{_ts_short(entries[-1].get('ts'))} &middot; metered run, 0 output"
+
+        # --- extra real counters worth surfacing per agent
+        extra: list[tuple[str, str]] = []
+        if spec.id == "prospect_scout" and leads:
+            extra.append(("leads", str(len(leads))))
+        if spec.id == "opportunity_scorer" and queue:
+            extra.append(("queued", str(len(queue))))
+        if spec.id == "outreach_drafter" and briefs:
+            extra.append(("briefs", str(len(briefs))))
+        if api_calls:
+            extra.append(("api", str(api_calls)))
+            extra.append(("cost", f"${_num(cost)}"))
+
+        states[spec.id] = {
+            "spec": spec,
+            "state": state,
+            "runs": runs,
+            "task": task,
+            "last": last,
+            "waiting": waiting,
+            "mode": mode,
+            "ran": out is not None,
+            "output_ts": str(out.get("ts", "")) if out else "",
+            "progress": _real_progress(out.get("output") if out else None),
+            "extra": extra,
+            "surfaced": surfaced,
+        }
+    return states
+
+
+def _fleet_cell(st: dict) -> str:
+    spec = st["spec"]
+    acc = _ACCENT.get(spec.node, _ACCENT["generic"])
+    ran = " ran" if st["ran"] else ""
+    gated = " gated" if spec.gate == "human" else ""
+    if st["ran"]:
+        tag = "ran " + st["output_ts"][:10]
+    elif spec.gate == "human":
+        tag = "human-gated"
+    elif spec.status != "live":
+        tag = "planned"
+    else:
+        tag = "ready"
+
+    if st["task"]:
+        body, body_cls = st["task"], ""
+    elif st["waiting"]:
+        body, body_cls = _esc(st["waiting"]), ""
+    elif st["last"]:
+        body, body_cls = st["last"], ""
+    else:
+        body, body_cls = "No activity recorded", " none"
+
+    foot = [("runs", str(st["runs"]))]
+    if st["mode"] is not None:
+        foot.append(("mode", _esc(st["mode"])))
+    foot += [(k, v) for k, v in st["extra"]]
+    foot_html = "".join(f"<span>{k} <b>{v}</b></span>" for k, v in foot)
+
+    prog = ""
+    if st["progress"] is not None:
+        prog = (f"<div class='cnode-prog'><div class='bar-wrap'>"
+                f"<div class='bar' style='width:{st['progress']}%'></div></div></div>")
+
+    return (
+        f"<div class='cnode{ran}{gated} fs-{st['state']}' style=\"--acc:{acc}\">"
+        f"<div class='cnode-h'>{_avatar(spec.node)}"
+        f"<span style='min-width:0'><span class='cn'>{_esc(spec.name)}</span>"
+        f"<span class='cr'>{_esc(spec.cluster)} &middot; {_esc(spec.role)}</span></span>"
+        f"<span class='ct'>{_esc(tag)}</span></div>"
+        f"<div class='cnode-st'>{_fpill(st['state'])}</div>"
+        f"<div class='cnode-task{body_cls}'>{body}</div>"
+        f"{prog}"
+        f"<div class='cnode-foot'>{foot_html}</div>"
+        "</div>"
+    )
+
+
+def _cluster_flow(agent_outputs: dict | None, states: dict | None = None) -> str:
+    """The 24-agent fleet, laid out as six cluster blocks (Discovery ->
+    Build -> Marketing -> Acquisition -> Revenue -> Support).
+
+    Every cell carries the agent's name, its cluster, its real status,
+    its real recorded run count, its latest real activity and its current
+    task if one exists. Nothing animates an idle agent into looking busy,
+    and a progress bar appears only where the agent itself persisted a
+    progress value.
+    """
+    outs = agent_outputs if isinstance(agent_outputs, dict) else {}
+    states = states or _fleet_states(agent_outputs=outs)
     bands = ""
     for cluster in roster.CLUSTERS:
         agents = [a for a in roster.AGENTS if a.cluster == cluster]
         ran = sum(1 for a in agents if a.capability in outs)
-        rows = ""
-        for a in agents:
-            entry = outs.get(a.capability)
-            if isinstance(entry, dict):
-                cls = "ran"
-                tag = "ran " + str(entry.get("ts", ""))[:10]
-            elif a.gate == "human":
-                cls, tag = "gated", "human-gated"
-            else:
-                cls, tag = "", "ready"
-            rows += (
-                f"<div class='cnode {cls}'>{_avatar(a.node)}"
-                f"<span class='cn'>{_esc(a.name)}</span>"
-                f"<span class='ct'>{_esc(tag)}</span></div>"
-            )
+        active = sum(1 for a in agents
+                     if states.get(a.id, {}).get("state") == "running")
+        gates = sum(1 for a in agents if a.gate == "human")
+        cells = "".join(_fleet_cell(states[a.id]) for a in agents if a.id in states)
+        wide = " wide" if len(agents) > 4 else ""
+        gate_chip = (f" &middot; <span class='warn'>{gates} gated</span>"
+                     if gates else "")
         bands += (
-            f"<div class='cband'><div class='cband-h'>"
-            f"<span>{_CLUSTER_FLOW_LABEL[cluster]}</span>"
-            f"<span>{ran}/{len(agents)}</span></div>{rows}</div>"
+            f"<div class='cband{wide}'><div class='cband-h'>"
+            f"<span>{_CLUSTER_FLOW_LABEL[cluster]}{gate_chip}</span>"
+            f"<span><b>{active}</b> running &middot; {ran}/{len(agents)} ran</span>"
+            f"</div><div class='cband-cells'>{cells}</div></div>"
         )
     return (
-        f"<p class='muted'>All {len(roster.AGENTS)} agents by cluster. "
-        "&ldquo;ran&rdquo; means a real output is persisted in "
-        "<span class='mono'>agent_outputs.json</span>; "
-        "human-gated agents produce drafts only.</p>"
+        f"<p class='muted'>All {len(roster.AGENTS)} agents by cluster. Status, run "
+        "count and last activity come from "
+        "<span class='mono'>task_log.json</span>, "
+        "<span class='mono'>agent_outputs.json</span>, "
+        "<span class='mono'>pipeline.json</span> and the operator goal. "
+        "&ldquo;ran&rdquo; means a real output is persisted; human-gated agents "
+        "produce drafts only. An agent with no record reads IDLE / no activity.</p>"
         f"<div class='cflow'>{bands}</div>"
+    )
+
+
+# ---------------------------------------------------------------------------
+# command core: the objective, the real lifecycle rail, the open blockers
+# ---------------------------------------------------------------------------
+
+PRIMARY_OBJECTIVE = "FIRST REAL CUSTOMER"
+SECONDARY_OBJECTIVE = ("Continuous discovery &rarr; validation &rarr; offer &rarr; "
+                       "acquisition &rarr; payment &rarr; fulfilment &rarr; revenue")
+
+# lifecycle status -> (rail label, the transition out of it is a human gate)
+_STAGE_LABEL = (
+    ("discovered", "Discovery", False),
+    ("shortlisted", "Shortlist", True),
+    ("approved", "Approve", False),
+    ("investigating", "Investigate", True),
+    ("validated", "Validate", True),
+    ("launched", "Launch", True),
+    ("earning", "Earning", False),
+    ("rejected", "Rejected", False),
+)
+
+
+def _no_scheme(text: object) -> str:
+    """Human-entered text with any URL scheme removed, so operator notes
+    can never introduce an external reference into the page."""
+    return _esc(str(text or "").replace("://", " "))
+
+
+def _lifecycle_rail(status_counts: dict) -> str:
+    cells = ""
+    for status, label, gated in _STAGE_LABEL:
+        n = int(status_counts.get(status, 0) or 0)
+        cls = "stage"
+        if status == "rejected":
+            cls += " term"
+        if n:
+            cls += " has"
+        if gated:
+            cls += " gate"
+        cells += (f"<div class='{cls}'><div class='sn'>{_esc(label)}</div>"
+                  f"<div class='sv'>{_num(n)}</div></div>")
+    return (
+        f"<div class='rail7'>{cells}</div>"
+        "<p class='railcap'>Real candidate counts from the candidate store. "
+        "Stages marked HUMAN only advance when a person acts &mdash; the system "
+        "never approves, launches, or books a payment on its own.</p>"
+    )
+
+
+def _blockers_panel(blockers: list[dict] | None) -> str:
+    """Open blockers a person recorded in data/blockers.json. This never
+    detects a blocker by itself: an empty register says so rather than
+    claiming all clear."""
+    items = [b for b in (blockers or []) if isinstance(b, dict)]
+    open_items = [b for b in items if b.get("status", "open") == "open"]
+    if not items:
+        return (
+            "<div class='blockers'><p class='muted'>No blocker register &mdash; "
+            "<span class='mono'>data/blockers.json</span> is absent or empty. "
+            "This panel only shows what a person recorded; it does not detect "
+            "blockers, so an empty register is not an all-clear.</p></div>"
+        )
+    if not open_items:
+        return (
+            f"<div class='blockers'><p class='muted'>No open blockers "
+            f"({len(items)} recorded, all resolved) in "
+            "<span class='mono'>data/blockers.json</span>.</p></div>"
+        )
+    rows = ""
+    for b in open_items:
+        sev = str(b.get("severity", "warning"))
+        detail = _no_scheme(b.get("detail", ""))
+        area = _esc(b.get("area", ""))
+        rows += (
+            f"<div class='blk sev-{_esc(sev)}'>"
+            f"<span class='bsev'>{_esc(sev)}</span>"
+            f"<span style='min-width:0'><span class='bt'>{_no_scheme(b.get('title'))}</span>"
+            + (f"<span class='bd'>{detail}</span>" if detail else "")
+            + "</span>"
+            + (f"<span class='barea'>{area}</span>" if area else "")
+            + "</div>"
+        )
+    return (
+        f"<div class='blockers'><p class='muted'>{len(open_items)} open blocker(s), "
+        "recorded by a person in <span class='mono'>data/blockers.json</span> "
+        "(<span class='mono'>revenue_os blockers</span>). These are not "
+        "auto-detected and are not hidden.</p>"
+        f"{rows}</div>"
+    )
+
+
+def _command_core(report: dict, goal: dict | None, acquisition: dict | None,
+                  blockers: list[dict] | None) -> str:
+    goal = goal or {}
+    acq = acquisition if isinstance(acquisition, dict) else {}
+    r = acq.get("readiness") if isinstance(acq.get("readiness"), dict) else {}
+    totals = report.get("totals") or {}
+    spend = report.get("llm_spend") or {}
+
+    revenue = totals.get("grand_revenue", 0) or 0
+    currency = _esc(r.get("offer_currency") or "EUR")
+    rev_cls = " class='zero'" if not revenue else ""
+    facts = [
+        ("revenue booked", f"<b{rev_cls}>{_num(revenue)} {currency}</b>"),
+    ]
+    if r.get("candidate") and r.get("offer_price"):
+        offer_name = ""
+        for row in report.get("candidates", []):
+            if row.get("name") == r.get("candidate"):
+                offer_name = (row.get("offer") or {}).get("what_is_sold", "")
+                break
+        label = offer_name or r.get("candidate")
+        facts.append(("offer", f"<b>{_esc(_clip(label, 34))} &middot; "
+                               f"{_num(r.get('offer_price'))} {currency}</b>"))
+    else:
+        facts.append(("offer", "<b class='zero'>none launched</b>"))
+    cost = spend.get("total_cost_usd", 0.0) or 0.0
+    facts.append(("llm spend", f"<b>${_num(cost)}</b> over "
+                               f"{_num(spend.get('total_api_calls', 0))} api call(s)"))
+    queue = [q for q in (acq.get("queue") or []) if isinstance(q, dict)]
+    facts.append(("prospects awaiting you", f"<b>{_num(len(queue))}</b>"))
+    facts.append(("candidates awaiting you", f"<b>{_num(len(report['action_queue']))}</b>"))
+
+    fact_html = "".join(
+        f"<span class='frow'><span class='fk'>{_esc(k)}</span>"
+        f"<span class='fv'>{v}</span></span>"
+        for k, v in facts
+    )
+    return (
+        "<div class='core'>"
+        "<div class='obj'>"
+        "<div class='k'>Primary objective</div>"
+        f"<div class='prime'>{PRIMARY_OBJECTIVE}</div>"
+        f"<div class='k' style='margin-top:.5rem'>Secondary objective</div>"
+        f"<div class='second'>{SECONDARY_OBJECTIVE}</div>"
+        f"<div class='facts'>{fact_html}</div>"
+        "</div>"
+        f"<div>{_lifecycle_rail(report['status_counts'])}"
+        f"{_blockers_panel(blockers)}</div>"
+        "</div>"
+    )
+
+
+# ---------------------------------------------------------------------------
+# acquisition chain: Prospect Scout -> Opportunity Scorer -> Outreach Drafter
+# ---------------------------------------------------------------------------
+
+def _acquisition_chain(acquisition: dict | None, states: dict | None) -> str:
+    """The Phase 2.3 acquisition cluster as the chain it really is. Every
+    number is a count from acquisition.json / outreach.json; the final
+    step is human-gated and the system never posts, DMs, or emails."""
+    acq = acquisition if isinstance(acquisition, dict) else {}
+    states = states or {}
+    leads = [d for d in (acq.get("leads") or []) if isinstance(d, dict)]
+    briefs = [b for b in (acq.get("briefs") or []) if isinstance(b, dict)]
+    queue = [q for q in (acq.get("queue") or []) if isinstance(q, dict)]
+    qualified = sum(1 for d in leads
+                    if d.get("prospect_quality") in ("high", "medium")
+                    and d.get("human_review_status") != "rejected")
+    awaiting_post = sum(1 for b in briefs if b.get("status") in ("draft", "approved"))
+    posted = sum(1 for b in briefs if b.get("status") == "posted")
+
+    steps = (
+        ("prospect_scout", "Prospect Scout", "Find public asks",
+         f"<b>{_num(len(leads))}</b> public post(s) in the store"),
+        ("opportunity_scorer", "Opportunity Scorer", "Score &amp; rank",
+         f"<b>{_num(qualified)}</b> high/medium quality &middot; "
+         f"<b>{_num(len(queue))}</b> in the review queue"),
+        ("outreach_drafter", "Outreach Drafter", "Draft the reply",
+         f"<b>{_num(len(briefs))}</b> draft(s) &middot; "
+         f"<b>{_num(awaiting_post)}</b> awaiting your post &middot; "
+         f"<b>{_num(posted)}</b> marked posted"),
+    )
+    html = ""
+    for i, (agent_id, name, role, value) in enumerate(steps):
+        spec = roster.get(agent_id)
+        st = states.get(agent_id, {})
+        gate = spec is not None and spec.gate == "human"
+        if i:
+            html += "<div class='chain-arrow'>&rarr;</div>"
+        pill = _fpill(st.get("state", "idle")) if st else ""
+        html += (
+            f"<div class='chain-step{' gate' if gate else ''}'>"
+            f"<div class='csn'>{name}"
+            + ("<span class='ct' style='margin-left:auto'>human-gated</span>"
+               if gate else "")
+            + f"</div><div class='csr'>{role}</div>"
+            f"<div class='csv'>{value}</div>"
+            f"<div style='margin-top:.4rem'>{pill}</div></div>"
+        )
+    gatebar = (
+        "<div class='gatebar'><b>Human gate &mdash; Outreach Drafter.</b> "
+        "The system drafts a reply and stops. It never posts, DMs, or emails: "
+        "a person reads the community's rules, decides, and posts their own "
+        "words. Nothing here contacts anyone.</div>"
+    )
+    return f"<div class='chain'>{html}</div>{gatebar}"
+
+
+def _orchestration_readout(agent_log, session, task_log, states) -> str:
+    """The coordination facts beside the map - counted, never inferred."""
+    decisions = [e for e in (agent_log or []) if e.get("action") not in _MARKERS]
+    task_log = task_log or []
+    by_state: dict[str, int] = {}
+    for st in states.values():
+        by_state[st["state"]] = by_state.get(st["state"], 0) + 1
+    gated = sum(1 for st in states.values() if st["spec"].gate == "human")
+    with_runs = sum(1 for st in states.values() if st["runs"] or st["ran"])
+    rows = [
+        ("operator decisions recorded", _num(len(decisions))),
+        ("tasks dispatched (task_log)", _num(len(task_log))),
+        ("agents with a recorded run", f"{with_runs} / {len(states)}"),
+        ("running now", _num(by_state.get("running", 0))),
+        ("waiting on you", _num(by_state.get("waiting", 0))),
+        ("human-gated by design", _num(gated)),
+        ("session", _esc(_session_line(session))),
+    ]
+    body = "".join(
+        f"<div class='orow'><span>{_esc(k)}</span><b>{v}</b></div>" for k, v in rows
+    )
+    return (
+        f"<div class='oread'>{body}</div>"
+        "<p class='muted' style='margin-top:.6rem;font-size:.7rem'>The map draws a "
+        "link only where a real parent&rarr;child task lineage exists. No link is "
+        "drawn to make the map look busy.</p>"
     )
 
 
@@ -1646,6 +2290,7 @@ def _roi(roi: dict, report: dict, goal: dict | None) -> str:
 
 _NAV = (
     ("Dashboard", "#top", "operator"),
+    ("Objective", "#command", "decision"),
     ("First sale", "#first-sale", "evaluator"),
     ("Agents", "#agents", "generic"),
     ("Acquisition", "#acquisition", "finder"),
@@ -1687,6 +2332,7 @@ def render_html(report: dict, generated_at: str, *,
                 agent_outputs: dict | None = None,
                 pipeline: dict | None = None,
                 acquisition: dict | None = None,
+                blockers: list[dict] | None = None,
                 interactive: bool = False,
                 flash: str | None = None,
                 csrf: str | None = None) -> str:
@@ -1696,6 +2342,10 @@ def render_html(report: dict, generated_at: str, *,
     (used by `dashboard-serve`); the default renders the read-only view.
     """
     queue = report["action_queue"]
+    states = _fleet_states(goal=goal, session=session, task_log=task_log,
+                           agent_outputs=agent_outputs,
+                           spend_entries=spend_entries, pipeline=pipeline,
+                           acquisition=acquisition)
     flash_html = ""
     if flash:
         cls = " err" if flash.lower().startswith("error") else ""
@@ -1707,17 +2357,23 @@ def render_html(report: dict, generated_at: str, *,
         + flash_html
         + _topbar(report, session, agent_log, spend_entries, goal)
         + _attention(queue, interactive, csrf)
+        + "<section id='command'><h2>Mission control</h2>"
+        + _command_core(report, goal, acquisition, blockers) + "</section>"
         + "<section id='first-sale'><h2>First sale readiness</h2>"
         + _first_sale_panel(acquisition) + "</section>"
         + "<section id='agents'><h2>Agents</h2>"
+        + "<div class='oband'><div>"
         + _agent_map(agent_log or [], spend_entries, goal, session, report,
                      bool(queue), task_log or [])
+        + "</div><div>" + _orchestration_readout(agent_log, session, task_log, states)
+        + "</div></div>"
         + f"<h3>All {len(roster.AGENTS)} agents</h3>"
-        + _cluster_flow(agent_outputs)
+        + _cluster_flow(agent_outputs, states)
         + "<h3>Target roster</h3>"
         + _roster_panel()
         + "</section>"
         + "<section id='acquisition'><h2>Customer acquisition</h2>"
+        + _acquisition_chain(acquisition, states)
         + _acquisition_panel(acquisition) + "</section>"
         + "<section id='continuous'><h2>Continuous revenue loop</h2>"
         + _continuous_panel(acquisition) + "</section>"

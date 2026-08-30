@@ -815,6 +815,259 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertIn("29.0", html)
 
 
+class CommandCoreTests(unittest.TestCase):
+    """The mission-control band: the objective, the real lifecycle rail and
+    the human-maintained blocker register."""
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.d = self._dir.name
+        self.store = CandidateStore(Path(self.d) / "candidates.json")
+
+    def tearDown(self):
+        self._dir.cleanup()
+
+    def _core(self, html):
+        return html.split("id='command'")[1].split("</section>")[0]
+
+    def test_objective_and_lifecycle_rail_use_real_counts(self):
+        self.store.put(Candidate(name="a", status="discovered"))
+        self.store.put(Candidate(name="b", status="discovered"))
+        self.store.put(Candidate(name="c", status="launched"))
+        self.store.put(Candidate(name="d", status="rejected"))
+        core = self._core(render_html(_report(self.store, self.d), _FIXED_TS))
+        self.assertIn("FIRST REAL CUSTOMER", core)
+        self.assertIn("Continuous discovery", core)
+        for label in ("Discovery", "Shortlist", "Approve", "Investigate",
+                      "Validate", "Launch", "Earning", "Rejected"):
+            self.assertIn(label, core)
+        # 2 discovered / 1 launched / 1 rejected, and the empty stages stay 0
+        self.assertIn("<div class='sv'>2</div>", core)
+        self.assertIn("<div class='sv'>1</div>", core)
+        self.assertIn("<div class='sv'>0</div>", core)
+        # human-gated transitions are marked as such
+        self.assertIn("stage gate", core)
+        self.assertIn("never approves, launches, or books a", core)
+
+    def test_revenue_is_only_real_recorded_payments(self):
+        self.store.put(Candidate(name="a", status="launched"))
+        core = self._core(render_html(_report(self.store, self.d), _FIXED_TS))
+        self.assertIn("revenue booked", core)
+        self.assertIn("0 EUR", core)          # nothing booked -> zero, not blank
+        self.assertIn("none launched", core)  # no priced offer on disk
+
+    def test_offer_line_comes_from_the_candidate_store(self):
+        self.store.put(Candidate(
+            name="ask-hn-x", status="launched",
+            offer={"what_is_sold": "Customer Launch Plan", "price": 29.9,
+                   "currency": "EUR"}))
+        acq = {"readiness": {"candidate": "ask-hn-x", "candidate_status": "launched",
+                             "offer_price": 29.9, "offer_currency": "EUR",
+                             "revenue_eur": 0, "llm_api_calls": 0,
+                             "llm_cost_usd": 0.0}}
+        core = self._core(render_html(_report(self.store, self.d), _FIXED_TS,
+                                      acquisition=acq))
+        self.assertIn("Customer Launch Plan", core)
+        self.assertIn("29.9 EUR", core)
+
+    def test_blocker_register_absent_is_honest_not_all_clear(self):
+        core = self._core(render_html(_report(self.store, self.d), _FIXED_TS))
+        self.assertIn("No blocker register", core)
+        self.assertIn("not an all-clear", core)
+
+    def test_open_blockers_are_shown_and_resolved_ones_are_not(self):
+        blockers = [
+            {"id": "paypal", "title": "PayPal checkout blocked",
+             "detail": "PAYEE_ACCOUNT_RESTRICTED on the live payment path",
+             "severity": "critical", "status": "open", "area": "payment"},
+            {"id": "old", "title": "Something already fixed", "detail": "",
+             "severity": "warning", "status": "resolved", "area": "checkout"},
+        ]
+        core = self._core(render_html(_report(self.store, self.d), _FIXED_TS,
+                                      blockers=blockers))
+        self.assertIn("1 open blocker(s)", core)
+        self.assertIn("PayPal checkout blocked", core)
+        self.assertIn("PAYEE_ACCOUNT_RESTRICTED", core)
+        self.assertIn("sev-critical", core)
+        self.assertNotIn("Something already fixed", core)
+        self.assertIn("not auto-detected and are not hidden", core)
+
+    def test_all_blockers_resolved_says_so_without_claiming_all_clear(self):
+        blockers = [{"id": "x", "title": "t", "severity": "info",
+                     "status": "resolved"}]
+        core = self._core(render_html(_report(self.store, self.d), _FIXED_TS,
+                                      blockers=blockers))
+        self.assertIn("No open blockers", core)
+        self.assertIn("1 recorded, all resolved", core)
+
+    def test_blocker_text_is_escaped_and_scheme_stripped(self):
+        blockers = [{"id": "x", "title": "<script>alert(1)</script>",
+                     "detail": "see https://example.com/page",
+                     "severity": "warning", "status": "open"}]
+        html = render_html(_report(self.store, self.d), _FIXED_TS,
+                           blockers=blockers)
+        self.assertNotIn("<script>alert(1)</script>", html)
+        self.assertIn("&lt;script&gt;", html)
+        self.assertNotIn("://", html)          # the page-wide invariant holds
+
+
+class FleetGridTests(unittest.TestCase):
+    """The 24-agent cluster grid. Every cell is driven by a file on disk;
+    nothing is animated into looking busy."""
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.d = self._dir.name
+        self.store = CandidateStore(Path(self.d) / "candidates.json")
+
+    def tearDown(self):
+        self._dir.cleanup()
+
+    def _flow(self, html):
+        return html.split("class='cflow'")[1].split("Target roster")[0]
+
+    def _cells(self, flow):
+        """Every fleet cell as its own chunk of markup."""
+        starts = [m.start() for m in re.finditer(r"<div class='cnode(?=[ '])", flow)]
+        return [flow[s:(starts[i + 1] if i + 1 < len(starts) else len(flow))]
+                for i, s in enumerate(starts)]
+
+    def _cell(self, flow, name):
+        """The markup of the one fleet cell carrying `name`."""
+        for chunk in self._cells(flow):
+            if f">{name}</span>" in chunk:
+                return chunk
+        raise AssertionError(f"no fleet cell for {name!r}")
+
+    def test_every_roster_agent_has_a_cell_with_name_cluster_and_status(self):
+        from revenue_os import roster
+        flow = self._flow(render_html(_report(self.store, self.d), _FIXED_TS))
+        for spec in roster.AGENTS:
+            self.assertIn(spec.name, flow, spec.id)
+        for cluster in roster.CLUSTERS:
+            self.assertIn(cluster, flow)
+        self.assertEqual(len(self._cells(flow)), len(roster.AGENTS))
+
+    def test_agent_without_any_record_is_idle_with_no_activity(self):
+        flow = self._flow(render_html(_report(self.store, self.d), _FIXED_TS))
+        cell = self._cell(flow, "Sales Tracker")
+        self.assertIn("st-idle", cell)
+        self.assertIn("IDLE", cell)
+        self.assertIn("No activity recorded", cell)
+        self.assertIn("runs <b>0</b>", cell)
+        # never animated into looking busy, never given a progress bar
+        self.assertNotIn("fs-running", cell)
+        self.assertNotIn("class='bar'", cell)
+
+    def test_running_needs_a_live_session_and_a_real_dispatched_task(self):
+        task_log = [{"ts": "1", "task_id": "t1", "parent_id": None, "depth": 0,
+                     "capability": "discover", "agent": "market_scanner",
+                     "objective": "discover opportunities", "status": "ok",
+                     "summary": {"count": 3}}]
+        live = render_html(_report(self.store, self.d), _FIXED_TS,
+                           task_log=task_log,
+                           session={"ticks": 1, "cycles": 1, "ended_at": None})
+        cell = self._cell(self._flow(live), "Market Scanner")
+        self.assertIn("fs-running", cell)
+        self.assertIn("RUNNING", cell)
+        self.assertIn("runs <b>1</b>", cell)
+        # same task log, session over -> the run is history, not activity
+        ended = render_html(_report(self.store, self.d), _FIXED_TS,
+                            task_log=task_log,
+                            session={"ticks": 1, "cycles": 1, "ended_at": "x",
+                                     "end_reason": "max-ticks"})
+        cell = self._cell(self._flow(ended), "Market Scanner")
+        self.assertNotIn("fs-running", cell)
+        self.assertIn("st-idle", cell)
+        self.assertIn("runs <b>1</b>", cell)
+        self.assertIn("discover", cell)      # the real last activity
+
+    def test_goal_mode_off_disables_the_agent(self):
+        flow = self._flow(render_html(_report(self.store, self.d), _FIXED_TS,
+                                      goal={"research": "off", "competition": "llm"}))
+        self.assertIn("DISABLED", self._cell(flow, "Product Researcher"))
+        self.assertNotIn("DISABLED", self._cell(flow, "Competitor Analyzer"))
+
+    def test_human_gated_agents_are_marked_on_every_cell(self):
+        from revenue_os import roster
+        flow = self._flow(render_html(_report(self.store, self.d), _FIXED_TS))
+        gated = [s for s in roster.AGENTS if s.gate == "human"]
+        self.assertTrue(gated)
+        self.assertEqual(flow.count("cnode gated"), len(gated))
+        for spec in gated:
+            self.assertIn("HUMAN-GATED", self._cell(flow, spec.name))
+
+    def test_outreach_drafter_waits_for_a_human_when_a_draft_exists(self):
+        acq = {"leads": [{"prospect_quality": "medium",
+                          "human_review_status": "new"}],
+               "briefs": [{"lead_id": "a", "status": "draft"},
+                          {"lead_id": "b", "status": "draft"}],
+               "queue": [{"lead_id": "a", "stage": "prepared"}]}
+        flow = self._flow(render_html(_report(self.store, self.d), _FIXED_TS,
+                                      acquisition=acq))
+        cell = self._cell(flow, "Outreach Drafter")
+        self.assertIn("WAITING", cell)
+        self.assertIn("awaiting your review and your own post", cell)
+        self.assertIn("briefs <b>2</b>", cell)
+
+    def test_progress_bar_only_when_the_agent_persisted_a_progress_value(self):
+        outputs = {"manage_profit": {"ts": "2026-08-27T09:00:00+00:00",
+                                     "objective": "run Profit Master",
+                                     "output": {"progress_pct": 40}},
+                   "track_sales": {"ts": "2026-08-27T09:00:00+00:00",
+                                   "objective": "run Sales Tracker",
+                                   "output": {"paid_count": 0}}}
+        flow = self._flow(render_html(_report(self.store, self.d), _FIXED_TS,
+                                      agent_outputs=outputs))
+        self.assertIn("width:40%", self._cell(flow, "Profit Master"))
+        self.assertNotIn("cnode-prog", self._cell(flow, "Sales Tracker"))
+        # exactly one bar in the whole fleet - the one an agent reported
+        self.assertEqual(flow.count("class='cnode-prog'"), 1)
+
+    def test_cost_ceiling_shows_as_blocked_not_as_running(self):
+        spend = [{"ts": "t", "activity": "research", "api_calls": 1,
+                  "cost_usd": 0.5, "ceiling_hit": True}]
+        flow = self._flow(render_html(_report(self.store, self.d), _FIXED_TS,
+                                      spend_entries=spend,
+                                      goal={"research": "llm"}))
+        cell = self._cell(flow, "Product Researcher")
+        self.assertIn("fs-blocked", cell)
+        self.assertIn("BLOCKED", cell)
+
+    def test_acquisition_chain_is_the_real_three_step_flow(self):
+        acq = {"leads": [{"prospect_quality": "high", "human_review_status": "new"},
+                         {"prospect_quality": "none", "human_review_status": "new"}],
+               "briefs": [{"lead_id": "a", "status": "draft"}],
+               "queue": [{"lead_id": "a", "stage": "prepared"}]}
+        html = render_html(_report(self.store, self.d), _FIXED_TS, acquisition=acq)
+        panel = html.split("id='acquisition'")[1].split("</section>")[0]
+        chain = panel.split("class='chain'")[1].split("</div>\n")[0]
+        self.assertIn("Prospect Scout", chain)
+        self.assertIn("Opportunity Scorer", chain)
+        self.assertIn("Outreach Drafter", chain)
+        self.assertLess(chain.index("Prospect Scout"), chain.index("Opportunity Scorer"))
+        self.assertLess(chain.index("Opportunity Scorer"), chain.index("Outreach Drafter"))
+        self.assertIn("chain-step gate", chain)          # the drafter is gated
+        self.assertIn("It never posts, DMs, or emails", panel)
+        self.assertIn("<b>2</b> public post(s)", chain)  # real store counts
+        self.assertIn("<b>1</b> high/medium quality", chain)
+        self.assertNotIn("http", panel)
+
+    def test_orchestration_readout_counts_are_real(self):
+        html = render_html(
+            _report(self.store, self.d), _FIXED_TS,
+            agent_log=[{"ts": "t", "action": "discover", "reason": "x"}],
+            task_log=[{"ts": "1", "task_id": "a", "parent_id": None, "depth": 0,
+                       "capability": "discover", "agent": "market_scanner",
+                       "status": "ok", "summary": {}}],
+        )
+        self.assertIn("operator decisions recorded", html)
+        self.assertIn("tasks dispatched (task_log)", html)
+        self.assertIn("agents with a recorded run", html)
+        self.assertIn("1 / 24", html)
+        self.assertIn("No link is drawn to make", html)
+
+
 class DashboardCliTests(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
