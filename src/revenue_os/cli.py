@@ -465,14 +465,15 @@ def _cmd_acquisition_rescore(args) -> int:
 
 def _cmd_outreach_brief(args) -> int:
     from .acquisition import AcquisitionStore
-    from .outreach import DEFAULT_CHECKOUT_URL, OutreachStore, outreach_brief
+    from .outreach import OutreachStore, outreach_brief, resolve_checkout_url
 
     data_dir = _data_dir(args)
     store = AcquisitionStore.load(data_dir / "acquisition.json")
     lead = store.by_id(args.lead_id)
     if lead is None:
         raise ValueError(f"no single lead matches id {args.lead_id!r}")
-    checkout_url = args.checkout_url or DEFAULT_CHECKOUT_URL
+    cand_store, _, _ = _load(data_dir)
+    checkout_url = args.checkout_url or resolve_checkout_url(cand_store)
 
     drafter = cache = None
     if getattr(args, "draft", "template") == "llm":
@@ -1027,7 +1028,7 @@ def _first_sale_readiness(data_dir: Path, store, report: dict) -> dict | None:
          if c.status in ("launched", "earning") and c.offer), None)
     if launched is None:
         return None
-    from .outreach import DEFAULT_CHECKOUT_URL
+    from .outreach import resolve_checkout_url
 
     spend = _llm_spend_log(data_dir)
     r = {
@@ -1036,7 +1037,8 @@ def _first_sale_readiness(data_dir: Path, store, report: dict) -> dict | None:
         "offer_price": launched.offer.get("price"),
         "offer_currency": launched.offer.get("currency", "EUR"),
         "candidate_public_url": launched.public_url or "",
-        "outreach_default_url": DEFAULT_CHECKOUT_URL,
+        # what an outreach brief actually resolves to right now
+        "outreach_default_url": resolve_checkout_url(store),
         "revenue_eur": report["totals"]["grand_revenue"],
         "llm_api_calls": sum(int(e.get("api_calls", 0)) for e in spend.entries()),
         "llm_cost_usd": spend.summary()["total_cost_usd"],

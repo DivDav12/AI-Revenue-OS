@@ -28,8 +28,31 @@ from pathlib import Path
 
 from .store import now_iso
 
-# The live public checkout (overridable per call / by the autopilot config).
-DEFAULT_CHECKOUT_URL = "https://divdav12.github.io/customer-launch-plan/checkout.html"
+# Last-resort fallback only. The real checkout URL is a launched candidate's
+# deployed `public_url` (set by `deploy-checkout`); callers with a
+# CandidateStore should resolve it with `resolve_checkout_url()`. This
+# constant matches what `deploy-checkout` publishes for the default
+# GITHUB_PAGES_REPO so an un-resolved brief still points somewhere real.
+DEFAULT_CHECKOUT_URL = "https://DivDav12.github.io/AI-Revenue-OS/checkout.html"
+
+
+def resolve_checkout_url(store, *, fallback: str = DEFAULT_CHECKOUT_URL) -> str:
+    """The checkout URL an outreach reply should link to: the deployed
+    `public_url` of a launched / earning candidate that has one.
+
+    Falls back to `fallback` only when nothing is deployed yet. `store` is
+    a CandidateStore (or anything whose `.all()` yields objects with
+    `.status` and `.public_url`). Never hits the network.
+    """
+    try:
+        candidates = list(store.all())
+    except AttributeError:
+        return fallback
+    for cand in candidates:
+        if (getattr(cand, "status", "") in ("launched", "earning")
+                and getattr(cand, "public_url", "")):
+            return cand.public_url
+    return fallback
 
 _GENERIC_POINTS = [
     "Ask what they have actually tried so far - most first-time founders "

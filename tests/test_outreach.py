@@ -5,10 +5,14 @@ from pathlib import Path
 
 from revenue_os.cli import main
 from revenue_os.outreach import (
+    DEFAULT_CHECKOUT_URL,
     OutreachStore,
     outreach_brief,
+    resolve_checkout_url,
     tracked_checkout_link,
 )
+
+_DEPLOYED = "https://DivDav12.github.io/AI-Revenue-OS/checkout.html"
 
 
 _LEAD = {
@@ -242,6 +246,53 @@ class StoreTests(unittest.TestCase):
         self.assertIn("first_prepared_at", s.get("abc123def456"))
 
 
+class ResolveCheckoutUrlTests(unittest.TestCase):
+    """Regression: the checkout URL must come from a deployed candidate's
+    public_url, never the stale customer-launch-plan constant."""
+
+    def _store(self, *cands):
+        from revenue_os.store import CandidateStore
+        s = CandidateStore(Path(tempfile.mkdtemp()) / "c.json")
+        for c in cands:
+            s.put(c)
+        return s
+
+    def _cand(self, **kw):
+        from revenue_os.store import Candidate
+        return Candidate(**kw)
+
+    def test_default_constant_is_not_the_stale_url(self):
+        self.assertNotIn("customer-launch-plan", DEFAULT_CHECKOUT_URL)
+        self.assertIn("/AI-Revenue-OS/checkout.html", DEFAULT_CHECKOUT_URL)
+
+    def test_resolves_a_launched_candidate_public_url(self):
+        s = self._store(
+            self._cand(name="draftish", status="validated",
+                       public_url="https://x/nope.html"),
+            self._cand(name="live", status="launched", offer={"price": 29.9},
+                       public_url=_DEPLOYED))
+        self.assertEqual(resolve_checkout_url(s), _DEPLOYED)
+
+    def test_falls_back_when_nothing_deployed(self):
+        s = self._store(self._cand(name="built-not-deployed", status="launched"))
+        self.assertEqual(resolve_checkout_url(s), DEFAULT_CHECKOUT_URL)
+        self.assertEqual(resolve_checkout_url(s, fallback="X"), "X")
+
+    def test_ignores_non_launched_even_with_a_url(self):
+        s = self._store(self._cand(name="stale", status="rejected",
+                                   public_url="https://x/old.html"))
+        self.assertEqual(resolve_checkout_url(s), DEFAULT_CHECKOUT_URL)
+
+    def test_brief_from_resolved_url_carries_the_deployed_path(self):
+        s = self._store(self._cand(name="live", status="launched",
+                                   offer={"price": 29.9}, public_url=_DEPLOYED))
+        b = outreach_brief(_LEAD, checkout_url=resolve_checkout_url(s))
+        self.assertEqual(b["checkout_link"], _DEPLOYED + "?lead=abc123def456")
+        for field in ("checkout_link", "optional_cta"):
+            self.assertIn("/AI-Revenue-OS/checkout.html", b[field])
+            self.assertNotIn("customer-launch-plan", b[field])
+
+
 class CliTests(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
@@ -250,6 +301,13 @@ class CliTests(unittest.TestCase):
         st = AcquisitionStore.load(self.d / "acquisition.json")
         st.upsert(_LEAD)
         st.save()
+
+    def _add_deployed_candidate(self):
+        from revenue_os.store import Candidate, CandidateStore
+        cs = CandidateStore.load(self.d / "candidates.json")
+        cs.put(Candidate(name="clp", status="launched", offer={"price": 29.9},
+                         public_url=_DEPLOYED))
+        cs.save()
 
     def tearDown(self):
         self._dir.cleanup()
@@ -263,6 +321,23 @@ class CliTests(unittest.TestCase):
         self.assertIsNotNone(b)
         self.assertEqual(b["status"], "draft")
         self.assertIn("?lead=abc123def456", b["brief"]["checkout_link"])
+
+    def test_brief_uses_the_deployed_candidate_url_not_the_stale_one(self):
+        self._add_deployed_candidate()
+        rc = main(["outreach-brief", "abc123", "--data-dir", str(self.d)])
+        self.assertEqual(rc, 0)
+        b = OutreachStore.load(self.d / "outreach.json").get("abc123def456")["brief"]
+        self.assertEqual(b["checkout_link"], _DEPLOYED + "?lead=abc123def456")
+        self.assertIn("/AI-Revenue-OS/checkout.html", b["optional_cta"])
+        self.assertNotIn("customer-launch-plan", b["checkout_link"])
+        self.assertNotIn("customer-launch-plan", b["optional_cta"])
+
+    def test_explicit_checkout_url_flag_still_wins(self):
+        self._add_deployed_candidate()
+        main(["outreach-brief", "abc123", "--checkout-url", _CHECKOUT,
+              "--data-dir", str(self.d)])
+        b = OutreachStore.load(self.d / "outreach.json").get("abc123def456")["brief"]
+        self.assertTrue(b["checkout_link"].startswith(_CHECKOUT))
 
     def test_no_posting_functions_in_outreach_module(self):
         import inspect

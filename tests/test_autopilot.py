@@ -185,6 +185,19 @@ class CycleTests(_OfflineSource):
         self._cycle()
         self.assertEqual(ap.status(self.d)["acquisition_queue_len"], 1)
 
+    def test_brief_links_to_the_deployed_candidate_url_not_the_stale_one(self):
+        from revenue_os.store import Candidate, CandidateStore
+        url = "https://DivDav12.github.io/AI-Revenue-OS/checkout.html"
+        cs = CandidateStore.load(self.d / "candidates.json")
+        cs.put(Candidate(name="clp", status="launched", offer={"price": 29.9},
+                         public_url=url))
+        cs.save()
+        self._cycle()
+        b = OutreachStore.load(self.d / "outreach.json").all()[0]["brief"]
+        self.assertTrue(b["checkout_link"].startswith(url + "?lead="))
+        self.assertNotIn("customer-launch-plan", b["checkout_link"])
+        self.assertNotIn("customer-launch-plan", b["optional_cta"])
+
     def test_paypal_missing_credentials_is_a_note_not_a_crash(self):
         r = self._cycle()
         self.assertFalse(r["payment"]["ok"])

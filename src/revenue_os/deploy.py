@@ -2,8 +2,10 @@
 
 `build-checkout` writes `deliverables/<candidate>/checkout.html` +
 `intake.html` to disk. This module publishes those files to **GitHub
-Pages** via the Contents API - the host the project already points at
-(`outreach.DEFAULT_CHECKOUT_URL` = `https://<user>.github.io/...`).
+Pages** via the Contents API and records the resulting public URL on the
+candidate as `public_url` - which `outreach.resolve_checkout_url()` then
+uses as the real checkout link (the `outreach.DEFAULT_CHECKOUT_URL`
+constant is only a last-resort fallback).
 
 Why GitHub Pages: free, a stable URL, a plain REST API (no CLI, no
 build step), standard-library HTTP only, and idempotent (unchanged
@@ -13,7 +15,7 @@ no code execution, no secrets on the page.
 Credentials come from the environment (loaded from .env by the CLI),
 never from code or the store:
   GITHUB_TOKEN           fine-grained PAT, Contents: read+write on the repo
-  GITHUB_PAGES_REPO      "<owner>/<repo>" (e.g. divdav12/customer-launch-plan)
+  GITHUB_PAGES_REPO      "<owner>/<repo>" (e.g. DivDav12/AI-Revenue-OS)
   GITHUB_PAGES_BRANCH    branch to commit to        (default: main)
   GITHUB_PAGES_SUBDIR    path prefix inside the repo (default: "" = repo root)
 
