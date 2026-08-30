@@ -14,6 +14,9 @@ Read commands:
   revenue-step / revenue-loop / revenue-status   supervisor: one safe non-human
                    action per step (pipeline -> deploy, payment sync, PDF staging),
                    stops at every human gate with a concrete action queue
+  revenue-loop --watch   run the supervisor continuously (bounded, resumable,
+                   Ctrl-C-safe; deterministic; no spend / API / PayPal)
+  experiments / experiment-close ID no_sale|skipped   revenue-experiment ledger
   review-opportunity ID --approve|--reject   record a human verdict (no contact)
   acquisition-rescore   re-score the whole lead store with the current model ($0)
   acquisition-queue     high/medium prospects still waiting on a human (de-duped)
@@ -578,9 +581,58 @@ def _cmd_outreach_status(args) -> int:
     entry = briefs.set_status(lid, args.status)
     briefs.save()
     print(f"{lid}: outreach status -> {entry['status']}")
+
+    # keep the experiment ledger in step with the human's action
     if args.status in ("posted", "skipped"):
+        from . import experiments
+        experiments.open_from_briefs(data_dir)
+        try:
+            experiments.advance(data_dir, lid, args.status,
+                                note="via outreach-status")
+            print(f"  experiment {lid}: -> {args.status}")
+        except ValueError as exc:
+            print(f"  (experiment not advanced: {exc})")
         print("  Recorded by YOU - this prospect drops out of the acquisition "
               "queue. The system posted nothing.")
+    return 0
+
+
+def _cmd_experiments(args) -> int:
+    from . import experiments as ex
+
+    r = ex.rollup(_data_dir(args))
+    if args.json:
+        print(json.dumps(r, indent=2))
+        return 0
+    o = r["overall"]
+    print(f"EXPERIMENTS  {r['total']} total  ({r['open']} open, {r['closed']} closed)")
+    print("  overall: " + ", ".join(f"{k}={o[k]}" for k in ex.STATUSES if o.get(k)))
+    if r["by_source"]:
+        print("  by source:")
+        for src, c in sorted(r["by_source"].items()):
+            print(f"    {src:16} " + " ".join(
+                f"{k}={c[k]}" for k in ex.STATUSES if c.get(k)))
+    if r["rows"]:
+        print("  rows:")
+        for row in r["rows"]:
+            age = "age ?" if row["age_days"] is None else f"{row['age_days']}d"
+            print(f"    {row['status']:8} {str(row['offer_price']):>6} "
+                  f"{row['currency']:3} {row['source']:14} {age:6}"
+                  + (f"  {row['revenue_ref']}" if row["revenue_ref"] else ""))
+    print("Deterministic ledger - no network, no PayPal, no LLM. Tracking only.")
+    return 0
+
+
+def _cmd_experiment_close(args) -> int:
+    from . import experiments as ex
+
+    try:
+        entry = ex.advance(_data_dir(args), args.lead_id, args.status,
+                           note="manual close via CLI")
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"experiment {entry['lead_id']}: -> {entry['status']}")
     return 0
 
 
@@ -706,7 +758,9 @@ def _print_loop_step(s: dict) -> None:
 def _cmd_revenue_step(args) -> int:
     from . import revenue_loop as rl
 
-    out = rl.step(_data_dir(args), allow_discovery=not args.no_discovery)
+    out = rl.step(_data_dir(args), allow_discovery=not args.no_discovery,
+                  discovery_cooldown_hours=getattr(
+                      args, "discovery_cooldown_hours", 6.0))
     _print_loop_step(out)
     if out["action"] == "stop":
         print("\n  HUMAN ACTION QUEUE:")
@@ -718,8 +772,32 @@ def _cmd_revenue_step(args) -> int:
 def _cmd_revenue_loop(args) -> int:
     from . import revenue_loop as rl
 
-    steps = rl.run(_data_dir(args), max_steps=args.max_steps,
-                   allow_discovery=not args.no_discovery)
+    data_dir = _data_dir(args)
+    if getattr(args, "watch", False):
+        def on_tick(steps, feedback):
+            if args.dashboard:
+                _write_dashboard(data_dir)
+            acted = [s["action"] for s in steps if s["action"] != "stop"]
+            fb = {k: v for k, v in (feedback or {}).items() if v}
+            print(f"  tick: {acted or 'no non-human action'}"
+                  + (f"  feedback={fb}" if fb else ""))
+        sess = rl.watch(
+            data_dir, interval=args.interval, max_ticks=args.max_ticks,
+            max_runtime_s=args.max_runtime, max_spend_usd=args.max_spend,
+            fresh=args.fresh, allow_discovery=not args.no_discovery,
+            max_steps=args.max_steps,
+            discovery_cooldown_hours=args.discovery_cooldown_hours,
+            followup_days=args.followup_days, on_tick=on_tick)
+        if args.dashboard:
+            _write_dashboard(data_dir)
+        print(f"stopped: {sess['end_reason']} ({sess['ticks']} tick(s))")
+        print("  No money spent, no message sent, no API/PayPal call. Every "
+              "human gate is intact.")
+        return 0
+
+    steps = rl.run(data_dir, max_steps=args.max_steps,
+                   allow_discovery=not args.no_discovery,
+                   discovery_cooldown_hours=args.discovery_cooldown_hours)
     print(f"REVENUE LOOP: {len(steps)} step(s)")
     for s in steps:
         _print_loop_step(s)
@@ -1007,6 +1085,8 @@ def build_dashboard_html(
             "briefs": _load_json("outreach.json") or [],
             "queue": _acquisition_queue_safe(data_dir),
             "readiness": _first_sale_readiness(data_dir, store, report),
+            "loop": _load_json("revenue_loop.json") or {},
+            "experiments": _experiments_snapshot_safe(data_dir),
         },
         interactive=interactive, flash=flash, csrf=csrf,
     )
@@ -1019,6 +1099,15 @@ def _acquisition_queue_safe(data_dir: Path) -> list:
         return _ap.acquisition_queue(data_dir)
     except Exception:
         return []
+
+
+def _experiments_snapshot_safe(data_dir: Path) -> dict:
+    """Deterministic, read-only experiment rollup; never fail the build."""
+    try:
+        from . import experiments as _ex
+        return {"rollup": _ex.rollup(data_dir)}
+    except Exception:
+        return {}
 
 
 def _first_sale_readiness(data_dir: Path, store, report: dict) -> dict | None:
@@ -1702,6 +1791,22 @@ def build_parser() -> argparse.ArgumentParser:
     aq.add_argument("--json", action="store_true")
     aq.set_defaults(func=_cmd_acquisition_queue)
 
+    exls = sub.add_parser(
+        "experiments", parents=[common],
+        help="revenue-experiment ledger: offer / price / source / outcome "
+             "(deterministic, read-only, no PayPal/LLM/network)",
+    )
+    exls.add_argument("--json", action="store_true")
+    exls.set_defaults(func=_cmd_experiments)
+
+    exclose = sub.add_parser(
+        "experiment-close", parents=[common],
+        help="human closes one experiment (no_sale | skipped)",
+    )
+    exclose.add_argument("lead_id", help="the experiment's lead id")
+    exclose.add_argument("status", choices=("no_sale", "skipped"))
+    exclose.set_defaults(func=_cmd_experiment_close)
+
     ostatus = sub.add_parser(
         "outreach-status", parents=[common],
         help="record what YOU did with a drafted brief "
@@ -1752,15 +1857,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rstep.add_argument("--no-discovery", action="store_true",
                        help="do not fall back to a free discovery cycle")
+    rstep.add_argument("--discovery-cooldown-hours", type=float, default=6.0,
+                       help="min hours between real discovery runs (0 = none)")
     rstep.set_defaults(func=_cmd_revenue_step)
 
     rloop = sub.add_parser(
         "revenue-loop", parents=[common],
-        help="supervisor: step until only human-gated actions remain "
-             "(publishes only your own checkout page; no messages, no spend)",
+        help="supervisor: step until only human-gated actions remain, or "
+             "--watch to run continuously (no messages, no spend, no API)",
     )
     rloop.add_argument("--max-steps", type=int, default=25)
     rloop.add_argument("--no-discovery", action="store_true")
+    rloop.add_argument("--discovery-cooldown-hours", type=float, default=6.0,
+                       help="min hours between real discovery runs (0 = none)")
+    rloop.add_argument("--followup-days", type=float, default=14.0,
+                       help="posted -> no_sale after this many days (0 = never)")
+    rloop.add_argument("--watch", action="store_true",
+                       help="run continuously: tick, sleep, repeat (bounded, resumable)")
+    rloop.add_argument("--interval", type=float, default=900.0,
+                       help="seconds between --watch ticks (default 900)")
+    rloop.add_argument("--max-ticks", type=int, default=None)
+    rloop.add_argument("--max-runtime", type=float, default=None, help="seconds")
+    rloop.add_argument("--max-spend", type=float, default=None,
+                       help="USD LLM spend since session start (safety bound)")
+    rloop.add_argument("--fresh", action="store_true",
+                       help="ignore an unfinished --watch session")
+    rloop.add_argument("--dashboard", action="store_true",
+                       help="regenerate <data-dir>/dashboard.html after each tick")
     rloop.set_defaults(func=_cmd_revenue_loop)
 
     sub.add_parser(

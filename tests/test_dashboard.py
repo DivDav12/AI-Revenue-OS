@@ -336,6 +336,59 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertNotIn("news.ycombinator.com", panel)  # never the URL
         self.assertNotIn("http", panel)
 
+    def test_continuous_panel_empty_and_populated(self):
+        html = render_html(_report(self.store, self.d), _FIXED_TS)
+        self.assertIn("id='continuous'", html)
+        empty = html.split("id='continuous'")[1].split("</section>")[0]
+        self.assertIn("No continuous session yet", empty)
+        self.assertNotIn("http", empty)
+
+        acq = {"loop": {
+            "status": "running", "steps_taken": 7, "last_action": "discover",
+            "human_queue": ["approve or reject candidate: `x`"],
+            "session": {"started_at": "2026-09-01T00:00:00+00:00",
+                        "last_tick_at": "2026-09-01T00:05:00+00:00",
+                        "ticks": 3, "ended_at": None, "end_reason": None}}}
+        html = render_html(_report(self.store, self.d), _FIXED_TS, acquisition=acq)
+        panel = html.split("id='continuous'")[1].split("</section>")[0]
+        self.assertIn("ticks", panel)
+        self.assertIn("approve or reject candidate", panel)
+        self.assertIn("stops at every human gate", panel)
+        self.assertIn("no spend", panel)
+        self.assertNotIn("http", panel)
+
+    def test_experiments_panel_empty_and_rollup(self):
+        html = render_html(_report(self.store, self.d), _FIXED_TS)
+        self.assertIn("id='experiments'", html)
+        empty = html.split("id='experiments'")[1].split("</section>")[0]
+        self.assertIn("No experiments yet", empty)
+        self.assertNotIn("http", empty)
+
+        from revenue_os.experiments import STATUSES
+        acq = {"experiments": {"rollup": {
+            "total": 3, "open": 2, "closed": 1,
+            "overall": {**{s: 0 for s in STATUSES}, "drafted": 1, "posted": 1,
+                        "no_sale": 1},
+            "by_source": {"lemmy": {**{s: 0 for s in STATUSES}, "posted": 1,
+                                    "no_sale": 1},
+                          "hn-algolia": {**{s: 0 for s in STATUSES}, "drafted": 1}},
+            "rows": [
+                {"source": "lemmy", "platform": "Lemmy", "offer_price": 29.9,
+                 "currency": "EUR", "status": "no_sale", "age_days": 20,
+                 "revenue_ref": ""},
+                {"source": "hn-algolia", "platform": "HN", "offer_price": 29.9,
+                 "currency": "EUR", "status": "drafted", "age_days": 1,
+                 "revenue_ref": ""},
+            ]}}}
+        html = render_html(_report(self.store, self.d), _FIXED_TS, acquisition=acq)
+        panel = html.split("id='experiments'")[1].split("</section>")[0]
+        self.assertIn("lemmy", panel)
+        self.assertIn("no_sale", panel)
+        self.assertIn("29.9 EUR", panel)
+        self.assertIn("2 open", panel)
+        self.assertNotIn("http", panel)
+        self.assertNotIn("lead_id", panel)   # no prospect identity
+
     def test_first_sale_panel_without_readiness_is_an_honest_note(self):
         html = render_html(_report(self.store, self.d), _FIXED_TS)
         self.assertIn("id='first-sale'", html)

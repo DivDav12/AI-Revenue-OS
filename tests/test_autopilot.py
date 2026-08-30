@@ -185,6 +185,33 @@ class CycleTests(_OfflineSource):
         self._cycle()
         self.assertEqual(ap.status(self.d)["acquisition_queue_len"], 1)
 
+    def test_discovery_cooldown_skips_the_second_cycle_then_resumes(self):
+        r1 = self._cycle()
+        self.assertIn("scored", r1["discovery"])            # ran
+        r2 = self._cycle()                                  # immediately after
+        self.assertEqual(r2["discovery"].get("skipped"), "cooldown")
+        # brief prep / queue / payment still ran
+        self.assertIn("outreach", r2)
+        # zero cooldown restores the old behaviour
+        r3 = ap.run_cycle(self.d, max_age_days=30, politeness_delay=0,
+                          discovery_cooldown_hours=0)
+        self.assertIn("scored", r3["discovery"])
+
+    def test_queue_drops_a_lead_whose_experiment_is_closed(self):
+        self._cycle()
+        lid = OutreachStore.load(self.d / "outreach.json").all()[0]["lead_id"]
+        from revenue_os import experiments as ex
+        ex.open_from_briefs(self.d)
+        ex.advance(self.d, lid, "skipped")
+        self.assertEqual(ap.acquisition_queue(self.d), [])
+
+    def test_run_cycle_opens_and_reports_experiments(self):
+        r = self._cycle()
+        self.assertEqual(r["experiments"]["opened"], 1)
+        from revenue_os.experiments import ExperimentStore
+        self.assertEqual(len(ExperimentStore.load(
+            self.d / "experiments.json").all()), 1)
+
     def test_brief_links_to_the_deployed_candidate_url_not_the_stale_one(self):
         from revenue_os.store import Candidate, CandidateStore
         url = "https://DivDav12.github.io/AI-Revenue-OS/checkout.html"

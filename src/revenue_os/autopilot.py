@@ -44,6 +44,7 @@ class AutopilotState:
             "cycles": 0,
             "started_at": None,
             "last_cycle_at": None,
+            "last_discovery_at": None,
             "last_report": None,
             "pause_reason": None,
         }
@@ -87,18 +88,22 @@ def acquisition_queue(data_dir) -> list[dict]:
     facts a person needs to act on it: their own words, the community's
     promo policy, and the drafted brief's status.
 
-    Recomputed from the two stores each call (no separate state to drift):
+    Recomputed from the stores each call (no separate state to drift):
       - a lead the human REJECTED, or whose brief is `posted`/`skipped`,
-        is finished and never re-surfaces;
+        or whose experiment is closed (`sale`/`no_sale`/`skipped`), is
+        finished and never re-surfaces (Phase 3 cooldown);
       - `stage` is `prepared` once a draft brief exists, else `surfaced`.
     Ranked by the lead's final_score (freshest genuine asks first).
     """
     from .acquisition import AcquisitionStore
+    from .experiments import ExperimentStore
     from .outreach import OutreachStore
 
     data_dir = Path(data_dir)
     leads = AcquisitionStore.load(data_dir / "acquisition.json").ranked()
     briefs = OutreachStore.load(data_dir / "outreach.json")
+    exp = ExperimentStore.load(data_dir / "experiments.json")
+    _closed = ("sale", "no_sale", "skipped")
 
     queue: list[dict] = []
     for lead in leads:
@@ -107,8 +112,10 @@ def acquisition_queue(data_dir) -> list[dict]:
         lid = lead.get("lead_id")
         brief = briefs.get(lid)
         brief_status = (brief or {}).get("status")
+        experiment = exp.get(lid)
         if (lead.get("human_review_status") == "rejected"
-                or brief_status in _ACQ_DONE_BRIEF):
+                or brief_status in _ACQ_DONE_BRIEF
+                or (experiment and experiment.get("status") in _closed)):
             continue
         queue.append({
             "lead_id": lid,
@@ -214,11 +221,38 @@ def _paypal_check(data_dir) -> dict:
         return {"ok": False, "note": f"PayPal check failed: {exc}"}
 
 
+_DISCOVERY_COOLDOWN_H = 6.0   # Phase 3: min hours between real discovery runs
+
+
+def _discovery_cooling(st_data: dict, cooldown_hours: float) -> str | None:
+    """The ISO time discovery is next allowed, or None if it may run now.
+    cooldown_hours <= 0 -> never cools (previous behaviour)."""
+    if cooldown_hours is None or cooldown_hours <= 0:
+        return None
+    from datetime import datetime, timedelta, timezone
+    last = st_data.get("last_discovery_at")
+    try:
+        dt = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    nxt = dt + timedelta(hours=float(cooldown_hours))
+    return nxt.isoformat() if datetime.now(timezone.utc) < nxt else None
+
+
 def run_cycle(data_dir, *, allow_web: bool = False, max_age_days: int = 14,
               limit: int = 15, politeness_delay: float = 1.0,
-              checkout_url: str | None = None) -> dict:
+              checkout_url: str | None = None,
+              discovery_cooldown_hours: float = _DISCOVERY_COOLDOWN_H) -> dict:
     """Advance the funnel as far as it can without a human, then report
-    what a human must do next. Idempotent."""
+    what a human must do next. Idempotent.
+
+    Discovery only re-runs once every `discovery_cooldown_hours` (default
+    6); everything else - brief prep, the review queue, the read-only
+    payment check, funnel status - still runs every cycle. Pass 0 to
+    disable the cooldown.
+    """
     from . import budget
     from .acquisition import SEARCH_QUERIES, AcquisitionStore
     from .acquisition_sources import FREE_SOURCES, build_acquisition_source
@@ -246,43 +280,50 @@ def run_cycle(data_dir, *, allow_web: bool = False, max_age_days: int = 14,
                     "sale": False}
 
     # --- 1. discovery (free by default; web only if explicitly allowed) ---
+    cooling_until = _discovery_cooling(st.data, discovery_cooldown_hours)
     names = list(FREE_SOURCES) + (["web"] if allow_web else [])
     web_source = web_cache = None
-    try:
-        if allow_web:
-            from .llm_cache import LlmCache
-            from .llm_normalize import build_client
-            from .acquisition_web import WebSearchSource
-            est = round(0.05 * len(SEARCH_QUERIES), 4)
-            budget.guard(data_dir, est)            # pre-sale hard cap
-            ceiling = min(est * 3, budget.presale_remaining_usd(data_dir)
-                          if budget.presale_active(data_dir) else 1.0)
-            web_cache = LlmCache.load(data_dir / "llm_acquisition_web_cache.json")
-            web_source = WebSearchSource(client=build_client(), max_cost_usd=ceiling,
-                                        cache=web_cache)
-        source = build_acquisition_source(names, web_source=web_source)
-        store = AcquisitionStore.load(data_dir / "acquisition.json")
-        r = discover_acquisition_opportunities(
-            store, source, queries=SEARCH_QUERIES, limit=limit,
-            min_score=0, max_age_days=max_age_days,
-            politeness_delay=politeness_delay)
-        if web_cache is not None:
-            web_cache.save()
-        if web_source is not None:
-            from .llm_workers import record_llm_spend
-            record_llm_spend(data_dir, "acquisition", web_source)
-        report["discovery"] = {
-            "scored": len(r["leads"]), "new": r["new"], "updated": r["updated"],
-            "sources_status": r["sources_status"],
-            "web_cost_usd": round(web_source.meter.cost_usd, 4) if web_source else 0.0,
-        }
-    except budget.BudgetBlocked as exc:
-        report["notes"].append(str(exc))
-        report["discovery"] = {"skipped": "budget"}
-    except Exception as exc:
-        logger.warning("discovery failed: %s", exc)
-        report["notes"].append(f"discovery error: {exc}")
-        report["discovery"] = {"error": str(exc)}
+    if cooling_until is not None:
+        report["discovery"] = {"skipped": "cooldown", "next_at": cooling_until,
+                               "cooldown_hours": discovery_cooldown_hours}
+    else:
+        try:
+            if allow_web:
+                from .llm_cache import LlmCache
+                from .llm_normalize import build_client
+                from .acquisition_web import WebSearchSource
+                est = round(0.05 * len(SEARCH_QUERIES), 4)
+                budget.guard(data_dir, est)            # pre-sale hard cap
+                ceiling = min(est * 3, budget.presale_remaining_usd(data_dir)
+                              if budget.presale_active(data_dir) else 1.0)
+                web_cache = LlmCache.load(data_dir / "llm_acquisition_web_cache.json")
+                web_source = WebSearchSource(client=build_client(),
+                                             max_cost_usd=ceiling, cache=web_cache)
+            source = build_acquisition_source(names, web_source=web_source)
+            store = AcquisitionStore.load(data_dir / "acquisition.json")
+            r = discover_acquisition_opportunities(
+                store, source, queries=SEARCH_QUERIES, limit=limit,
+                min_score=0, max_age_days=max_age_days,
+                politeness_delay=politeness_delay)
+            if web_cache is not None:
+                web_cache.save()
+            if web_source is not None:
+                from .llm_workers import record_llm_spend
+                record_llm_spend(data_dir, "acquisition", web_source)
+            st.data["last_discovery_at"] = now_iso()
+            report["discovery"] = {
+                "scored": len(r["leads"]), "new": r["new"], "updated": r["updated"],
+                "sources_status": r["sources_status"],
+                "web_cost_usd": round(web_source.meter.cost_usd, 4)
+                if web_source else 0.0,
+            }
+        except budget.BudgetBlocked as exc:
+            report["notes"].append(str(exc))
+            report["discovery"] = {"skipped": "budget"}
+        except Exception as exc:
+            logger.warning("discovery failed: %s", exc)
+            report["notes"].append(f"discovery error: {exc}")
+            report["discovery"] = {"error": str(exc)}
 
     # --- 2. outreach briefs for high/medium-quality leads ---------------
     store = AcquisitionStore.load(data_dir / "acquisition.json")
@@ -299,6 +340,18 @@ def run_cycle(data_dir, *, allow_web: bool = False, max_age_days: int = 14,
         prepared += 1
     if prepared:
         briefs.save()
+
+    # --- 2c. experiment ledger (deterministic, read-only, no new "act") ---
+    try:
+        from . import experiments
+        report["experiments"] = {
+            "opened": experiments.open_from_briefs(data_dir)["opened"],
+            "sales": experiments.correlate_sale(data_dir)["sale"],
+            "swept": experiments.sweep(data_dir)["closed"],
+        }
+    except Exception as exc:  # tracking must never break a cycle
+        logger.warning("experiment feedback failed: %s", exc)
+        report["experiments"] = {"error": str(exc)}
 
     # --- 2b. the acquisition review queue (durable, de-duped) ----------
     queue = acquisition_queue(data_dir)
