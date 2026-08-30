@@ -15,6 +15,8 @@ Read commands:
                    stops at every human gate with a concrete action queue
   review-opportunity ID --approve|--reject   record a human verdict (no contact)
   acquisition-rescore   re-score the whole lead store with the current model ($0)
+  acquisition-queue     high/medium prospects still waiting on a human (de-duped)
+  outreach-status ID posted|skipped   record what YOU did with a drafted brief
   digest [-q]      one-line summary of what needs the human
   agent-run        operator agent: one loop to a fixed point (also the cron primitive)
   agent-loop       operator agent: tick / sleep / repeat, bounded and resumable
@@ -477,6 +479,59 @@ def _cmd_outreach_brief(args) -> int:
     return 0
 
 
+def _cmd_acquisition_queue(args) -> int:
+    from . import autopilot as ap
+
+    q = ap.acquisition_queue(_data_dir(args))
+    if args.json:
+        print(json.dumps(q, indent=2))
+        return 0
+    if not q:
+        print("ACQUISITION QUEUE: empty - no high/medium prospect is waiting "
+              "on you. Run `discover-free` to find more.")
+        return 0
+    print(f"ACQUISITION QUEUE - {len(q)} prospect(s) need a human\n")
+    for i, row in enumerate(q, 1):
+        age = ("age unknown" if row.get("age_days") is None
+               else f"{row['age_days']}d ({row.get('age_bucket', '?')})")
+        print(f"{i}. [{row.get('prospect_quality', '?')}]  score "
+              f"{row.get('final_score', 0)}  {age}  {row.get('platform', '')}")
+        print(f'   "{row.get("their_words", "")}"')
+        print(f"   stage: {row.get('stage', '?')}   brief: {row.get('brief_status', '?')}"
+              f"   review: {row.get('human_review_status', '?')}")
+        print(f"   promo: {row.get('promo_allowed', '?')} - {row.get('promo_note', '')}")
+        print(f"   next:  {row.get('next_action', '')}")
+        print(f"   URL:   {row.get('url', '')}")
+        print(f"   id:    {row.get('lead_id', '')}"
+              + (f"   ->  revenue_os outreach-brief {row.get('lead_id', '')}"
+                 if row.get("stage") == "prepared" else ""))
+        print()
+    print("The system drafted these. You check each community's self-promotion "
+          "rules and post every reply yourself - it never posts, DMs, or emails.")
+    return 0
+
+
+def _cmd_outreach_status(args) -> int:
+    from .outreach import OutreachStore
+
+    data_dir = _data_dir(args)
+    briefs = OutreachStore.load(data_dir / "outreach.json")
+    matches = [b for b in briefs.all()
+               if str(b.get("lead_id", "")).startswith(args.lead_id)]
+    if len(matches) != 1:
+        print(f"error: {'no' if not matches else 'multiple'} brief(s) match "
+              f"id {args.lead_id!r}", file=sys.stderr)
+        return 1
+    lid = matches[0]["lead_id"]
+    entry = briefs.set_status(lid, args.status)
+    briefs.save()
+    print(f"{lid}: outreach status -> {entry['status']}")
+    if args.status in ("posted", "skipped"):
+        print("  Recorded by YOU - this prospect drops out of the acquisition "
+              "queue. The system posted nothing.")
+    return 0
+
+
 def _cmd_pipeline(args) -> int:
     from .pipeline import pipeline_status, run_pipeline
 
@@ -559,6 +614,18 @@ def _cmd_autopilot(args) -> int:
     o = r.get("outreach", {})
     print(f"  Outreach: {o.get('prepared', 0)} briefs prepared, "
           f"{o.get('awaiting_post', 0)} awaiting a human post")
+    aq = r.get("acquisition_queue", [])
+    if aq:
+        print(f"  Acquisition queue: {len(aq)} prospect(s) need you "
+              "(`revenue_os acquisition-queue`)")
+        for row in aq[:5]:
+            age = ("age unknown" if row.get("age_days") is None
+                   else f"{row['age_days']}d/{row.get('age_bucket', '?')}")
+            print(f"    - [{row.get('prospect_quality', '?')}] "
+                  f"{row.get('stage', '?'):9} promo:{row.get('promo_allowed', '?'):8} "
+                  f"{age:16} {row.get('lead_id', '')}  {row.get('url', '')}")
+        if len(aq) > 5:
+            print(f"    ... and {len(aq) - 5} more")
     p = r.get("payment", {})
     print(f"  Payment: {'ok' if p.get('ok') else p.get('note', 'skipped')}"
           + (f" - {len(p.get('booked', []))} new" if p.get("ok") else ""))
@@ -1519,6 +1586,23 @@ def build_parser() -> argparse.ArgumentParser:
                         help="checkout URL for the tracked link (default: the live one)")
     obrief.add_argument("--json", action="store_true")
     obrief.set_defaults(func=_cmd_outreach_brief)
+
+    aq = sub.add_parser(
+        "acquisition-queue", parents=[common],
+        help="list every high/medium prospect still waiting on a human "
+             "(de-duped; the system never posts)",
+    )
+    aq.add_argument("--json", action="store_true")
+    aq.set_defaults(func=_cmd_acquisition_queue)
+
+    ostatus = sub.add_parser(
+        "outreach-status", parents=[common],
+        help="record what YOU did with a drafted brief "
+             "(posted / skipped removes it from the acquisition queue)",
+    )
+    ostatus.add_argument("lead_id", help="lead id (or a unique prefix)")
+    ostatus.add_argument("status", choices=("draft", "approved", "posted", "skipped"))
+    ostatus.set_defaults(func=_cmd_outreach_status)
 
     apilot = sub.add_parser(
         "autopilot", parents=[common],
