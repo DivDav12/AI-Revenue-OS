@@ -587,15 +587,22 @@ def _agent_map(agent_log, spend_entries, goal, session, report,
 
 def _roster_panel() -> str:
     """The full target roster from roster.py. Planned agents are shown but
-    carry no status or metrics - they are not running."""
+    carry no status or metrics - they are not running. Live human-gated
+    agents produce drafts only; the tag keeps that visible."""
     n_live = len(roster.live())
+    n_planned = len(roster.AGENTS) - n_live
     blocks = ""
     for cluster in roster.CLUSTERS:
         rows = ""
         for a in (s for s in roster.AGENTS if s.cluster == cluster):
             live = a.status == "live"
             cls = "rlive" if live else "rplanned"
-            tag = "live" if live else ("human-gated" if a.gate == "human" else "planned")
+            if not live:
+                tag = "planned"
+            elif a.gate == "human":
+                tag = "human-gated"
+            else:
+                tag = "live"
             rows += (
                 f"<div class='ragent {cls}'>{_avatar(a.node)}"
                 f"<div><div class='rname'>{_esc(a.name)}</div>"
@@ -603,10 +610,13 @@ def _roster_panel() -> str:
                 f"<span class='rtag'>{tag}</span></div>"
             )
         blocks += (f"<h3>{_esc(cluster)}</h3><div class='rgrid'>{rows}</div>")
+    tail = (" Planned agents are not running and report no activity."
+            if n_planned else
+            " Human-gated agents produce drafts only - a person runs, publishes, "
+            "or funds anything money- or contact-related.")
     return (
         f"<p class='muted'>Target roster: {len(roster.AGENTS)} agents &middot; "
-        f"{n_live} live &middot; {len(roster.AGENTS) - n_live} planned. "
-        "Planned agents are not running and report no activity.</p>"
+        f"{n_live} live &middot; {n_planned} planned.{tail}</p>"
         f"{blocks}"
     )
 

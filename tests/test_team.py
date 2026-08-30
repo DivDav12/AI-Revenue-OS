@@ -59,12 +59,29 @@ class TeamTests(unittest.TestCase):
             names,
             {"evaluator", "opportunity_finder", "product_researcher",
              "competitor_analyzer", "copywriter", "content_creator",
-             "revenue_analyst", "trend_hunter"},
+             "revenue_analyst", "trend_hunter",
+             "supplier_finder", "designer", "store_builder", "developer",
+             "automation_engineer", "ads_manager", "campaign_optimizer",
+             "budget_allocator", "sales_tracker", "profit_master",
+             "customer_support", "review_manager", "quality_control"},
         )
         for cap, name in (("analyze_competition", "competitor_analyzer"),
                           ("write_copy", "copywriter"),
                           ("package_deliverable", "content_creator"),
-                          ("analyze_revenue", "revenue_analyst")):
+                          ("analyze_revenue", "revenue_analyst"),
+                          ("find_suppliers", "supplier_finder"),
+                          ("design_assets", "designer"),
+                          ("build_store", "store_builder"),
+                          ("develop", "developer"),
+                          ("automate", "automation_engineer"),
+                          ("run_ads", "ads_manager"),
+                          ("optimize_campaigns", "campaign_optimizer"),
+                          ("allocate_budget", "budget_allocator"),
+                          ("track_sales", "sales_tracker"),
+                          ("manage_profit", "profit_master"),
+                          ("support_customers", "customer_support"),
+                          ("manage_reviews", "review_manager"),
+                          ("quality_check", "quality_control")):
             self.assertEqual(
                 team.registry.find_for(_T(objective="x", capability=cap)).name, name
             )

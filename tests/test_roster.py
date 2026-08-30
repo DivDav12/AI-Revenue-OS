@@ -2,6 +2,7 @@ import unittest
 
 from revenue_os import roster
 from revenue_os.operator import Goal
+from revenue_os.team import build_team
 
 
 class RosterTests(unittest.TestCase):
@@ -19,14 +20,41 @@ class RosterTests(unittest.TestCase):
         self.assertEqual(len({a.capability for a in roster.AGENTS}), 21)
 
     def test_live_agents_are_the_implemented_workers(self):
-        self.assertEqual(
-            {a.id for a in roster.live()},
-            {"market_scanner", "opportunity_finder", "product_researcher",
-             "competitor_analyzer", "trend_hunter", "copywriter",
-             "revenue_analyst", "content_creator"},
-        )
+        # every live agent except market_scanner (which needs a source) is
+        # registered in the team by its roster id.
+        registered = {a.name for a in build_team().registry.agents}
+        for a in roster.live():
+            if a.id == "market_scanner":
+                continue
+            self.assertIn(a.id, registered, a.id)
         for a in roster.planned():
             self.assertEqual(a.status, "planned")
+
+    def test_phase_a_build_agents_are_live(self):
+        for agent_id in ("supplier_finder", "designer", "store_builder",
+                         "developer", "automation_engineer"):
+            self.assertEqual(roster.get(agent_id).status, "live", agent_id)
+
+    def test_phase_b_marketing_agents_are_live_and_human_gated(self):
+        for agent_id in ("ads_manager", "campaign_optimizer", "budget_allocator"):
+            spec = roster.get(agent_id)
+            self.assertEqual(spec.status, "live", agent_id)
+            self.assertEqual(spec.gate, "human", agent_id)
+
+    def test_phase_c_revenue_agents_are_live(self):
+        for agent_id in ("sales_tracker", "profit_master"):
+            self.assertEqual(roster.get(agent_id).status, "live", agent_id)
+
+    def test_phase_d_support_agents_are_live_and_all_21_live(self):
+        for agent_id in ("customer_support", "review_manager", "quality_control"):
+            self.assertEqual(roster.get(agent_id).status, "live", agent_id)
+        self.assertEqual(len(roster.live()), 21)
+        self.assertEqual(roster.planned(), ())
+        self.assertEqual(roster.blocked(), ())
+
+    def test_no_live_agent_has_unmet_dependencies(self):
+        for a in roster.live():
+            self.assertEqual(roster.unmet_dependencies(a), (), a.id)
 
     def test_lookup_helpers(self):
         self.assertEqual(roster.get("ads_manager").name, "Ads Manager")

@@ -241,19 +241,21 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertIn("class='taskchip'", html)
         self.assertIn(">research</div>", html)
 
-    def test_roster_panel_shows_all_21_with_planned_marked(self):
+    def test_roster_panel_shows_all_21_by_status(self):
         from revenue_os import roster
         html = render_html(_report(self.store, self.d), _FIXED_TS)
         self.assertIn("Target roster", html)
         for spec in roster.AGENTS:
             self.assertIn(spec.name, html)
-        self.assertIn("class='ragent rlive'", html)      # live agents
-        self.assertIn("class='ragent rplanned'", html)   # planned agents
-        # a planned agent carries no status pill / metrics
+        self.assertIn("class='ragent rlive'", html)
+        if roster.planned():
+            self.assertIn("class='ragent rplanned'", html)
+        # human-gated live agents keep a distinct tag
+        self.assertIn(">human-gated</span>", html)
+        # the panel never fabricates a status pill / metrics
         panel = html.split("Target roster")[1]
         self.assertNotIn("cs-working", panel)
         self.assertNotIn("class='meta'", panel)
-        self.assertIn("Planned agents are not running", html)
 
     def test_map_edges_come_from_real_task_lineage(self):
         base = _report(self.store, self.d)
