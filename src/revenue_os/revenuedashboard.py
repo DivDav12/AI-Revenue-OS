@@ -743,6 +743,93 @@ def _acquisition_panel(acquisition: dict | None) -> str:
     )
 
 
+def _continuous_panel(acquisition: dict | None) -> str:
+    """Phase 3: the continuous-loop session, straight from
+    data/revenue_loop.json. No URLs, nothing inferred. The loop drives the
+    existing supervisor - it passes no human gate and spends nothing."""
+    data = acquisition if isinstance(acquisition, dict) else {}
+    loop = data.get("loop") if isinstance(data.get("loop"), dict) else None
+    if not loop:
+        return ("<p class='muted'>No continuous session yet - "
+                "<span class='mono'>data/revenue_loop.json</span> is absent. "
+                "Start one with <span class='mono'>revenue-loop --watch</span> "
+                "(bounded, resumable, deterministic, EUR 0).</p>")
+
+    sess = loop.get("session") if isinstance(loop.get("session"), dict) else {}
+    rows = [
+        ("loop status", loop.get("status") or "idle"),
+        ("session", (sess.get("end_reason") and f"ended: {sess['end_reason']}")
+         or ("running" if sess.get("started_at") else "none")),
+        ("ticks", sess.get("ticks", 0)),
+        ("last tick", sess.get("last_tick_at") or "-"),
+        ("steps taken (lifetime)", loop.get("steps_taken", 0)),
+        ("last action", loop.get("last_action") or "-"),
+    ]
+    body = "".join(f"<tr><td>{_esc(k)}</td><td class='hl'>{_esc(v)}</td></tr>"
+                   for k, v in rows)
+    hq = [str(x) for x in (loop.get("human_queue") or []) if str(x).strip()]
+    qhtml = ""
+    if hq:
+        items = "".join(f"<li>{_esc(x)}</li>" for x in hq[:8])
+        qhtml = ("<p class='muted' style='margin-top:1rem'>Current human "
+                 "queue (the loop stops here - it never acts on these):</p>"
+                 f"<ul>{items}</ul>")
+    return (f"<div class='aout'><table>{body}</table></div>"
+            "<p class='muted'>Straight from "
+            "<span class='mono'>data/revenue_loop.json</span>. The loop runs "
+            "discovery + the pipeline deterministically and stops at every "
+            "human gate - no posting, no spend, no API/PayPal call.</p>"
+            f"{qhtml}")
+
+
+def _experiments_panel(acquisition: dict | None) -> str:
+    """Phase 3: the revenue-experiment ledger (data/experiments.json).
+    Per-source rollup + per-experiment rows. No lead id, no URL - only
+    source / price / status / age. Deterministic, read-only tracking."""
+    data = acquisition if isinstance(acquisition, dict) else {}
+    exp = data.get("experiments") if isinstance(data.get("experiments"), dict) else None
+    roll = (exp or {}).get("rollup") if isinstance((exp or {}).get("rollup"), dict) else None
+    if not roll or not roll.get("total"):
+        return ("<p class='muted'>No experiments yet - "
+                "<span class='mono'>data/experiments.json</span> is empty. One "
+                "opens per prospect outreach attempt (drafted &rarr; posted "
+                "&rarr; sale | no_sale). Deterministic, read-only.</p>")
+
+    from .experiments import STATUSES
+    o = roll["overall"]
+    head = "".join(f"<th>{_esc(s)}</th>" for s in STATUSES)
+    srows = ""
+    for src, c in sorted(roll["by_source"].items()):
+        cells = "".join(f"<td>{_esc(c.get(s, 0))}</td>" for s in STATUSES)
+        srows += f"<tr><td class='hl'>{_esc(src)}</td>{cells}</tr>"
+    total_cells = "".join(f"<td class='hl'>{_esc(o.get(s, 0))}</td>" for s in STATUSES)
+    rollup_html = (
+        f"<div class='aout'><table><tr><th>source</th>{head}</tr>{srows}"
+        f"<tr><td class='hl'>all</td>{total_cells}</tr></table></div>")
+
+    rrows = ""
+    for row in roll["rows"][:15]:
+        age = "age ?" if row.get("age_days") is None else f"{row['age_days']}d"
+        rrows += (
+            f"<tr><td>{_esc(row.get('source') or 'unknown')}</td>"
+            f"<td>{_esc(row.get('offer_price'))} {_esc(row.get('currency') or 'EUR')}</td>"
+            f"<td class='hl'>{_esc(row.get('status'))}</td>"
+            f"<td>{_esc(age)}</td></tr>")
+    more = (f"<tr><td colspan='4' class='muted'>&hellip; and "
+            f"{len(roll['rows']) - 15} more</td></tr>"
+            if len(roll["rows"]) > 15 else "")
+    rows_html = (
+        "<p class='muted' style='margin-top:1rem'>Experiments "
+        f"({roll['open']} open, {roll['closed']} closed) - no prospect is "
+        "named:</p>"
+        f"<div class='aout'><table><tr><th>source</th><th>price</th>"
+        f"<th>status</th><th>age</th></tr>{rrows}{more}</table></div>")
+    return (rollup_html + rows_html
+            + "<p class='muted'>From <span class='mono'>data/experiments.json"
+            "</span>. Sales are correlated read-only from the intake + revenue "
+            "ledger; PayPal is never called.</p>")
+
+
 def _first_sale_panel(acquisition: dict | None) -> str:
     """A live readiness checklist for the first real sale, computed only
     from files on disk (the launched candidate, the acquisition + outreach
@@ -1562,6 +1649,8 @@ _NAV = (
     ("First sale", "#first-sale", "evaluator"),
     ("Agents", "#agents", "generic"),
     ("Acquisition", "#acquisition", "finder"),
+    ("Loop", "#continuous", "operator"),
+    ("Experiments", "#experiments", "evaluator"),
     ("Pipeline", "#pipeline", "finder"),
     ("Outputs", "#agent-outputs", "content"),
     ("Tasks", "#tasks", "planner"),
@@ -1630,6 +1719,10 @@ def render_html(report: dict, generated_at: str, *,
         + "</section>"
         + "<section id='acquisition'><h2>Customer acquisition</h2>"
         + _acquisition_panel(acquisition) + "</section>"
+        + "<section id='continuous'><h2>Continuous revenue loop</h2>"
+        + _continuous_panel(acquisition) + "</section>"
+        + "<section id='experiments'><h2>Revenue experiments</h2>"
+        + _experiments_panel(acquisition) + "</section>"
         + "<section id='pipeline'><h2>Agent pipeline</h2>"
         + _agent_pipeline_panel(pipeline) + "</section>"
         + "<section id='agent-outputs'><h2>Agent outputs</h2>"
