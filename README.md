@@ -234,6 +234,7 @@ values. `.env` stays gitignored.
 
 ```
 python -m revenue_os outreach-brief <lead-id> --data-dir data [--checkout-url URL] [--json]
+  [--draft template|llm] [--model ...] [--max-cost 0.10] [--refresh]
 ```
 
 Turns one qualified lead into a **draft** answer plan: the lead's own
@@ -243,6 +244,16 @@ last-line CTA with a tracked checkout link (`?lead=<id>`). It makes no
 claim about the lead's business beyond their own text, and it **never
 posts** - a human rewrites and publishes. Drafts persist in
 `data/outreach.json` (`draft` -> `approved` -> `posted` / `skipped`).
+
+**`--draft llm`** (opt-in, paid, budget-gated) adds one metered Claude
+call (`outreach_llm.py`) that writes a *tailored* reply referencing the
+prospect's actual post, attached as `draft_reply`. Same machinery as
+`--score llm`: `budget_gate` (cumulative cap + EUR 3 pre-sale limit),
+per-run `--max-cost`, `CostMeter`, and `LlmCache` (a lead already drafted
+is never re-charged). The prompt forbids any purchase claim / guarantee /
+fabricated result or anecdote, the post is fenced as untrusted, and a
+regex flags promise language for the human. Still a draft - a person
+edits and posts it.
 
 **Lead -> sale tracking.** The tracked link carries `?lead=<id>`; the
 generated `checkout.html` / `intake.html` copy it into a hidden

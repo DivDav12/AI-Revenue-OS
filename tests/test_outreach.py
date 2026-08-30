@@ -111,6 +111,119 @@ class OutreachDrafterAgentTests(unittest.TestCase):
         self.assertEqual(self._run({"lead": {"no": "id"}}).status, "error")
 
 
+_GOOD_DRAFT = {
+    "reply_draft": (
+        "You've got 200 signups but no buyers - that's usually a "
+        "conversation gap, not a traffic gap. Pick the 20 signups who "
+        "match your ideal user and DM each one this week asking what "
+        "stopped them from paying. Do that before touching ads.\n\n"
+        "If a structured version would help, I put together a 14-day "
+        "first-customers plan - totally fine to ignore: "
+        "https://example.test/checkout.html?lead=abc123def456"),
+    "help_summary": "talk to 20 matching signups 1:1 before spending on ads",
+    "cta_included": True,
+    "caveats_for_the_human": ["HN bans cold pitching - keep the last line "
+                              "very soft or drop it"],
+}
+
+
+class _FakeAnthropic:
+    """Minimal Anthropic-client stand-in for the outreach drafter."""
+
+    class _Usage:
+        input_tokens = 900
+        output_tokens = 260
+        cache_read_input_tokens = 0
+        cache_creation_input_tokens = 0
+
+    class _Block:
+        type = "tool_use"
+        name = "record_reply_draft"
+
+        def __init__(self, payload):
+            self.input = payload
+
+    class _Resp:
+        def __init__(self, payload):
+            self.content = [_FakeAnthropic._Block(payload)]
+            self.usage = _FakeAnthropic._Usage()
+            self.stop_reason = "tool_use"
+
+    def __init__(self, payload=None):
+        self.payload = payload or _GOOD_DRAFT
+        self.calls = 0
+        self.messages = self
+
+    def create(self, **kw):
+        self.calls += 1
+        return _FakeAnthropic._Resp(self.payload)
+
+
+class OutreachLlmTests(unittest.TestCase):
+    def _drafter(self, payload=None, **kw):
+        from revenue_os.outreach_llm import OutreachDrafter
+        return OutreachDrafter(client=_FakeAnthropic(payload),
+                               checkout_url=_CHECKOUT, **kw)
+
+    def test_drafts_a_tailored_reply_attached_as_draft_reply(self):
+        d = self._drafter()
+        b = outreach_brief(_LEAD, checkout_url=_CHECKOUT, drafter=d)
+        dr = b["draft_reply"]
+        self.assertIn("200 signups", dr["reply_draft"])
+        self.assertIn("?lead=abc123def456", dr["reply_draft"])
+        self.assertTrue(dr["cta_included"])
+        self.assertEqual(dr["promise_language_flagged"], [])
+        self.assertIn("never posts", dr["human_approval"].lower())
+        self.assertEqual(d.meter.output_tokens, 260)   # metered
+
+    def test_promise_language_is_flagged_not_dropped(self):
+        bad = {**_GOOD_DRAFT,
+               "reply_draft": "Do this and you will get customers, guaranteed."}
+        d = self._drafter(bad)
+        dr = d(_LEAD)
+        self.assertTrue(dr["promise_language_flagged"])
+
+    def test_negated_guarantee_is_not_flagged(self):
+        ok = {**_GOOD_DRAFT,
+              "reply_draft": "This is not a guarantee of customers - just a plan."}
+        dr = self._drafter(ok)(_LEAD)
+        self.assertEqual(dr["promise_language_flagged"], [])
+
+    def test_cached_lead_costs_nothing_and_makes_no_second_call(self):
+        from revenue_os.llm_cache import LlmCache
+        cache = LlmCache(Path(self._tmp()) / "c.json")
+        client = _FakeAnthropic()
+        from revenue_os.outreach_llm import OutreachDrafter
+        d = OutreachDrafter(client=client, checkout_url=_CHECKOUT, cache=cache)
+        d(_LEAD)
+        d(_LEAD)
+        self.assertEqual(client.calls, 1)
+        self.assertEqual(d.cache_hits, 1)
+
+    def test_drafter_failure_never_breaks_the_brief(self):
+        def boom(_lead):
+            raise RuntimeError("api down")
+        b = outreach_brief(_LEAD, checkout_url=_CHECKOUT, drafter=boom)
+        self.assertIn("api down", b["draft_reply"]["error"])
+        self.assertIn(b["answer_angle"], b["answer_angle"])   # rest of brief intact
+
+    def test_no_posting_functions_in_outreach_llm_module(self):
+        import inspect
+
+        import revenue_os.outreach_llm as m
+        src = inspect.getsource(m)
+        for banned in ("def post", "def send", "def dm", "def comment",
+                       "requests.post", "urlopen", "smtplib",
+                       'method="POST"', "method='POST'"):
+            self.assertNotIn(banned, src)
+
+    def _tmp(self):
+        import tempfile
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        return d
+
+
 class StoreTests(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
@@ -159,6 +272,22 @@ class CliTests(unittest.TestCase):
         for banned in ("def post", "def send", "def dm", "requests.post",
                        "urlopen", "smtplib", "def reply", "def comment"):
             self.assertNotIn(banned, src)
+
+    def test_draft_llm_is_budget_gated_not_a_crash(self):
+        # --draft llm with an impossible budget -> refused before any client
+        rc = main(["outreach-brief", "abc123", "--checkout-url", _CHECKOUT,
+                   "--draft", "llm", "--max-cost", "0.00001",
+                   "--data-dir", str(self.d)])
+        self.assertEqual(rc, 1)
+        sp = self.d / "llm_spend.json"
+        if sp.exists():
+            self.assertEqual(json.loads(sp.read_text())[-1]["cost_usd"], 0.0)
+
+    def test_default_draft_is_template_no_llm_key(self):
+        main(["outreach-brief", "abc123", "--checkout-url", _CHECKOUT,
+              "--data-dir", str(self.d)])
+        b = OutreachStore.load(self.d / "outreach.json").get("abc123def456")
+        self.assertNotIn("draft_reply", b["brief"])
 
 
 if __name__ == "__main__":

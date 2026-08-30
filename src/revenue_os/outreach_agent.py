@@ -30,5 +30,7 @@ class OutreachDrafterAgent(Agent):
                 error="payload['lead'] must be a lead dict carrying a lead_id",
             )
         checkout_url = str(task.payload.get("checkout_url") or DEFAULT_CHECKOUT_URL)
-        brief = outreach_brief(lead, checkout_url=checkout_url)
+        # optional: payload['drafter'] is a callable (lead) -> tailored draft
+        brief = outreach_brief(lead, checkout_url=checkout_url,
+                               drafter=task.payload.get("drafter"))
         return Result(task_id=task.id, agent=self.name, status="ok", output=brief)
