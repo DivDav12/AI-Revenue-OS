@@ -753,6 +753,7 @@ def build_dashboard_html(
         task_log=load_task_log(data_dir).entries(),
         trend=_load_json("trend_report.json"),
         revenue_analysis=_load_json("revenue_analysis.json"),
+        agent_outputs=_load_json("agent_outputs.json"),
         interactive=interactive, flash=flash, csrf=csrf,
     )
 

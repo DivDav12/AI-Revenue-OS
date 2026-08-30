@@ -257,6 +257,59 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertNotIn("cs-working", panel)
         self.assertNotIn("class='meta'", panel)
 
+    def test_cluster_flow_shows_all_21_agents_by_cluster(self):
+        from revenue_os import roster
+        html = render_html(_report(self.store, self.d), _FIXED_TS)
+        self.assertIn("class='cflow'", html)
+        self.assertIn("All 21 agents", html)
+        flow = html.split("class='cflow'")[1].split("Target roster")[0]
+        for spec in roster.AGENTS:
+            self.assertIn(spec.name, flow, spec.id)
+        for label in ("Discovery", "Build", "Marketing", "Revenue", "Support"):
+            self.assertIn(label, flow)
+        # human-gated agents keep the signal; nothing without a real output
+        # is shown as "ran"
+        self.assertIn(">human-gated</span>", flow)
+        self.assertNotIn("cnode ran", flow)      # no agent_outputs passed
+        self.assertNotIn("class='meta'", flow)   # no fabricated metrics
+
+    def test_cluster_flow_ran_only_from_persisted_output(self):
+        outputs = {"find_suppliers": {"ts": "2026-08-27T10:00:00+00:00",
+                                      "objective": "run Supplier Finder",
+                                      "output": {"confidence": "low"}}}
+        html = render_html(_report(self.store, self.d), _FIXED_TS,
+                           agent_outputs=outputs)
+        flow = html.split("class='cflow'")[1].split("Target roster")[0]
+        self.assertIn("ran 2026-08-27", flow)          # supplier finder ran
+        self.assertEqual(flow.count("cnode ran"), 1)   # exactly the one persisted
+
+    def test_agent_outputs_panel_reads_persisted_data_newest_first(self):
+        outputs = {
+            "find_suppliers": {"ts": "2026-08-25T09:00:00+00:00",
+                               "objective": "run Supplier Finder",
+                               "output": {"confidence": "none", "research_needed": True}},
+            "quality_check": {"ts": "2026-08-27T09:00:00+00:00",
+                              "objective": "run Quality Control",
+                              "output": {"qc_status": "block", "human_gate_required": False}},
+        }
+        html = render_html(_report(self.store, self.d), _FIXED_TS,
+                           agent_outputs=outputs)
+        self.assertIn("id='agent-outputs'", html)
+        panel = html.split("id='agent-outputs'")[1].split("</section>")[0]
+        self.assertIn("Supplier Finder", panel)
+        self.assertIn("Quality Control", panel)
+        self.assertIn("qc_status=block", panel)
+        self.assertIn("research_needed=True", panel)
+        # newest first: quality_check (27th) before find_suppliers (25th)
+        self.assertLess(panel.index("Quality Control"), panel.index("Supplier Finder"))
+        self.assertIn("2 agent(s) with a persisted output", panel)
+
+    def test_agent_outputs_panel_empty_is_honest(self):
+        html = render_html(_report(self.store, self.d), _FIXED_TS)
+        panel = html.split("id='agent-outputs'")[1].split("</section>")[0]
+        self.assertIn("No agent outputs yet", panel)
+        self.assertNotIn("<table>", panel)
+
     def test_map_edges_come_from_real_task_lineage(self):
         base = _report(self.store, self.d)
         root = "t-root"
@@ -600,6 +653,17 @@ class DashboardCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(target.exists())
         self.assertNotIn("https://", target.read_text(encoding="utf-8"))
+
+    def test_dashboard_loads_agent_outputs_json_from_disk(self):
+        from revenue_os.agent_runner import run_agent
+        run_agent(Path(self.data), "manage_profit", {"booked_revenue": 200})
+        code, _ = _run(["dashboard", "--data-dir", self.data])
+        self.assertEqual(code, 0)
+        html = (Path(self.data) / "dashboard.html").read_text(encoding="utf-8")
+        self.assertIn("Profit Master", html)
+        self.assertIn("id='agent-outputs'", html)
+        self.assertIn("cnode ran", html)          # shown as ran in the flow
+        self.assertNotIn("://", html)
 
     def test_dashboard_shows_operator_decisions(self):
         _run(["agent-run", "--data-dir", self.data])

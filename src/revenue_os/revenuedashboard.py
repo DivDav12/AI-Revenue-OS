@@ -231,6 +231,22 @@ h3{font-size:.58rem;letter-spacing:.15em;text-transform:uppercase;color:var(--di
 .rtag{margin-left:auto;font-size:.54rem;font-weight:700;letter-spacing:.06em;
   padding:.12rem .35rem;border-radius:12px;border:1px solid var(--edge-hi);color:var(--dim)}
 .ragent.rlive .rtag{color:var(--good);border-color:color-mix(in srgb,var(--good) 45%,var(--edge))}
+.cflow{display:flex;gap:.5rem;overflow-x:auto;margin:.2rem 0 1.2rem;padding-bottom:.3rem}
+.cband{flex:1 1 0;min-width:150px;border:1px solid var(--edge);border-radius:10px;
+  background:var(--surface2);padding:.5rem}
+.cband-h{font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--dim);margin-bottom:.4rem;display:flex;justify-content:space-between}
+.cnode{display:flex;align-items:center;gap:.4rem;padding:.32rem .4rem;border-radius:8px;
+  border:1px solid var(--edge);background:var(--surface);margin:.26rem 0}
+.cnode .avatar{width:22px;height:22px;border-radius:6px;box-shadow:none}
+.cnode .avatar svg{width:12px;height:12px}
+.cnode .cn{font-size:.66rem;font-weight:600;line-height:1.15}
+.cnode .ct{margin-left:auto;font-size:.5rem;font-weight:700;letter-spacing:.05em;
+  padding:.1rem .3rem;border-radius:10px;border:1px solid var(--edge-hi);color:var(--dim);
+  white-space:nowrap}
+.cnode.ran .ct{color:var(--good);border-color:color-mix(in srgb,var(--good) 45%,var(--edge))}
+.cnode.gated .ct{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,var(--edge))}
+.aout td.hl{color:var(--text)}
 """.strip()
 
 # ---------------------------------------------------------------------------
@@ -621,6 +637,51 @@ def _roster_panel() -> str:
     )
 
 
+_CLUSTER_FLOW_LABEL = {
+    "discovery": "1 &middot; Discovery", "build": "2 &middot; Build",
+    "marketing": "3 &middot; Marketing", "revenue": "4 &middot; Revenue",
+    "support": "5 &middot; Support",
+}
+
+
+def _cluster_flow(agent_outputs: dict | None) -> str:
+    """All 21 roster agents laid out Discovery -> Build -> Marketing ->
+    Revenue -> Support. Status is real only: "ran" when
+    agent_outputs.json holds a persisted output for that capability,
+    otherwise "human-gated" or "ready". No metrics are invented."""
+    outs = agent_outputs if isinstance(agent_outputs, dict) else {}
+    bands = ""
+    for cluster in roster.CLUSTERS:
+        agents = [a for a in roster.AGENTS if a.cluster == cluster]
+        ran = sum(1 for a in agents if a.capability in outs)
+        rows = ""
+        for a in agents:
+            entry = outs.get(a.capability)
+            if isinstance(entry, dict):
+                cls = "ran"
+                tag = "ran " + str(entry.get("ts", ""))[:10]
+            elif a.gate == "human":
+                cls, tag = "gated", "human-gated"
+            else:
+                cls, tag = "", "ready"
+            rows += (
+                f"<div class='cnode {cls}'>{_avatar(a.node)}"
+                f"<span class='cn'>{_esc(a.name)}</span>"
+                f"<span class='ct'>{_esc(tag)}</span></div>"
+            )
+        bands += (
+            f"<div class='cband'><div class='cband-h'>"
+            f"<span>{_CLUSTER_FLOW_LABEL[cluster]}</span>"
+            f"<span>{ran}/{len(agents)}</span></div>{rows}</div>"
+        )
+    return (
+        "<p class='muted'>All 21 agents by cluster. &ldquo;ran&rdquo; means a real "
+        "output is persisted in <span class='mono'>agent_outputs.json</span>; "
+        "human-gated agents produce drafts only.</p>"
+        f"<div class='cflow'>{bands}</div>"
+    )
+
+
 # ---------------------------------------------------------------------------
 # top bar + attention
 # ---------------------------------------------------------------------------
@@ -899,6 +960,69 @@ def _revenue_analysis(a: dict | None) -> str:
     )
 
 
+_OUTPUT_HEADLINE_KEYS = (
+    "qc_status", "implementation_status", "confidence", "priority",
+    "human_gate_required", "launched", "spent", "paid_count", "net_profit",
+    "research_needed", "daemon",
+)
+
+
+def _output_headline(output: dict) -> str:
+    """A few real top-level fields from an agent's output - never a
+    derived or invented value."""
+    if not isinstance(output, dict):
+        return ""
+    parts = []
+    for k in _OUTPUT_HEADLINE_KEYS:
+        if k in output and len(parts) < 4:
+            v = output[k]
+            if isinstance(v, (list, dict)):
+                v = f"{len(v)} item(s)"
+            parts.append(f"{k}={v}")
+    if not parts:
+        scalars = [k for k, v in output.items()
+                   if isinstance(v, (str, int, float, bool))][:3]
+        parts = [f"{k}={output[k]}" for k in scalars]
+    return ", ".join(parts) or f"{len(output)} field(s)"
+
+
+def _agent_outputs_panel(data: dict | None) -> str:
+    """The most recent persisted output per agent, straight from
+    data/agent_outputs.json. Nothing is inferred; an empty / missing file
+    renders an honest note."""
+    entries = data if isinstance(data, dict) else {}
+    rows_data = []
+    for cap, entry in entries.items():
+        if not isinstance(entry, dict):
+            continue
+        spec = roster.by_capability(cap)
+        rows_data.append((
+            str(entry.get("ts", "")),
+            spec.name if spec else str(cap),
+            spec.cluster if spec else "",
+            "human" if (spec and spec.gate == "human") else "auto",
+            str(entry.get("objective", "")),
+            _output_headline(entry.get("output", {})),
+        ))
+    if not rows_data:
+        return ("<p class='muted'>No agent outputs yet. Deterministic roster "
+                "agents persist here (<span class='mono'>data/agent_outputs.json</span>) "
+                "when dispatched through <span class='mono'>run_agent</span>.</p>")
+    rows_data.sort(key=lambda r: r[0], reverse=True)
+    rows = "".join(
+        f"<tr><td>{_esc(name)}</td><td>{_esc(cluster)}</td><td>{_esc(gate)}</td>"
+        f"<td class='mono'>{_esc(ts[:19].replace('T', ' '))}</td>"
+        f"<td>{_esc(obj)}</td><td class='hl'>{_esc(hl)}</td></tr>"
+        for ts, name, cluster, gate, obj, hl in rows_data
+    )
+    return (
+        f"<p class='muted'>{len(rows_data)} agent(s) with a persisted output, "
+        "newest first. Straight from agent_outputs.json - nothing inferred.</p>"
+        "<div class='aout'><table><tr><th>agent</th><th>cluster</th><th>gate</th>"
+        f"<th>when</th><th>objective</th><th>result</th></tr>{rows}</table></div>"
+    )
+
+
 def _pipeline(status_counts: dict) -> str:
     mx = max(status_counts.values() or [0]) or 1
     rows = ""
@@ -1135,6 +1259,7 @@ def _roi(roi: dict, report: dict, goal: dict | None) -> str:
 _NAV = (
     ("Dashboard", "#top", "operator"),
     ("Agents", "#agents", "generic"),
+    ("Outputs", "#agent-outputs", "content"),
     ("Tasks", "#tasks", "planner"),
     ("Opportunities", "#opportunities", "discovery"),
     ("Finances", "#finances", "offer"),
@@ -1166,6 +1291,7 @@ def render_html(report: dict, generated_at: str, *,
                 task_log: list[dict] | None = None,
                 trend: dict | None = None,
                 revenue_analysis: dict | None = None,
+                agent_outputs: dict | None = None,
                 interactive: bool = False,
                 flash: str | None = None,
                 csrf: str | None = None) -> str:
@@ -1189,9 +1315,13 @@ def render_html(report: dict, generated_at: str, *,
         + "<section id='agents'><h2>Agents</h2>"
         + _agent_map(agent_log or [], spend_entries, goal, session, report,
                      bool(queue), task_log or [])
+        + "<h3>All 21 agents</h3>"
+        + _cluster_flow(agent_outputs)
         + "<h3>Target roster</h3>"
         + _roster_panel()
         + "</section>"
+        + "<section id='agent-outputs'><h2>Agent outputs</h2>"
+        + _agent_outputs_panel(agent_outputs) + "</section>"
         + "<div class='cols'>"
         + "<section id='tasks'><h2>Task queue</h2>"
         + _task_queue(report["action_queue"]) + "</section>"
