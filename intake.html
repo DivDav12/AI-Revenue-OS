@@ -47,6 +47,7 @@ form.intake button{margin-top:1rem;font:inherit;font-weight:600;padding:.6rem 1.
 <input type='hidden' name='candidate' value='ask-hn-how-do-you-find-your-first-paying-customers'>
 <input type='hidden' name='order_id' value=''>
 <input type='hidden' name='capture_id' value=''>
+<input type='hidden' name='lead_id' value=''>
 <label>Your name *<br><input type='text' name='name' required></label>
 <label>Email *<br><input type='email' name='email' required></label>
 <label>Business name / website<br><input type='text' name='business'></label>
@@ -58,12 +59,12 @@ form.intake button{margin-top:1rem;font:inherit;font-weight:600;padding:.6rem 1.
 <label>Biggest customer-acquisition problem<br><textarea name='biggest_problem' rows='3'></textarea></label>
 <button type='submit'>Send my details</button>
 </form>
-<p class='intake-note'>If the form does not send, email your answers and your PayPal order ID to the address that sold you this plan.</p>
+<p class='intake-note'>If the form does not send, email your answers and your PayPal order ID to divdav12support@gmail.com.</p>
 </div>
 <script>
 (function(){
   var q = new URLSearchParams(location.search);
-  var map = {order: 'order_id', capture: 'capture_id'};
+  var map = {order: 'order_id', capture: 'capture_id', lead: 'lead_id'};
   Object.keys(map).forEach(function(k){
     var v = (q.get(k) || '').replace(/[^A-Za-z0-9_-]/g, '');
     var el = document.querySelector("[name='" + map[k] + "']");
