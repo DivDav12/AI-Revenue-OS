@@ -434,6 +434,39 @@ def _cmd_outreach_brief(args) -> int:
     return 0
 
 
+def _cmd_pipeline(args) -> int:
+    from .pipeline import pipeline_status, run_pipeline
+
+    data_dir = _data_dir(args)
+    if args.action == "status":
+        rep = pipeline_status(data_dir, args.name)
+    else:
+        if not args.name:
+            print("pipeline run: a candidate name is required")
+            return 2
+        rep = run_pipeline(data_dir, args.name, restart=args.restart)
+    if args.json:
+        print(json.dumps(rep, indent=2))
+        return 0
+    print(f"PIPELINE  candidate={rep.get('candidate')}  status={rep.get('status')}")
+    for s in rep.get("steps", []):
+        line = f"  {s['step']:<20} {s['status']}"
+        if s.get("reason"):
+            line += f"  - {s['reason']}"
+        elif s.get("summary"):
+            line += f"  {s['summary']}"
+        print(line)
+    hg = rep.get("human_gate")
+    if hg:
+        print(f"\n  HUMAN GATE: {hg.get('reason', '')}")
+        for x in (hg.get("blocking_issues") or hg.get("human_gated_next") or []):
+            print(f"    - {x}")
+    if rep.get("error"):
+        print(f"\n  ERROR: {rep['error']}")
+    print("\n  The pipeline publishes nothing, sends nothing, spends nothing.")
+    return 0
+
+
 def _cmd_autopilot(args) -> int:
     from . import autopilot as ap
 
@@ -754,6 +787,7 @@ def build_dashboard_html(
         trend=_load_json("trend_report.json"),
         revenue_analysis=_load_json("revenue_analysis.json"),
         agent_outputs=_load_json("agent_outputs.json"),
+        pipeline=_load_json("pipeline.json"),
         interactive=interactive, flash=flash, csrf=csrf,
     )
 
@@ -1333,6 +1367,19 @@ def build_parser() -> argparse.ArgumentParser:
     apilot.add_argument("--reason", default=None, help="pause reason")
     apilot.add_argument("--json", action="store_true")
     apilot.set_defaults(func=_cmd_autopilot)
+
+    pipe = sub.add_parser(
+        "pipeline", parents=[common],
+        help="run/inspect the one-cycle agent pipeline for a qualified "
+             "candidate (Opportunity Finder -> ... -> Quality Control -> human gate); "
+             "publishes nothing, spends nothing",
+    )
+    pipe.add_argument("action", choices=("run", "status"))
+    pipe.add_argument("name", nargs="?", help="candidate name")
+    pipe.add_argument("--restart", action="store_true",
+                      help="discard prior run state and start from step 1")
+    pipe.add_argument("--json", action="store_true")
+    pipe.set_defaults(func=_cmd_pipeline)
 
     sub.add_parser("report", parents=[common], help="print the report only").set_defaults(
         func=_cmd_report

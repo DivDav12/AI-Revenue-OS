@@ -967,9 +967,15 @@ _OUTPUT_HEADLINE_KEYS = (
 )
 
 
+def _clip(v: object, n: int = 48) -> str:
+    s = str(v)
+    return s if len(s) <= n else s[:n] + "…"
+
+
 def _output_headline(output: dict) -> str:
     """A few real top-level fields from an agent's output - never a
-    derived or invented value."""
+    derived or invented value, each clipped so a big blob cannot bloat
+    the row."""
     if not isinstance(output, dict):
         return ""
     parts = []
@@ -978,11 +984,11 @@ def _output_headline(output: dict) -> str:
             v = output[k]
             if isinstance(v, (list, dict)):
                 v = f"{len(v)} item(s)"
-            parts.append(f"{k}={v}")
+            parts.append(f"{k}={_clip(v)}")
     if not parts:
         scalars = [k for k, v in output.items()
                    if isinstance(v, (str, int, float, bool))][:3]
-        parts = [f"{k}={output[k]}" for k in scalars]
+        parts = [f"{k}={_clip(output[k])}" for k in scalars]
     return ", ".join(parts) or f"{len(output)} field(s)"
 
 
@@ -1020,6 +1026,64 @@ def _agent_outputs_panel(data: dict | None) -> str:
         "newest first. Straight from agent_outputs.json - nothing inferred.</p>"
         "<div class='aout'><table><tr><th>agent</th><th>cluster</th><th>gate</th>"
         f"<th>when</th><th>objective</th><th>result</th></tr>{rows}</table></div>"
+    )
+
+
+_PIPE_STATUS_CLS = {"ok": "good", "failed": "bad", "blocked": "bad",
+                    "skipped": "muted", "prepared": "good", "running": "warn",
+                    "pending": "muted"}
+
+
+def _agent_pipeline_panel(pipe: dict | None) -> str:
+    """The real one-cycle agent pipeline for a qualified candidate, read
+    from data/pipeline.json. Nothing is inferred; no run -> honest note."""
+    from .pipeline import STEP_ORDER
+
+    if not isinstance(pipe, dict) or not pipe.get("candidate"):
+        return ("<p class='muted'>No pipeline run yet. "
+                "<span class='mono'>revenue_os pipeline run &lt;candidate&gt;</span> "
+                "chains Opportunity Finder &rarr; Product Researcher &rarr; Competitor "
+                "Analyzer &rarr; Supplier Finder &rarr; Copywriter &rarr; Content Creator "
+                "&rarr; Designer &rarr; Store Builder &rarr; Quality Control &rarr; human "
+                "gate.</p>")
+    steps = pipe.get("steps", {}) or {}
+    rows = ""
+    for i, cap in enumerate(STEP_ORDER, 1):
+        spec = roster.by_capability(cap)
+        entry = steps.get(cap, {"status": "pending"})
+        stt = entry.get("status", "pending")
+        cls = _PIPE_STATUS_CLS.get(stt, "dim")
+        gate = " &middot; human-gated" if spec and spec.gate == "human" else ""
+        raw_detail = entry.get("reason", "") or _summary_text(entry.get("summary", {}))
+        detail = _esc(_clip(raw_detail, 140))
+        rows += (
+            f"<tr><td class='num'>{i}</td>"
+            f"<td>{_esc(spec.name if spec else cap)}{gate}</td>"
+            f"<td class='{cls}'>{_esc(stt)}</td>"
+            f"<td class='muted'>{detail}</td></tr>"
+        )
+    hg = pipe.get("human_gate") or {}
+    status = _esc(pipe.get("status", ""))
+    gate_html = ""
+    if hg:
+        bullets = "".join(
+            f"<li>{_esc(x)}</li>" for x in
+            (hg.get("blocking_issues") or hg.get("human_gated_next") or [])
+        )
+        gate_html = (
+            f"<p class='muted'><b>Human gate:</b> {_esc(hg.get('reason', ''))}</p>"
+            + (f"<ul>{bullets}</ul>" if bullets else "")
+        )
+    err = pipe.get("error")
+    err_html = f"<p class='bad'>error: {_esc(err)}</p>" if err else ""
+    return (
+        f"<p class='muted'>candidate <b>{_esc(pipe.get('candidate'))}</b> &middot; "
+        f"status <b>{status}</b> &middot; updated "
+        f"<span class='mono'>{_esc(str(pipe.get('updated_at', ''))[:19])}</span>. "
+        "Straight from data/pipeline.json - nothing inferred.</p>"
+        f"{err_html}"
+        "<table><tr><th>#</th><th>agent</th><th>state</th><th>detail</th></tr>"
+        f"{rows}</table>{gate_html}"
     )
 
 
@@ -1259,6 +1323,7 @@ def _roi(roi: dict, report: dict, goal: dict | None) -> str:
 _NAV = (
     ("Dashboard", "#top", "operator"),
     ("Agents", "#agents", "generic"),
+    ("Pipeline", "#pipeline", "finder"),
     ("Outputs", "#agent-outputs", "content"),
     ("Tasks", "#tasks", "planner"),
     ("Opportunities", "#opportunities", "discovery"),
@@ -1292,6 +1357,7 @@ def render_html(report: dict, generated_at: str, *,
                 trend: dict | None = None,
                 revenue_analysis: dict | None = None,
                 agent_outputs: dict | None = None,
+                pipeline: dict | None = None,
                 interactive: bool = False,
                 flash: str | None = None,
                 csrf: str | None = None) -> str:
@@ -1320,6 +1386,8 @@ def render_html(report: dict, generated_at: str, *,
         + "<h3>Target roster</h3>"
         + _roster_panel()
         + "</section>"
+        + "<section id='pipeline'><h2>Agent pipeline</h2>"
+        + _agent_pipeline_panel(pipeline) + "</section>"
         + "<section id='agent-outputs'><h2>Agent outputs</h2>"
         + _agent_outputs_panel(agent_outputs) + "</section>"
         + "<div class='cols'>"

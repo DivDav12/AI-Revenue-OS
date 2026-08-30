@@ -310,6 +310,37 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertIn("No agent outputs yet", panel)
         self.assertNotIn("<table>", panel)
 
+    def test_pipeline_panel_empty_is_honest(self):
+        html = render_html(_report(self.store, self.d), _FIXED_TS)
+        panel = html.split("id='pipeline'")[1].split("</section>")[0]
+        self.assertIn("No pipeline run yet", panel)
+        self.assertIn("Quality Control", panel)   # the pipeline is described
+
+    def test_pipeline_panel_renders_real_run_state(self):
+        pipe = {
+            "candidate": "dt", "status": "blocked",
+            "updated_at": "2026-08-29T12:00:00+00:00",
+            "steps": {
+                "select": {"status": "ok", "summary": {"kept": "1 item(s)"}},
+                "research": {"status": "skipped", "reason": "LLM-only"},
+                "find_suppliers": {"status": "ok"},
+                "quality_check": {"status": "ok", "summary": {"qc_status": "block"}},
+            },
+            "human_gate": {"reason": "Quality Control returned qc_status=block",
+                           "blocking_issues": ["pricing mismatch"]},
+            "error": "quality_check: block",
+        }
+        html = render_html(_report(self.store, self.d), _FIXED_TS, pipeline=pipe)
+        panel = html.split("id='pipeline'")[1].split("</section>")[0]
+        self.assertIn("candidate <b>dt</b>", panel)
+        self.assertIn("Opportunity Finder", panel)
+        self.assertIn("Store Builder", panel)
+        self.assertIn("human-gated", panel)          # store_builder tagged
+        self.assertIn("skipped", panel)
+        self.assertIn("pricing mismatch", panel)
+        self.assertIn("quality_check: block", panel)
+        self.assertNotIn("://", html)
+
     def test_map_edges_come_from_real_task_lineage(self):
         base = _report(self.store, self.d)
         root = "t-root"

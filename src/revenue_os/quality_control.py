@@ -15,7 +15,9 @@ from .agent import Agent
 from .messages import Result, Task
 
 _URL = re.compile(r"^https?://[^\s]+$")
-_MONEY_IN_TEXT = re.compile(r"(\d+(?:[.,]\d{2})?)\s*(?:eur|usd|€|\$)", re.I)
+# a price token, not preceded by another digit/dot so "29.0" is one number
+# (not also "0"); 1-2 decimals accepted, then normalised to 2dp for compare
+_MONEY_IN_TEXT = re.compile(r"(?<![\w.,])(\d+(?:[.,]\d{1,2})?)\s*(?:eur|usd|€|\$)", re.I)
 _PROHIBITED = (
     ("launched", True, "an upstream agent reports launched=True (ads must be human-run)"),
     ("auto_sent", True, "an upstream agent reports auto_sent=True (no auto contact)"),
@@ -25,7 +27,13 @@ _PROHIBITED = (
 
 
 def _prices_in(text: str) -> set[str]:
-    return {m.group(1).replace(",", ".") for m in _MONEY_IN_TEXT.finditer(str(text or ""))}
+    out = set()
+    for m in _MONEY_IN_TEXT.finditer(str(text or "")):
+        try:
+            out.add(f"{float(m.group(1).replace(',', '.')):.2f}")
+        except ValueError:
+            pass
+    return out
 
 
 def run_quality_checks(*, offer=None, copy=None, landing_page="", launch_plan=None,
