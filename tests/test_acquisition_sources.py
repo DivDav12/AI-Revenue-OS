@@ -1,11 +1,14 @@
 import unittest
 import urllib.error
+from unittest import mock
 
 from revenue_os import acquisition_sources as S
 from revenue_os.acquisition import canonical_url, score_lead
 from revenue_os.acquisition_sources import (
     BlueskySource,
     CompositeAcqSource,
+    LemmySource,
+    LobstersSource,
     StackExchangeSource,
     build_acquisition_source,
 )
@@ -98,6 +101,138 @@ class StackExchangeTests(unittest.TestCase):
         s = score_lead(rec)
         self.assertIn("unanswered SE question", s["match_reason"])
 
+    def test_second_site_hits_the_in_run_cache_not_the_network(self):
+        src = StackExchangeSource(sites=("freelancing", "webmasters"))
+        with _FakeHTTP({"site=freelancing": {"items": [_se_item(1)]},
+                        "site=webmasters": {"items": [_se_item(2, site="webmasters")]},
+                        }) as http:
+            src.search("first customers", 10)
+            src.search("first customers", 10)          # same query again
+        self.assertEqual(len(http.calls), 2)           # 2 sites, 2nd call cached
+        self.assertEqual(src.requests, 2)
+
+    def test_429_is_retried_once_after_backoff_then_succeeds(self):
+        calls = {"n": 0}
+
+        def flaky(url, *, headers=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise urllib.error.HTTPError(url, 429, "slow down",
+                                            {"Retry-After": "1"}, None)
+            return {"items": [_se_item(1)]}
+
+        with mock.patch.object(S, "_http_json", flaky), \
+                mock.patch.object(S.time, "sleep") as slept:
+            recs = StackExchangeSource(sites=("freelancing",)).search("q", 5)
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(calls["n"], 2)               # one retry
+        self.assertTrue(slept.called)                 # honoured the backoff
+
+    def test_repeated_429_propagates_for_failure_isolation(self):
+        def always_429(url, *, headers=None):
+            raise urllib.error.HTTPError(url, 429, "no", {}, None)
+
+        with mock.patch.object(S, "_http_json", always_429), \
+                mock.patch.object(S.time, "sleep"):
+            with self.assertRaises(urllib.error.HTTPError):
+                StackExchangeSource(sites=("freelancing",)).search("q", 5)
+
+
+# --- Lobsters -----------------------------------------------
+
+def _lob_story(short_id="abc123", title="How do I get my first customers for my SaaS?",
+               created="2026-08-25T10:00:00.000-06:00",
+               desc="Launched last month, 0 paying customers, what worked for you?"):
+    return {
+        "short_id": short_id, "title": title, "created_at": created,
+        "url": "https://example.com/blog", "score": 3, "comment_count": 4,
+        "comments_url": f"https://lobste.rs/s/{short_id}",
+        "description_plain": desc,
+        "submitter_user": {"username": "founder_l"},
+    }
+
+
+class LobstersTests(unittest.TestCase):
+    def test_keyword_filters_the_recent_feed(self):
+        keep = _lob_story(short_id="k1")
+        drop = _lob_story(short_id="d1", title="A new Rust web framework",
+                          desc="benchmarks inside")
+        with _FakeHTTP({"lobste.rs/newest.json": [keep, drop]}) as http:
+            recs = LobstersSource().search("first customers", 10)
+        self.assertEqual([r.url for r in recs], ["https://lobste.rs/s/k1"])
+        r = recs[0]
+        self.assertEqual(r.source, "lobsters")
+        self.assertEqual(r.platform, "Lobsters")
+        self.assertEqual(r.author, "founder_l")
+        self.assertTrue(r.posted_at.startswith("2026-08-25"))
+        self.assertTrue(score_lead(r))
+        self.assertIn("newest.json", http.calls[0])
+
+    def test_feed_is_fetched_once_and_reused_across_queries(self):
+        with _FakeHTTP({"lobste.rs/newest.json": [_lob_story()]}) as http:
+            src = LobstersSource()
+            src.search("first customers", 10)
+            src.search("paying customers", 10)
+        self.assertEqual(len(http.calls), 1)
+
+    def test_since_ts_filters_old_stories(self):
+        old = _lob_story(short_id="old1", created="2020-01-01T00:00:00.000Z")
+        new = _lob_story(short_id="new1", created="2026-08-28T00:00:00.000Z")
+        with _FakeHTTP({"lobste.rs/newest.json": [old, new]}):
+            recs = LobstersSource().search("customers", 10, since_ts=1_760_000_000)
+        self.assertEqual([r.url for r in recs], ["https://lobste.rs/s/new1"])
+
+    def test_http_error_propagates_for_isolation(self):
+        with _FakeHTTP({"lobste.rs": urllib.error.URLError("down")}):
+            with self.assertRaises(urllib.error.URLError):
+                LobstersSource().search("q", 5)
+
+
+# --- Lemmy --------------------------------------------------
+
+def _lemmy_row(pid=1, name="How do I find my first clients as a freelancer?",
+               published="2026-08-26T09:00:00.500000",
+               body="just started, zero clients, need help finding customers"):
+    return {
+        "post": {"id": pid, "name": name, "published": published, "body": body,
+                 "ap_id": f"https://lemmy.world/post/{pid}"},
+        "creator": {"name": "founder_m"},
+        "community": {"name": "Entrepreneur"},
+    }
+
+
+class LemmyTests(unittest.TestCase):
+    def test_parses_a_post_into_a_record(self):
+        with _FakeHTTP({"lemmy.world/api/v3/search": {"posts": [_lemmy_row()]}}):
+            recs = LemmySource().search("first clients", 10)
+        self.assertEqual(len(recs), 1)
+        r = recs[0]
+        self.assertEqual(r.source, "lemmy")
+        self.assertEqual(r.url, "https://lemmy.world/post/1")
+        self.assertEqual(r.author, "founder_m")
+        self.assertIn("c/Entrepreneur", r.platform)
+        self.assertTrue(r.posted_at.startswith("2026-08-26"))
+        self.assertTrue(score_lead(r))
+
+    def test_since_ts_filters_old_posts(self):
+        with _FakeHTTP({"lemmy.world": {"posts": [
+            _lemmy_row(1, published="2019-01-01T00:00:00"),
+            _lemmy_row(2, published="2026-08-27T00:00:00"),
+        ]}}):
+            recs = LemmySource().search("q", 10, since_ts=1_760_000_000)
+        self.assertEqual([r.url for r in recs], ["https://lemmy.world/post/2"])
+
+    def test_empty_or_malformed_rows_are_skipped(self):
+        with _FakeHTTP({"lemmy.world": {"posts": [
+            {"post": {"id": 3, "name": ""}}, {"creator": {"name": "x"}},
+        ]}}):
+            self.assertEqual(LemmySource().search("q", 5), [])
+
+    def test_http_error_propagates_for_isolation(self):
+        with _FakeHTTP({"lemmy.world": urllib.error.URLError("down")}):
+            with self.assertRaises(urllib.error.URLError):
+                LemmySource().search("q", 5)
+
 
 # --- Bluesky -------------------------------------------------
 
@@ -171,7 +306,7 @@ class CompositeAndFactoryTests(unittest.TestCase):
         # `free` = the keyless set only (no Reddit, no Bluesky - both gated)
         src = build_acquisition_source("free")
         self.assertEqual(sorted(s.name for s in src._sources),
-                         ["hn-algolia", "stackexchange"])
+                         ["hn-algolia", "lemmy", "lobsters", "stackexchange"])
         se = [s for s in src._sources if s.name == "stackexchange"][0]
         self.assertEqual(se.sites, ("freelancing", "webmasters"))
 
@@ -221,9 +356,11 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(SOURCE_REGISTRY["web"]["tier"], "paid")
         self.assertTrue(SOURCE_REGISTRY["reddit"]["auth"])
         self.assertTrue(SOURCE_REGISTRY["bluesky"]["auth"])
-        self.assertEqual(FREE_SOURCES, ("hn-algolia", "stackexchange"))
+        self.assertEqual(FREE_SOURCES,
+                         ("hn-algolia", "stackexchange", "lobsters", "lemmy"))
         for n in FREE_SOURCES:
             self.assertFalse(SOURCE_REGISTRY[n]["auth"])
+            self.assertEqual(SOURCE_REGISTRY[n]["tier"], "free")
 
 
 class CanonicalUrlSETests(unittest.TestCase):

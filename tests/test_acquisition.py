@@ -368,6 +368,73 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             s.set_review("ffffffffffff", "reviewed")
 
+    def test_rescore_re_derives_legacy_records_and_keeps_human_verdict(self):
+        from revenue_os.acquisition import _SCORER_VERSION
+        url = "https://news.ycombinator.com/item?id=555"
+        self.p.write_text(json.dumps([{
+            "canonical_url": url, "url": url, "lead_id": lead_id(url),
+            "title": "How do I get my first paying customers for my SaaS?",
+            "problem_summary": "Launched last week, 0 paying customers. What worked?",
+            "posted_at": _days_ago(2), "platform": "Hacker News",
+            "source": "hn-algolia", "author": "founder_a",
+            # legacy / stale scoring fields
+            "fit_score": 40, "final_score": 5, "prospect_quality": None,
+            "age_bucket": "old", "scorer_version": "1",
+            "human_review_status": "reviewed", "reviewed_by": "me",
+            "discovered_at": "2020-01-01T00:00:00+00:00",
+        }]), encoding="utf-8")
+        s = AcquisitionStore.load(self.p)
+        r = s.rescore(max_age_days=30)
+        s.save()
+
+        self.assertEqual(r["dropped"], 0)
+        self.assertGreaterEqual(r["rescored"], 1)
+        e = s.get(url)
+        self.assertEqual(e["scorer_version"], _SCORER_VERSION)
+        self.assertIn(e["prospect_quality"], ("high", "medium"))
+        self.assertGreater(e["final_score"], 50)
+        self.assertIn(e["age_bucket"], ("extremely_fresh", "fresh"))
+        self.assertTrue(e["why"])
+        # the human's verdict and the original discovery date survive
+        self.assertEqual(e["human_review_status"], "reviewed")
+        self.assertEqual(e["reviewed_by"], "me")
+        self.assertEqual(e["discovered_at"], "2020-01-01T00:00:00+00:00")
+
+    def test_rescore_drops_a_record_that_never_matched_a_signal(self):
+        url = "https://news.ycombinator.com/item?id=777"
+        self.p.write_text(json.dumps([{
+            "canonical_url": url, "url": url, "lead_id": lead_id(url),
+            "title": "Show HN: my weekend markdown editor",
+            "problem_summary": "feedback welcome", "posted_at": _days_ago(3),
+            "source": "hn-algolia", "fit_score": 20,
+        }]), encoding="utf-8")
+        s = AcquisitionStore.load(self.p)
+        r = s.rescore()
+        self.assertEqual(r["dropped"], 1)
+        self.assertEqual(r["total"], 0)
+        self.assertEqual(s.all(), [])
+
+    def test_rescore_keeps_but_zeroes_a_lead_whose_signal_fell_off_the_summary(self):
+        # matched a phrase originally, but the stored summary no longer
+        # contains it (truncated) -> keep the row, zero the score
+        url = "https://news.ycombinator.com/item?id=888"
+        self.p.write_text(json.dumps([{
+            "canonical_url": url, "url": url, "lead_id": lead_id(url),
+            "title": "A news article about local journalism",
+            "problem_summary": "nothing scorable remains in this excerpt",
+            "matched_phrases": ["i built"], "posted_at": _days_ago(5),
+            "source": "lemmy", "final_score": 3, "prospect_quality": "low",
+            "human_review_status": "new",
+        }]), encoding="utf-8")
+        s = AcquisitionStore.load(self.p)
+        r = s.rescore()
+        self.assertEqual(r["dropped"], 0)
+        self.assertEqual(r["total"], 1)
+        e = s.get(url)
+        self.assertEqual(e["final_score"], 0)
+        self.assertEqual(e["prospect_quality"], "none")
+        self.assertEqual(e["rescore_note"], "signal not present in stored summary")
+
 
 # --- sources -------------------------------------------------
 
@@ -539,6 +606,33 @@ class CliTests(unittest.TestCase):
                 if d["human_review_status"] != "rejected"]
         self.assertNotIn("https://news.ycombinator.com/item?id=100",
                          [d["url"] for d in rows])
+
+    def test_acquisition_rescore_refreshes_the_store(self):
+        from revenue_os.acquisition import _SCORER_VERSION
+        self._run("discover-opportunities", "--source", "file", "--source-path",
+                  str(self.recs), "--delay", "0", "--max-age-days", "30")
+        path = self.d / "acquisition.json"
+        # simulate a stale store: knock every lead back to an old scorer version
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for d in data:
+            d["scorer_version"] = "1"
+            d["prospect_quality"] = None
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+        self.assertEqual(self._run("acquisition-rescore", "--max-age-days", "30"), 0)
+        after = AcquisitionStore.load(path).all()
+        self.assertTrue(after)
+        for d in after:
+            self.assertEqual(d["scorer_version"], _SCORER_VERSION)
+            self.assertIn(d["prospect_quality"], ("high", "medium", "low", "none"))
+
+    def test_acquisition_rescore_dry_run_persists_nothing(self):
+        self._run("discover-opportunities", "--source", "file", "--source-path",
+                  str(self.recs), "--delay", "0")
+        path = self.d / "acquisition.json"
+        before = path.read_text(encoding="utf-8")
+        self.assertEqual(self._run("acquisition-rescore", "--dry-run"), 0)
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
 
     def test_review_requires_exactly_one_flag(self):
         self._run("discover-opportunities", "--source", "file", "--source-path",

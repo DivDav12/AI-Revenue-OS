@@ -23,6 +23,8 @@ import html as _html
 import json
 import logging
 import re
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -78,6 +80,43 @@ def _iso(epoch) -> str:
         return ""
 
 
+def _iso_str(value) -> str:
+    """Normalise an ISO-8601 string (with or without offset) to a UTC-aware
+    ISO string. Returns "" for anything unparseable - never guessed."""
+    s = str(value or "").strip()
+    if not s:
+        return ""
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
+def _retry_after(headers, default: float = 2.0) -> float:
+    """Seconds to wait from a `Retry-After` header (integer form only);
+    clamped to a small range so one call can never hang a run."""
+    try:
+        value = float(headers.get("Retry-After")) if headers else default
+    except (TypeError, ValueError):
+        value = default
+    return max(0.5, min(value, 15.0))
+
+
+def _older_than(posted_at: str, cutoff_epoch: int | None) -> bool:
+    """True if a parseable timestamp is strictly before the cutoff. An
+    unparseable/empty timestamp is never dropped here (the scorer marks it
+    `unknown` and down-weights it)."""
+    if not cutoff_epoch or not posted_at:
+        return False
+    try:
+        return datetime.fromisoformat(posted_at).timestamp() < cutoff_epoch
+    except ValueError:
+        return False
+
+
 # What each source needs, so the CLI can group sources by tier and the
 # operator can see at a glance what runs for free.
 #   tier: "free" | "paid" | "authenticated"
@@ -86,6 +125,10 @@ SOURCE_REGISTRY: dict[str, dict] = {
                    "note": "Hacker News search (Algolia), keyless"},
     "stackexchange": {"tier": "free", "auth": False,
                       "note": "Stack Exchange API, keyless (~300 req/day/IP)"},
+    "lobsters": {"tier": "free", "auth": False,
+                 "note": "Lobsters recent-feed (lobste.rs/newest.json) + keyword filter, keyless"},
+    "lemmy": {"tier": "free", "auth": False,
+              "note": "Lemmy post search (lemmy.world /api/v3/search), keyless"},
     "bluesky": {"tier": "authenticated", "auth": True,
                 "note": "post search is now auth/edge gated (401/403)"},
     "reddit": {"tier": "authenticated", "auth": True,
@@ -96,7 +139,7 @@ SOURCE_REGISTRY: dict[str, dict] = {
     "file": {"tier": "free", "auth": False, "note": "local JSON file (offline)"},
 }
 # free-first default set (Reddit/Bluesky excluded - unavailable; web excluded - paid)
-FREE_SOURCES = ("hn-algolia", "stackexchange")
+FREE_SOURCES = ("hn-algolia", "stackexchange", "lobsters", "lemmy")
 
 
 def _epoch(since_ts) -> int | None:
@@ -297,30 +340,73 @@ class StackExchangeSource:
 
     No HTML scraping: the API returns everything we need (title, link,
     creation_date, owner, body, answer stats).
+
+    Politeness: SE throttles keyless clients hard. This source spaces its
+    calls at least `_MIN_INTERVAL` apart (a process-wide clock), honours
+    the `backoff` field SE returns in a normal body, and retries a single
+    `429` after `Retry-After`. A second `429` is raised so the run marks
+    the source unavailable (failure-isolated, like Reddit).
     """
 
     name = "stackexchange"
     _URL = "https://api.stackexchange.com/2.3/search/advanced"
     _DEFAULT_SITES = ("freelancing", "webmasters")
+    _MIN_INTERVAL = 0.5        # seconds between SE HTTP calls
+    _MAX_WAIT = 12.0          # never sleep longer than this for one call
+    _last_call_at = 0.0       # process-wide monotonic clock (class attribute)
 
     def __init__(self, sites=None) -> None:
         self.sites = tuple(sites) if sites else self._DEFAULT_SITES
         self.requests = 0
+        self._backoff_until = 0.0
+        self._cache: dict[tuple, list] = {}   # per-instance (one run) response cache
+
+    def _throttle(self) -> None:
+        now = time.monotonic()
+        wait = max(self._backoff_until - now,
+                   StackExchangeSource._last_call_at + self._MIN_INTERVAL - now)
+        if wait > 0:
+            time.sleep(min(wait, self._MAX_WAIT))
+        StackExchangeSource._last_call_at = time.monotonic()
+
+    def _get(self, url: str) -> dict:
+        for attempt in range(2):
+            self._throttle()
+            try:
+                body = _http_json(url)
+            except urllib.error.HTTPError as exc:
+                if getattr(exc, "code", None) == 429 and attempt == 0:
+                    self._backoff_until = time.monotonic() + _retry_after(
+                        getattr(exc, "headers", None))
+                    continue
+                raise
+            if isinstance(body, dict) and body.get("backoff"):
+                try:
+                    self._backoff_until = time.monotonic() + float(body["backoff"])
+                except (TypeError, ValueError):
+                    pass
+            return body if isinstance(body, dict) else {}
+        return {}
 
     def search(self, query: str, limit: int, *, since_ts=None) -> list[AcqRecord]:
         per_site = max(1, min(limit, 30))
         epoch = _epoch(since_ts)
         out: list[AcqRecord] = []
         for site in self.sites:
-            params = {
-                "site": site, "q": query, "sort": "creation", "order": "desc",
-                "pagesize": per_site, "filter": "withbody",
-            }
-            if epoch is not None:
-                params["fromdate"] = epoch
-            self.requests += 1
-            body = _http_json(f"{self._URL}?{urllib.parse.urlencode(params)}")
-            for item in body.get("items", []) or []:
+            cache_key = (site, query, epoch, per_site)
+            items = self._cache.get(cache_key)
+            if items is None:
+                params = {
+                    "site": site, "q": query, "sort": "creation", "order": "desc",
+                    "pagesize": per_site, "filter": "withbody",
+                }
+                if epoch is not None:
+                    params["fromdate"] = epoch
+                self.requests += 1
+                items = self._get(
+                    f"{self._URL}?{urllib.parse.urlencode(params)}").get("items", []) or []
+                self._cache[cache_key] = items
+            for item in items:
                 link = str(item.get("link", "")).strip()
                 title = _plain(item.get("title"))
                 if not link or not title:
@@ -401,6 +487,129 @@ class BlueskySource:
         return out
 
 
+_WORD_RE = re.compile(r"[a-z0-9]{4,}")
+
+
+class LobstersSource:
+    """Lobsters recent-story feed, keyword-filtered client-side.
+
+    Lobsters has a keyless JSON API for its feeds (`/newest.json`,
+    `/hottest.json`) but NOT for `/search` - that route rejects every
+    query parameter. So this source pulls the recent-stories feed once and
+    keeps the stories whose title/description mention a query term. It is
+    deliberately light: it only ever catches a *fresh* on-topic post
+    (which is exactly what the recency weighting wants), never a deep
+    back-catalogue search.
+
+    Read-only: fetches a public JSON feed and stores the discussion URL
+    verbatim. Never posts, comments, or authenticates.
+    """
+
+    name = "lobsters"
+    _FEEDS = ("https://lobste.rs/newest.json",)
+
+    def __init__(self) -> None:
+        self._feed: list | None = None   # fetched once per run, reused per query
+
+    def _stories(self) -> list:
+        if self._feed is None:
+            rows: list = []
+            for url in self._FEEDS:
+                body = _http_json(url)
+                if isinstance(body, list):
+                    rows.extend(body)
+                elif isinstance(body, dict):
+                    rows.extend(body.get("stories") or [])
+            self._feed = rows
+        return self._feed
+
+    def search(self, query: str, limit: int, *, since_ts=None) -> list[AcqRecord]:
+        terms = set(_WORD_RE.findall(query.lower())) - {
+            "how", "does", "your", "with", "what", "the"}
+        cutoff = _epoch(since_ts)
+        out: list[AcqRecord] = []
+        for s in self._stories():
+            if not isinstance(s, dict):
+                continue
+            title = _plain(s.get("title"))
+            short_id = str(s.get("short_id") or "").strip()
+            if not title or not short_id:
+                continue
+            body_text = _plain(s.get("description_plain") or s.get("description"))
+            if terms and not (terms & set(_WORD_RE.findall(
+                    f"{title} {body_text}".lower()))):
+                continue
+            posted_at = _iso_str(s.get("created_at"))
+            if _older_than(posted_at, cutoff):
+                continue
+            submitter = s.get("submitter_user")
+            if isinstance(submitter, dict):
+                submitter = submitter.get("username") or submitter.get("name")
+            out.append(AcqRecord(
+                title=title,
+                url=str(s.get("comments_url")
+                        or f"https://lobste.rs/s/{short_id}").strip(),
+                text=body_text,
+                author=str(submitter or "").strip(),
+                posted_at=posted_at,
+                platform="Lobsters",
+                source=self.name,
+                query=query,
+                meta={"comment_count": int(s.get("comment_count", 0) or 0),
+                      "score": int(s.get("score", 0) or 0)},
+            ))
+            if len(out) >= max(1, min(limit, 25)):
+                break
+        return out
+
+
+class LemmySource:
+    """Lemmy post search via the keyless `lemmy.world /api/v3/search`
+    endpoint (the largest general Lemmy instance, federated with the rest).
+    Recovers some of the founder Q&A discussion that Reddit no longer
+    exposes without auth - without touching Reddit.
+
+    Read-only: fetches public posts and stores the canonical `ap_id` URL.
+    Never posts, comments, votes, or authenticates. `since_ts` filters
+    client-side on the post's `published` timestamp.
+    """
+
+    name = "lemmy"
+    _URL = "https://lemmy.world/api/v3/search"
+
+    def search(self, query: str, limit: int, *, since_ts=None) -> list[AcqRecord]:
+        params = urllib.parse.urlencode({
+            "q": query, "type_": "Posts", "sort": "New",
+            "listing_type": "All", "limit": max(1, min(limit, 40)),
+        })
+        body = _http_json(f"{self._URL}?{params}")
+        cutoff = _epoch(since_ts)
+        out: list[AcqRecord] = []
+        for row in (body.get("posts", []) or []):
+            post = row.get("post") or {}
+            title = _plain(post.get("name"))
+            pid = post.get("id")
+            if not title or not pid:
+                continue
+            posted_at = _iso_str(post.get("published"))
+            if _older_than(posted_at, cutoff):
+                continue
+            creator = str((row.get("creator") or {}).get("name", "")).strip()
+            community = str((row.get("community") or {}).get("name", "")).strip()
+            out.append(AcqRecord(
+                title=title,
+                url=str(post.get("ap_id") or f"https://lemmy.world/post/{pid}").strip(),
+                text=_plain(post.get("body")),
+                author=creator,
+                posted_at=posted_at,
+                platform="Lemmy" + (f" (c/{community})" if community else ""),
+                source=self.name,
+                query=query,
+                meta={},
+            ))
+        return out
+
+
 class CompositeAcqSource:
     """Fans a query out to several sources. One dead source (e.g. a 403
     from an API that now needs auth) is logged and recorded in
@@ -430,6 +639,8 @@ _SIMPLE = {
     "reddit": RedditSearchSource,
     "stackexchange": StackExchangeSource,
     "bluesky": BlueskySource,
+    "lobsters": LobstersSource,
+    "lemmy": LemmySource,
 }
 
 
@@ -452,9 +663,9 @@ def _one_source(name: str, path=None, web_source=None):
 def build_acquisition_source(names, path=None, web_source=None):
     """Build one source or a CompositeAcqSource from a list of names.
 
-    `free` -> hn-algolia + stackexchange (keyless, no credentials).
-    `all`  -> free + web.  `both` is a back-compat alias for `free`.
-    (Reddit and Bluesky are NOT in `free` - both are currently
+    `free` -> hn-algolia + stackexchange + lobsters + lemmy (all keyless,
+    no credentials). `all` -> free + web.  `both` is a back-compat alias
+    for `free`. (Reddit and Bluesky are NOT in `free` - both are currently
     unavailable without auth; select them explicitly to try anyway.)
     A single name returns that source directly; several return a
     CompositeAcqSource (failure-isolated).

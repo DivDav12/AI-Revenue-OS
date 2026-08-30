@@ -227,15 +227,16 @@ SEARCH_QUERIES: tuple[str, ...] = (
     "zero customers after launch",
     "nobody is buying my product",
     "how do I market my SaaS",
-    "first 10 customers",
     "no sales after launch",
-    "how do I promote my product",
+    "looking for help getting my first customers",
+    "need help finding my first clients",
 )
 
 _BUCKET_RANK = {"low": 1, "medium": 2, "high": 3}
 # bump when the deterministic scoring model changes materially -
-# upsert re-derives any stored lead with an older version.
-_SCORER_VERSION = "2"
+# upsert re-derives any stored lead with an older version, and
+# `AcquisitionStore.rescore()` re-derives the whole store on demand.
+_SCORER_VERSION = "3"
 
 _PROSPECT_TYPES = (
     "active_problem", "seeking_advice", "founder_building",
@@ -1038,3 +1039,86 @@ class AcquisitionStore:
         if actor:
             entry["reviewed_by"] = actor
         return entry
+
+    def rescore(self, *, max_age_days: int = _DEFAULT_MAX_AGE_DAYS,
+                now: datetime | None = None) -> dict:
+        """Re-derive every stored lead's score from its OWN persisted fields
+        using the current deterministic model, in place.
+
+        Preserves what the human / provenance owns (`human_review_status`,
+        `reviewed_*`, `discovered_at`, `lead_id`, merged `matched_queries`)
+        and refreshes everything the scorer owns (`final_score`,
+        `prospect_quality`, `age_bucket`, `why`, `scorer_version`, ...). An
+        entry that no longer shows any acquisition signal, or that fails
+        `qc_lead`, is dropped. Deterministic: no LLM, no network, no spend,
+        contacts no one. Call `save()` afterwards to persist.
+        """
+        _ = now  # age is recomputed from posted_at via score_lead / age_info
+        rescored = unchanged = dropped = 0
+        dropped_rows: list[dict] = []
+        out: dict[str, dict] = {}
+        for key, old in self._by_url.items():
+            rec = {
+                "title": old.get("title", ""),
+                "text": old.get("problem_summary", "") or old.get("title", ""),
+                "posted_at": old.get("posted_at", ""),
+                "url": old.get("url", "") or key,
+                "platform": old.get("platform", ""),
+                "source": old.get("source", ""),
+                "author": old.get("author", ""),
+                "query": old.get("query", ""),
+                "meta": old.get("signals") if isinstance(old.get("signals"), dict) else {},
+            }
+            score = score_lead(rec)
+            if score is None:
+                # No positive signal in the stored text. If this lead never
+                # matched one, it is not an opportunity - drop it. If it
+                # matched before (the signal was likely past the stored
+                # summary's 500-char cut), keep it but zero the score so it
+                # sinks; a future re-find with the full record can refresh it.
+                if not old.get("matched_phrases"):
+                    dropped += 1
+                    dropped_rows.append({"title": rec["title"][:80],
+                                         "url": rec["url"],
+                                         "reason": "no acquisition signal, never matched one"})
+                    continue
+                zeroed = dict(old)
+                zeroed.update({"final_score": 0, "relevance_score": 0,
+                               "fit_score": 0, "prospect_quality": "none",
+                               "scorer_version": _SCORER_VERSION,
+                               "rescored_at": now_iso(),
+                               "rescore_note": "signal not present in stored summary"})
+                out[key] = zeroed
+                rescored += 1
+                continue
+            lead = build_lead(rec, score, max_age_days=max_age_days,
+                              scoring_mode="deterministic")
+            problems = qc_lead(lead)
+            if problems:
+                dropped += 1
+                dropped_rows.append({"title": rec["title"][:80], "url": rec["url"],
+                                     "reason": "; ".join(problems)})
+                continue
+            new = lead.to_dict()
+            new["canonical_url"] = key
+            new["human_review_status"] = old.get("human_review_status", "new")
+            new["discovered_at"] = old.get("discovered_at") or new["discovered_at"]
+            new["last_seen_at"] = old.get("last_seen_at") or new["last_seen_at"]
+            for k in ("reviewed_at", "reviewed_by"):
+                if old.get(k):
+                    new[k] = old[k]
+            new["matched_queries"] = list(dict.fromkeys(
+                list(old.get("matched_queries", []))
+                + list(new.get("matched_queries", []))))
+            new["rescored_at"] = now_iso()
+            out[key] = new
+            if (new.get("final_score") != old.get("final_score")
+                    or new.get("prospect_quality") != old.get("prospect_quality")
+                    or new.get("scorer_version") != old.get("scorer_version")
+                    or new.get("age_bucket") != old.get("age_bucket")):
+                rescored += 1
+            else:
+                unchanged += 1
+        self._by_url = out
+        return {"rescored": rescored, "unchanged": unchanged, "dropped": dropped,
+                "dropped_rows": dropped_rows, "total": len(out)}

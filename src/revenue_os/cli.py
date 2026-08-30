@@ -14,6 +14,7 @@ Read commands:
                    action per step (pipeline -> deploy, payment sync, PDF staging),
                    stops at every human gate with a concrete action queue
   review-opportunity ID --approve|--reject   record a human verdict (no contact)
+  acquisition-rescore   re-score the whole lead store with the current model ($0)
   digest [-q]      one-line summary of what needs the human
   agent-run        operator agent: one loop to a fixed point (also the cron primitive)
   agent-loop       operator agent: tick / sleep / repeat, bounded and resumable
@@ -400,6 +401,41 @@ def _cmd_review_opportunity(args) -> int:
     if args.approve:
         print("   Confirmed as a relevant opportunity. This does NOT post, "
               "contact, or message anyone.")
+    return 0
+
+
+def _cmd_acquisition_rescore(args) -> int:
+    from .acquisition import AcquisitionStore
+
+    data_dir = _data_dir(args)
+    path = data_dir / "acquisition.json"
+    if not path.exists():
+        print("no acquisition store yet - run `discover-free` first")
+        return 1
+    store = AcquisitionStore.load(path)
+    before = len(store.all())
+    r = store.rescore(max_age_days=args.max_age_days)
+    if not args.dry_run:
+        store.save()
+
+    if args.json:
+        print(json.dumps(r, indent=2))
+        return 0
+
+    after = store.all()
+    quality: dict[str, int] = {}
+    for d in after:
+        quality[d.get("prospect_quality", "none")] = (
+            quality.get(d.get("prospect_quality", "none"), 0) + 1)
+    tag = "(dry-run, nothing persisted) " if args.dry_run else ""
+    print(f"{tag}ACQUISITION RESCORE  {before} lead(s) -> {r['rescored']} re-derived, "
+          f"{r['unchanged']} unchanged, {r['dropped']} dropped ({r['total']} remain)")
+    for d in r["dropped_rows"]:
+        print(f"  dropped: {d['title']} ({d['reason']})")
+    print("  quality now: " + ", ".join(
+        f"{k}={quality[k]}" for k in ("high", "medium", "low", "none")
+        if quality.get(k)))
+    print("Deterministic re-scoring only - no network, no spend, contacts no one.")
     return 0
 
 
@@ -1386,11 +1422,13 @@ def build_parser() -> argparse.ArgumentParser:
     run.set_defaults(func=_cmd_run)
 
     def _add_discovery_args(p, *, with_web):
-        srcs = ("hn-algolia", "stackexchange", "bluesky", "reddit", "file",
-                "static", "free") + (("web", "all") if with_web else ())
+        srcs = ("hn-algolia", "stackexchange", "lobsters", "lemmy", "bluesky",
+                "reddit", "file", "static", "free") + (
+                    ("web", "all") if with_web else ())
         p.add_argument(
             "--source", action="append", default=None, choices=srcs,
-            help="repeatable. Default: hn-algolia + stackexchange (keyless, $0). "
+            help="repeatable. Default: hn-algolia + stackexchange + lobsters + "
+                 "lemmy (all keyless, $0). "
                  + ("'web' = Anthropic web search (paid, budget-gated). "
                     if with_web else "")
                  + "'free' = the keyless set.")
@@ -1446,6 +1484,18 @@ def build_parser() -> argparse.ArgumentParser:
                       help="include success-story / educational / irrelevant rows")
     topo.add_argument("--json", action="store_true")
     topo.set_defaults(func=_cmd_top_opportunities)
+
+    resc = sub.add_parser(
+        "acquisition-rescore", parents=[common],
+        help="re-derive every stored lead's score with the current model "
+             "($0, no network, contacts no one)",
+    )
+    resc.add_argument("--max-age-days", type=int, default=30,
+                      help="recency cliff for the re-derived final_score (default 30)")
+    resc.add_argument("--dry-run", action="store_true",
+                      help="score and print, but persist nothing")
+    resc.add_argument("--json", action="store_true")
+    resc.set_defaults(func=_cmd_acquisition_rescore)
 
     revo = sub.add_parser(
         "review-opportunity", parents=[common, actor_only],

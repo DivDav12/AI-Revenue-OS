@@ -25,16 +25,22 @@ python -m revenue_os review-opportunity <lead-id> --approve|--reject
 ```
 
 **Sources (free-first).** `--source` is repeatable; default =
-`hn-algolia` + `stackexchange` (both keyless, $0). The CLI groups sources
-by tier in its output:
+`hn-algolia` + `stackexchange` + `lobsters` + `lemmy` (all keyless, $0).
+The CLI groups sources by tier in its output:
 
 | tier | source | note |
 |---|---|---|
 | FREE | `hn-algolia` | HN search via Algolia; `--max-age-days` switches to date-sorted `search_by_date` incl. Ask HN |
-| FREE | `stackexchange` | SE API, keyless; `freelancing` + `webmasters` (there is no live "startups" SE) |
+| FREE | `stackexchange` | SE API, keyless; `freelancing` + `webmasters` (there is no live "startups" SE). Spaces its calls, honours the `backoff` field, retries one `429` |
+| FREE | `lobsters` | `lobste.rs/newest.json` recent-story feed, keyword-filtered client-side (lobsters has no keyless search API); catches a *fresh* on-topic post, not a back-catalogue |
+| FREE | `lemmy` | `lemmy.world /api/v3/search`, keyless; federated founder Q&A - recovers some of the Reddit-style discussion without touching Reddit |
 | UNAVAILABLE (auth) | `reddit` | `robots.txt` `Disallow: /`; JSON API 403 - left failure-isolated, not bypassed |
 | UNAVAILABLE (auth) | `bluesky` | `searchPosts` now auth/edge gated (401/403) - failure-isolated, not bypassed |
 | PAID | `web` | Anthropic `web_search` - needs API credits; `discover-opportunities` only, budget-gated |
+
+`acquisition-rescore` re-derives every stored lead's score with the
+current deterministic model (no network, no spend) - run it after a
+scorer change so old records stop showing a stale `prospect_quality`.
 
 One dead source never kills the run: `sources_status` reports it and the others still return.
 
@@ -75,16 +81,18 @@ reuses `budget_gate` + `CostMeter` + `record_llm_spend` + `LlmCache` (a
 lead already scored is never re-charged) and the post text is fenced as
 UNTRUSTED. The model is instructed never to claim the person will buy.
 
-**Sources** (`--source` is repeatable; default = the three keyless ones):
+**Sources** (`--source` is repeatable; default = the four keyless ones):
 
 | name | API | key? | freshness | notes |
 |---|---|---|---|---|
-| `stackexchange` | api.stackexchange.com | no | `fromdate` | `startups` + `freelancing` + `webmasters`; every result is a real question; `meta` carries answer stats -> already-answered questions are down-ranked |
-| `bluesky` | public.api.bsky.app (AppView) | no | `since` + `sort=latest` | indie-founder chatter; AT URIs -> canonical `bsky.app` URLs; read-only, never authenticates |
+| `stackexchange` | api.stackexchange.com | no | `fromdate` | `freelancing` + `webmasters`; every result is a real question; `meta` carries answer stats -> already-answered questions are down-ranked; call spacing + `backoff` + one `429` retry |
+| `lobsters` | lobste.rs/newest.json | no | client-side on `created_at` | recent-feed + keyword filter (no keyless search API); stores the `comments_url` link; read-only |
+| `lemmy` | lemmy.world /api/v3/search | no | client-side on `published` | federated founder Q&A; stores the canonical `ap_id`; read-only, never authenticates |
+| `bluesky` | public.api.bsky.app (AppView) | no | `since` + `sort=latest` | auth/edge gated now (401/403); kept failure-isolated, no auth |
 | `hn-algolia` | hn.algolia.com | no | `numericFilters` | HN stories/Ask HN |
 | `web` | Anthropic `web_search` tool | `ANTHROPIC_API_KEY` | search `page_age` | **opt-in** (`--source web`), budget-gated + cached; reaches indexed Reddit/IH/forum threads without touching those sites; keeps ONLY URLs that appear in real search results |
 | `reddit` | reddit.com/search.json | - | - | returns HTTP 403 unauthenticated; kept failure-isolated, no OAuth |
-| `free` / `all` | - | - | - | `free` = stackexchange+bluesky+hn-algolia; `all` = free + web |
+| `free` / `all` | - | - | - | `free` = hn-algolia+stackexchange+lobsters+lemmy; `all` = free + web |
 
 Every source is failure-isolated: one dead API is reported in
 `sources_status` and the others still return.
