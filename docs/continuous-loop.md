@@ -38,14 +38,37 @@ python -m revenue_os revenue-loop --watch --data-dir data \
 ## Experiments
 
 ```
-python -m revenue_os experiments --data-dir data          # ledger + per-source rollup
-python -m revenue_os experiment-close <lead-id> no_sale   # a human closes one
-python -m revenue_os outreach-status <lead-id> posted     # also advances the experiment
+python -m revenue_os experiments --data-dir data              # ledger + per-source rollup
+python -m revenue_os experiment-close <lead-id> no_sale --reason "..."  # a human closes one
+python -m revenue_os outreach-status <lead-id> posted --reason "..."    # also advances the experiment
+python -m revenue_os outreach-feedback --data-dir data        # settled outcomes by source/quality/type
 ```
 
 Lifecycle: `drafted -> posted -> intake -> sale` · `drafted -> skipped` ·
 `posted -> no_sale`. State in `data/experiments.json` (atomic,
 restart-safe). One experiment per lead, ever.
+
+Each experiment also records the lead's **quality / type / age bucket /
+relevance** at outreach time (from the brief), and `--reason` stores an
+optional human note on a status change. Both are optional and
+backward-compatible - older stored rows keep working.
+
+## Outreach feedback (Phase 2.6)
+
+`outreach-feedback` aggregates **settled** experiments (`sale` vs
+`no_sale`) by source, prospect quality and prospect type. It is
+deterministic, read-only, and **advisory only**:
+
+- It reports conversion counts and rates. It computes **no weights** and
+  changes **no** lead score, search query, or source ordering.
+- It stays **not ready** until at least **8 settled outcomes** exist with
+  **both** a sale and a no_sale present - the same gate `calibration.py`
+  uses for candidate-validation weights. Even when ready, nothing consumes
+  it automatically; a human reads it and decides.
+- When an experiment closes, the matching acquisition lead is annotated
+  with a compact `outreach_outcome` breadcrumb (local JSON, additive). It
+  does not replace the acquisition queue's own dedup, which still keys off
+  the experiment status.
 
 ## Safety / restart
 

@@ -135,6 +135,7 @@ def outreach_brief(lead: dict, *, checkout_url: str = DEFAULT_CHECKOUT_URL,
         "age_bucket": lead.get("age_bucket", "unknown"),
         "prospect_type": lead.get("prospect_type", "unknown"),
         "prospect_quality": lead.get("prospect_quality", "none"),
+        "relevance_score": lead.get("relevance_score"),
         "their_words": str(lead.get("problem_summary") or lead.get("title") or "")[:600],
         "why_relevant": list(lead.get("why", [])),
         "answer_angle": angle,
@@ -222,7 +223,7 @@ class OutreachStore:
         self._by_id[lid] = entry
         return entry
 
-    def set_status(self, lead_id: str, status: str) -> dict:
+    def set_status(self, lead_id: str, status: str, *, reason: str = "") -> dict:
         if status not in ("draft", "approved", "posted", "skipped"):
             raise ValueError("status must be draft|approved|posted|skipped")
         e = self._by_id.get(str(lead_id))
@@ -230,4 +231,6 @@ class OutreachStore:
             raise ValueError(f"no brief for lead {lead_id!r}")
         e["status"] = status
         e["status_changed_at"] = now_iso()
+        if reason:
+            e["status_reason"] = str(reason)
         return e

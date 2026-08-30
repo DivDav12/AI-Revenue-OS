@@ -17,6 +17,7 @@ Read commands:
   revenue-loop --watch   run the supervisor continuously (bounded, resumable,
                    Ctrl-C-safe; deterministic; no spend / API / PayPal)
   experiments / experiment-close ID no_sale|skipped   revenue-experiment ledger
+  outreach-feedback   settled outreach outcomes by source/quality/type (advisory)
   review-opportunity ID --approve|--reject   record a human verdict (no contact)
   acquisition-rescore   re-score the whole lead store with the current model ($0)
   acquisition-queue     high/medium prospects still waiting on a human (de-duped)
@@ -579,9 +580,11 @@ def _cmd_outreach_status(args) -> int:
               f"id {args.lead_id!r}", file=sys.stderr)
         return 1
     lid = matches[0]["lead_id"]
-    entry = briefs.set_status(lid, args.status)
+    reason = (getattr(args, "reason", "") or "").strip()
+    entry = briefs.set_status(lid, args.status, reason=reason)
     briefs.save()
-    print(f"{lid}: outreach status -> {entry['status']}")
+    print(f"{lid}: outreach status -> {entry['status']}"
+          + (f"  ({reason})" if reason else ""))
 
     # keep the experiment ledger in step with the human's action
     if args.status in ("posted", "skipped"):
@@ -589,7 +592,7 @@ def _cmd_outreach_status(args) -> int:
         experiments.open_from_briefs(data_dir)
         try:
             experiments.advance(data_dir, lid, args.status,
-                                note="via outreach-status")
+                                note="via outreach-status", reason=reason)
             print(f"  experiment {lid}: -> {args.status}")
         except ValueError as exc:
             print(f"  (experiment not advanced: {exc})")
@@ -624,16 +627,41 @@ def _cmd_experiments(args) -> int:
     return 0
 
 
+def _cmd_outreach_feedback(args) -> int:
+    from . import experiments as ex
+
+    fb = ex.feedback(_data_dir(args))
+    if args.json:
+        print(json.dumps(fb, indent=2))
+        return 0
+    print(f"OUTREACH FEEDBACK  {fb['settled']}/{fb['needed']} settled "
+          f"({fb['sale']} sale, {fb['no_sale']} no_sale)  ready={fb['ready']}")
+    print(f"  {fb['note']}")
+    for dim in ("by_source", "by_quality", "by_type"):
+        d = fb.get(dim) or {}
+        if not d:
+            continue
+        print(f"  {dim.replace('by_', 'by ')}:")
+        for k, b in d.items():
+            print(f"    {k:16} settled={b['settled']} sale={b['sale']} "
+                  f"no_sale={b['no_sale']} rate={b['sale_rate']}")
+    print("Deterministic, read-only. No weighting / query / source change is "
+          "applied automatically (>=8-settled rule).")
+    return 0
+
+
 def _cmd_experiment_close(args) -> int:
     from . import experiments as ex
 
+    reason = (getattr(args, "reason", "") or "").strip()
     try:
         entry = ex.advance(_data_dir(args), args.lead_id, args.status,
-                           note="manual close via CLI")
+                           note="manual close via CLI", reason=reason)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    print(f"experiment {entry['lead_id']}: -> {entry['status']}")
+    print(f"experiment {entry['lead_id']}: -> {entry['status']}"
+          + (f"  ({reason})" if reason else ""))
     return 0
 
 
@@ -1116,7 +1144,7 @@ def _experiments_snapshot_safe(data_dir: Path) -> dict:
     """Deterministic, read-only experiment rollup; never fail the build."""
     try:
         from . import experiments as _ex
-        return {"rollup": _ex.rollup(data_dir)}
+        return {"rollup": _ex.rollup(data_dir), "feedback": _ex.feedback(data_dir)}
     except Exception:
         return {}
 
@@ -1858,12 +1886,22 @@ def build_parser() -> argparse.ArgumentParser:
     exls.add_argument("--json", action="store_true")
     exls.set_defaults(func=_cmd_experiments)
 
+    ofb = sub.add_parser(
+        "outreach-feedback", parents=[common],
+        help="settled outreach experiments by source / quality / type "
+             "(deterministic, read-only, advisory only - no auto weighting)",
+    )
+    ofb.add_argument("--json", action="store_true")
+    ofb.set_defaults(func=_cmd_outreach_feedback)
+
     exclose = sub.add_parser(
         "experiment-close", parents=[common],
         help="human closes one experiment (no_sale | skipped)",
     )
     exclose.add_argument("lead_id", help="the experiment's lead id")
     exclose.add_argument("status", choices=("no_sale", "skipped"))
+    exclose.add_argument("--reason", default="",
+                         help="optional human note stored on the experiment")
     exclose.set_defaults(func=_cmd_experiment_close)
 
     ostatus = sub.add_parser(
@@ -1873,6 +1911,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ostatus.add_argument("lead_id", help="lead id (or a unique prefix)")
     ostatus.add_argument("status", choices=("draft", "approved", "posted", "skipped"))
+    ostatus.add_argument("--reason", default="",
+                         help="optional human note (why you posted / skipped)")
     ostatus.set_defaults(func=_cmd_outreach_status)
 
     apilot = sub.add_parser(

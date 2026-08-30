@@ -986,6 +986,32 @@ def _experiments_panel(acquisition: dict | None) -> str:
         f"<div class='aout'><table><tr><th>source</th>{head}</tr>{srows}"
         f"<tr><td class='hl'>all</td>{total_cells}</tr></table></div>")
 
+    fb = (exp or {}).get("feedback")
+    fb = fb if isinstance(fb, dict) else None
+    fb_html = ""
+    if fb:
+        gate = (f"Outreach feedback: {_esc(fb.get('settled', 0))} of "
+                f"{_esc(fb.get('needed', 8))} settled outcomes "
+                f"(sale vs no_sale)")
+        if fb.get("ready"):
+            gate += " &mdash; advisory only; no weighting, query or source is " \
+                    "changed automatically."
+        else:
+            gate += " &mdash; not yet active; lead scoring, queries and " \
+                    "sources stay unchanged."
+        qrows = ""
+        for q, b in (fb.get("by_quality") or {}).items():
+            qrows += (f"<tr><td class='hl'>{_esc(q)}</td>"
+                      f"<td>{_esc(b.get('settled', 0))}</td>"
+                      f"<td>{_esc(b.get('sale', 0))}</td>"
+                      f"<td>{_esc(b.get('no_sale', 0))}</td>"
+                      f"<td>{_esc(b.get('sale_rate', 0.0))}</td></tr>")
+        qtable = (f"<div class='aout'><table><tr><th>lead quality</th>"
+                  f"<th>settled</th><th>sale</th><th>no_sale</th>"
+                  f"<th>rate</th></tr>{qrows}</table></div>" if qrows else "")
+        fb_html = (f"<p class='muted' style='margin-top:1rem'>{gate}</p>"
+                   + qtable)
+
     rrows = ""
     for row in roll["rows"][:15]:
         age = "age ?" if row.get("age_days") is None else f"{row['age_days']}d"
@@ -1003,7 +1029,7 @@ def _experiments_panel(acquisition: dict | None) -> str:
         "named:</p>"
         f"<div class='aout'><table><tr><th>source</th><th>price</th>"
         f"<th>status</th><th>age</th></tr>{rrows}{more}</table></div>")
-    return (rollup_html + rows_html
+    return (rollup_html + fb_html + rows_html
             + "<p class='muted'>From <span class='mono'>data/experiments.json"
             "</span>. Sales are correlated read-only from the intake + revenue "
             "ledger; PayPal is never called.</p>")

@@ -389,6 +389,32 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertNotIn("http", panel)
         self.assertNotIn("lead_id", panel)   # no prospect identity
 
+    def test_experiments_panel_shows_feedback_gate(self):
+        from revenue_os.experiments import STATUSES
+        acq = {"experiments": {
+            "rollup": {"total": 2, "open": 0, "closed": 2,
+                       "overall": {**{s: 0 for s in STATUSES}, "no_sale": 2},
+                       "by_source": {"lemmy": {**{s: 0 for s in STATUSES},
+                                               "no_sale": 2}},
+                       "rows": [{"source": "lemmy", "platform": "Lemmy",
+                                 "offer_price": 29.9, "currency": "EUR",
+                                 "status": "no_sale", "age_days": 20,
+                                 "revenue_ref": ""}]},
+            "feedback": {"settled": 2, "needed": 8, "sale": 0, "no_sale": 2,
+                         "ready": False, "advisory_only": True,
+                         "note": "not enough settled outcomes yet",
+                         "by_source": {"lemmy": {"settled": 2, "sale": 0,
+                                                 "no_sale": 2, "sale_rate": 0.0}},
+                         "by_quality": {"medium": {"settled": 2, "sale": 0,
+                                                   "no_sale": 2, "sale_rate": 0.0}},
+                         "by_type": {}}}}
+        html = render_html(_report(self.store, self.d), _FIXED_TS, acquisition=acq)
+        panel = html.split("id='experiments'")[1].split("</section>")[0]
+        self.assertIn("2 of 8 settled", panel)
+        self.assertIn("stay unchanged", panel)      # not-active wording
+        self.assertIn("lead quality", panel)
+        self.assertNotIn("http", panel)
+
     def test_first_sale_panel_without_readiness_is_an_honest_note(self):
         html = render_html(_report(self.store, self.d), _FIXED_TS)
         self.assertIn("id='first-sale'", html)
