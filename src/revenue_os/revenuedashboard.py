@@ -6,14 +6,18 @@ one self-contained HTML document out. Inline CSS + inline SVG, no
 JavaScript, no external requests, no external images.
 
 Every value shown is traceable to a file on disk (goal.json,
-agent_log.json, agent_session.json, llm_spend.json, the candidate
-store). Nothing is invented - no fake agents, revenue, progress,
-uptime, or activity. All external text is HTML-escaped.
+agent_log.json, agent_session.json, llm_spend.json, acquisition.json,
+outreach.json, revenue.json, the candidate store). Nothing is invented -
+no fake agents, revenue, progress, uptime, or activity. The "first sale
+readiness" panel is explicit about the one thing it cannot check without
+an API call (the live PayPal payment path). All external text is
+HTML-escaped; no prospect URLs are rendered.
 """
 
 from __future__ import annotations
 
 from html import escape
+from urllib.parse import urlsplit
 
 from . import lifecycle, roster
 from .opportunity import CRITERIA
@@ -247,6 +251,10 @@ h3{font-size:.58rem;letter-spacing:.15em;text-transform:uppercase;color:var(--di
 .cnode.ran .ct{color:var(--good);border-color:color-mix(in srgb,var(--good) 45%,var(--edge))}
 .cnode.gated .ct{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,var(--edge))}
 .aout td.hl{color:var(--text)}
+.fsm{width:1.4rem;text-align:center;font-weight:700}
+.fsm-ok{color:var(--good)}
+.fsm-warn{color:var(--warn)}
+.fsm-off{color:var(--dim)}
 """.strip()
 
 # ---------------------------------------------------------------------------
@@ -637,17 +645,27 @@ def _roster_panel() -> str:
     )
 
 
+def _path_only(url: str) -> str:
+    """The path of a URL, no scheme/host - so the dashboard stays free of
+    external references while still showing which page is meant."""
+    p = urlsplit(str(url or "")).path.rstrip("/")
+    return p or "/"
+
+
 def _acquisition_panel(acquisition: dict | None) -> str:
     """Phase 2 acquisition cluster - real counts only, straight from
     data/acquisition.json + data/outreach.json. No prospect URLs, titles,
     or invented status: the stores either hold these numbers or they do
     not. The system finds and drafts only; a person posts every reply.
 
-    `acquisition` is {"leads": [...], "briefs": [...]} or None.
+    `acquisition` is {"leads": [...], "briefs": [...], "queue": [...]} or
+    None. `queue` (Phase 2.4) is the de-duped review queue from
+    autopilot.acquisition_queue.
     """
     data = acquisition if isinstance(acquisition, dict) else {}
     leads = [d for d in (data.get("leads") or []) if isinstance(d, dict)]
     briefs = [d for d in (data.get("briefs") or []) if isinstance(d, dict)]
+    queue = [d for d in (data.get("queue") or []) if isinstance(d, dict)]
     if not leads and not briefs:
         return (
             "<p class='muted'>No acquisition run yet - "
@@ -666,6 +684,11 @@ def _acquisition_panel(acquisition: dict | None) -> str:
            for k in ("new", "reviewed", "rejected")}
     awaiting = sum(1 for b in briefs if b.get("status") in ("draft", "approved"))
     posted = _c(briefs, "status", "posted")
+    llm_drafts = sum(1 for b in briefs
+                     if isinstance((b.get("brief") or {}).get("draft_reply")
+                                   or b.get("draft_reply"), dict)
+                     and not ((b.get("brief") or {}).get("draft_reply")
+                              or b.get("draft_reply") or {}).get("error"))
 
     rows = [
         ("prospects found", len(leads)),
@@ -673,13 +696,41 @@ def _acquisition_panel(acquisition: dict | None) -> str:
         ("awaiting human review", rev["new"]),
         ("reviewed / rejected", f"{rev['reviewed']} / {rev['rejected']}"),
         ("outreach drafts prepared", len(briefs)),
+        ("of those, with a tailored LLM draft", llm_drafts),
         ("awaiting a human post", awaiting),
         ("marked posted", posted),
+        ("review queue (de-duped, still open)", len(queue)),
     ]
     body = "".join(
         f"<tr><td>{_esc(label)}</td><td class='hl'>{_esc(value)}</td></tr>"
         for label, value in rows
     )
+
+    qhtml = ""
+    if queue:
+        qrows = ""
+        for row in queue[:10]:
+            age = ("age unknown" if row.get("age_days") is None
+                   else f"{row['age_days']}d ({row.get('age_bucket', '?')})")
+            qrows += (
+                f"<tr><td>{_esc(row.get('prospect_quality', '?'))}</td>"
+                f"<td>{_esc(row.get('stage', '?'))}</td>"
+                f"<td>{_esc(row.get('brief_status', '?'))}</td>"
+                f"<td>{_esc('promo:' + str(row.get('promo_allowed', '?')))}</td>"
+                f"<td>{_esc(age)}</td>"
+                f"<td class='mono'>{_esc(row.get('lead_id', ''))}</td></tr>"
+            )
+        more = (f"<tr><td colspan='6' class='muted'>&hellip; and "
+                f"{len(queue) - 10} more</td></tr>" if len(queue) > 10 else "")
+        qhtml = (
+            "<p class='muted' style='margin-top:1rem'>Review queue - each row "
+            "needs a person to review the draft and post their own reply "
+            "(<span class='mono'>acquisition-queue</span>). No URL shown here.</p>"
+            f"<div class='aout'><table><tr><th>quality</th><th>stage</th>"
+            f"<th>brief</th><th>promo</th><th>age</th><th>lead id</th></tr>"
+            f"{qrows}{more}</table></div>"
+        )
+
     return (
         f"<div class='aout'><table>{body}</table></div>"
         f"<p class='muted'>Quality split: high {q['high']} &middot; medium "
@@ -688,7 +739,137 @@ def _acquisition_panel(acquisition: dict | None) -> str:
         "<span class='mono'>data/outreach.json</span> - no prospect is named "
         "here. The system finds and drafts only; a person reviews every "
         "prospect and posts every reply.</p>"
+        f"{qhtml}"
     )
+
+
+def _first_sale_panel(acquisition: dict | None) -> str:
+    """A live readiness checklist for the first real sale, computed only
+    from files on disk (the launched candidate, the acquisition + outreach
+    stores, the revenue ledger, the LLM-spend log). It never calls an API,
+    so it is explicit about what it cannot know (the live PayPal payment
+    path). Every item is READY / CHECK / - with a one-line reason.
+    """
+    data = acquisition if isinstance(acquisition, dict) else {}
+    r = data.get("readiness") if isinstance(data.get("readiness"), dict) else None
+    if not r:
+        return ("<p class='muted'>Readiness not computed - no launched, priced "
+                "candidate found in <span class='mono'>data/candidates.json</span>.</p>")
+
+    leads = [d for d in (data.get("leads") or []) if isinstance(d, dict)]
+    queue = [d for d in (data.get("queue") or []) if isinstance(d, dict)]
+
+    def mark(state):  # "ok" | "warn" | "off"
+        return {"ok": "&#10003;", "warn": "&#9888;", "off": "&ndash;"}[state]
+
+    items: list[tuple[str, str, str]] = []
+
+    # 1. offer
+    if r.get("candidate") and r.get("offer_price"):
+        items.append(("ok", "Offer live",
+                      f"{_esc(r.get('candidate'))} &middot; "
+                      f"{_esc(r.get('offer_price'))} {_esc(r.get('offer_currency') or 'EUR')} "
+                      f"&middot; {_esc(r.get('candidate_status') or '?')}"))
+    else:
+        items.append(("warn", "Offer live",
+                      "no launched candidate with a price"))
+
+    # 2. checkout page
+    if r.get("checkout_built") and r.get("checkout_deployed"):
+        items.append(("ok", "Checkout page",
+                      f"built and deployed at "
+                      f"<span class='mono'>{_esc(_path_only(r.get('candidate_public_url')))}</span>"))
+    elif r.get("checkout_built"):
+        items.append(("warn", "Checkout page",
+                      "built but not deployed - run <span class='mono'>deploy-checkout</span>"))
+    else:
+        items.append(("warn", "Checkout page",
+                      "not built - run <span class='mono'>build-checkout</span>"))
+
+    # 3. outreach link points at the deployed checkout
+    dep = _path_only(r.get("candidate_public_url"))
+    out = _path_only(r.get("outreach_default_url"))
+    if not r.get("candidate_public_url"):
+        items.append(("off", "Outreach link", "no deployed checkout to compare"))
+    elif dep.lower() == out.lower():
+        items.append(("ok", "Outreach link",
+                      f"briefs link to the deployed page "
+                      f"(<span class='mono'>{_esc(dep)}</span>)"))
+    else:
+        items.append(("warn", "Outreach link",
+                      f"briefs link to <span class='mono'>{_esc(out)}</span> but the "
+                      f"checkout is deployed at <span class='mono'>{_esc(dep)}</span> "
+                      "- a prospect who clicks the brief hits the wrong page "
+                      "(pass <span class='mono'>--checkout-url</span> or fix the default)"))
+
+    # 4. a fresh qualified lead
+    qual = [d for d in leads
+            if d.get("prospect_quality") in ("high", "medium")
+            and d.get("human_review_status") != "rejected"]
+    ages = [d["age_days"] for d in qual if isinstance(d.get("age_days"), int)]
+    if not qual:
+        items.append(("warn", "Actionable lead",
+                      "no high/medium-quality prospect in the store - "
+                      "run <span class='mono'>discover-free</span>"))
+    elif ages and min(ages) > 14:
+        items.append(("warn", "Actionable lead",
+                      f"{len(qual)} qualified, but the freshest is {min(ages)}d old "
+                      "- likely past a useful reply window"))
+    else:
+        fresh = f", freshest {min(ages)}d" if ages else ""
+        items.append(("ok", "Actionable lead",
+                      f"{len(qual)} high/medium-quality prospect(s){fresh}"))
+
+    # 5. an outreach brief ready to post
+    prepared = [d for d in queue if d.get("stage") == "prepared"]
+    if prepared:
+        items.append(("ok", "Outreach brief ready",
+                      f"{len(prepared)} brief(s) drafted, awaiting your review + post"))
+    elif queue:
+        items.append(("warn", "Outreach brief ready",
+                      f"{len(queue)} prospect(s) queued but no brief drafted yet - "
+                      "run <span class='mono'>outreach-brief</span> / a cycle"))
+    else:
+        items.append(("warn", "Outreach brief ready", "nothing queued"))
+
+    # 6. payment - honest about the API blind spot
+    rev_eur = r.get("revenue_eur") or 0
+    if rev_eur and float(rev_eur) > 0:
+        items.append(("ok", "Payment received",
+                      f"{_esc(rev_eur)} EUR booked in the revenue ledger"))
+    else:
+        items.append(("off", "Payment received",
+                      "no sale yet. This view does NOT check the live PayPal "
+                      "payment path (that needs an API call) - verify a real "
+                      "payment can complete before relying on the funnel"))
+
+    # 7. LLM opt-in paths
+    calls = int(r.get("llm_api_calls") or 0)
+    cost = r.get("llm_cost_usd") or 0.0
+    if calls:
+        items.append(("ok", "LLM opt-in paths",
+                      f"{calls} metered API call(s) recorded (${_esc(cost)})"))
+    else:
+        items.append(("off", "LLM opt-in paths",
+                      "no LLM call has succeeded here - <span class='mono'>--score llm</span>"
+                      " / <span class='mono'>--draft llm</span> / "
+                      "<span class='mono'>draft-launch-plan</span> are untested "
+                      "(deterministic paths work at EUR 0)"))
+
+    n_warn = sum(1 for s, *_ in items if s == "warn")
+    rows = "".join(
+        f"<tr><td class='fsm fsm-{s}'>{mark(s)}</td>"
+        f"<td class='hl'>{_esc(label)}</td><td>{reason}</td></tr>"
+        for s, label, reason in items
+    )
+    head = (f"<p class='muted'>{n_warn} item(s) need attention before a "
+            "realistic first-sale attempt. Every row is computed from a file "
+            "on disk - nothing here is inferred or live-checked.</p>"
+            if n_warn else
+            "<p class='muted'>All disk-checkable items look ready. The live "
+            "PayPal payment path still needs a real verification (not done "
+            "here).</p>")
+    return head + f"<div class='aout'><table>{rows}</table></div>"
 
 
 _CLUSTER_FLOW_LABEL = {
@@ -1378,6 +1559,7 @@ def _roi(roi: dict, report: dict, goal: dict | None) -> str:
 
 _NAV = (
     ("Dashboard", "#top", "operator"),
+    ("First sale", "#first-sale", "evaluator"),
     ("Agents", "#agents", "generic"),
     ("Acquisition", "#acquisition", "finder"),
     ("Pipeline", "#pipeline", "finder"),
@@ -1436,6 +1618,8 @@ def render_html(report: dict, generated_at: str, *,
         + flash_html
         + _topbar(report, session, agent_log, spend_entries, goal)
         + _attention(queue, interactive, csrf)
+        + "<section id='first-sale'><h2>First sale readiness</h2>"
+        + _first_sale_panel(acquisition) + "</section>"
         + "<section id='agents'><h2>Agents</h2>"
         + _agent_map(agent_log or [], spend_entries, goal, session, report,
                      bool(queue), task_log or [])
