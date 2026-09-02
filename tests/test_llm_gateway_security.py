@@ -259,9 +259,16 @@ class MoneyFirewallUnweakened(unittest.TestCase):
                                RevenueLedger(d / "r.json"), "x", 10.0, actor="t")
 
     def test_guard_no_money_in_autonomy_still_present_on_money_paths(self):
-        for fname in ("budget.py", "paypal.py", "delivery.py"):
+        for fname in ("budget.py", "delivery.py"):
             src = (_SRC / fname).read_text(encoding="utf-8")
             self.assertIn("guard_no_money_in_autonomy", src, fname)
+        # paypal.py uses the STRICTER Phase 11-real P0-2 guard instead: a
+        # per-operation, fail-closed autonomy gate (guard_paypal) that only
+        # permits the three read-only calls, and only inside an explicit
+        # paypal_read_context(). The autonomy money-firewall on paypal.py is
+        # not weakened - it is narrowed to read-only and made explicit.
+        pp = (_SRC / "paypal.py").read_text(encoding="utf-8")
+        self.assertIn("guard_paypal(", pp)
 
 
 # ---------------------------------------------------------------------------

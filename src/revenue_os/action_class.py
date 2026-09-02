@@ -327,3 +327,83 @@ def guard_no_money_in_autonomy(what: str) -> None:
             "Money / PayPal / e-mail / paid-LLM actions require an explicit "
             "human approval performed OUTSIDE autonomous mode."
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 11-real P0-2: a NARROW read-only-PayPal exception.
+#
+# Reading a payment PayPal has ALREADY settled (looking up one order,
+# searching completed transactions) moves no money and mutates nothing - so
+# a payment-verification adapter may do it inside autonomous_context(). It
+# is gated twice, fail-closed:
+#   1. it must run inside an explicit `with paypal_read_context():` block
+#      (a caller opting in to "everything I do here is read-only PayPal"),
+#   2. AND the individual operation must be one of the three known
+#      read-only calls below. Anything else - an unknown operation name, a
+#      read op outside the scope, or any money-moving call - raises.
+#
+# There is deliberately no way to widen this by string matching or by HTTP
+# method: the allow-list is these exact operation names and nothing else.
+# ---------------------------------------------------------------------------
+
+#: the ONLY PayPal operations permitted inside autonomous_context() - each
+#: is a pure GET (or the client-credentials token fetch that read GETs
+#: require). No capture / refund / payout / void / order-create.
+PAYPAL_READONLY_OPS: frozenset[str] = frozenset({
+    "config",               # resolve read-only credentials for the session
+    "oauth_token",          # POST /v1/oauth2/token - client_credentials, read scope
+    "get_order",            # GET  /v2/checkout/orders/{id}
+    "search_transactions",  # GET  /v1/reporting/transactions
+})
+
+
+class paypal_read_context:
+    """`with paypal_read_context(): ...` - the caller asserts that every
+    PayPal API call inside this block is strictly read-only (order lookup /
+    transaction search). Only then does `guard_paypal()` permit those calls
+    inside `autonomous_context()`. Money-moving PayPal calls stay blocked
+    regardless of this scope. Nestable; a no-op outside autonomous_context()."""
+
+    def __enter__(self):
+        _local.ppr_depth = getattr(_local, "ppr_depth", 0) + 1
+        return self
+
+    def __exit__(self, *exc):
+        _local.ppr_depth = max(0, getattr(_local, "ppr_depth", 1) - 1)
+        return False
+
+
+def in_paypal_read_context() -> bool:
+    return getattr(_local, "ppr_depth", 0) > 0
+
+
+def guard_paypal(operation: str) -> None:
+    """Call-site hook for paypal.py, one call per PayPal operation.
+
+    Outside autonomous_context(): a no-op (the human-driven candidate flow
+    is unaffected).
+
+    Inside autonomous_context(): raises ActionBlocked unless BOTH
+      * the call is inside an explicit paypal_read_context(), AND
+      * `operation` is one of PAYPAL_READONLY_OPS.
+    Fail closed - an unknown operation, or any money-moving operation, is
+    blocked even inside a read context.
+    """
+    if not in_autonomous_context():
+        return
+    op = (operation or "").strip()
+    if not in_paypal_read_context():
+        raise ActionBlocked(
+            f"BLOCKED: PayPal operation {op or '<unknown>'!r} inside the "
+            "autonomous loop is only allowed inside an explicit "
+            "paypal_read_context() (read-only verification). A money-moving "
+            "PayPal action requires an explicit human approval OUTSIDE "
+            "autonomous mode."
+        )
+    if op not in PAYPAL_READONLY_OPS:
+        raise ActionBlocked(
+            f"BLOCKED: PayPal operation {op or '<unknown>'!r} is not a "
+            "permitted read-only operation - it may move money or mutate a "
+            "PayPal resource. Only order lookup / transaction search are "
+            "allowed inside the autonomous loop."
+        )

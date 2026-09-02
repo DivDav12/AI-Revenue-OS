@@ -5,6 +5,13 @@ RevenueLedger via revenue.record_payment(). It cannot send money, change
 an account, or create an obligation - the Client ID / Secret only grant
 read access to orders and the Transaction Search API.
 
+Every call here is a GET (or the client-credentials token fetch a GET
+needs). Each is gated by `action_class.guard_paypal(<op>)`: outside the
+autonomous loop it is a no-op; inside the autonomous loop it is permitted
+ONLY within an explicit `with action_class.paypal_read_context():` block
+and only for the three known read operations. Any other / future PayPal
+operation is blocked inside the autonomous loop, fail-closed.
+
 Credentials come from the environment, never from code or the store:
   PAYPAL_CLIENT_ID       (required)
   PAYPAL_CLIENT_SECRET   (required)
@@ -43,6 +50,13 @@ _MAX_DAYS = 31  # PayPal Transaction Search caps the range at 31 days
 def _http_json(method: str, url: str, *, headers: dict, data: bytes | None = None):
     """One urllib wrapper (patched in tests). Returns the parsed JSON body;
     raises ValueError with the status text on a non-2xx response."""
+    # Fail-closed backstop: the ONLY non-GET this module ever issues is the
+    # client-credentials token POST. Any other write verb reaching PayPal
+    # from inside the autonomous loop - now or in future code - is blocked,
+    # regardless of paypal_read_context().
+    if method.upper() != "GET" and not url.endswith("/v1/oauth2/token"):
+        from .action_class import guard_paypal
+        guard_paypal(f"http_{method.lower()}")
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
@@ -68,8 +82,12 @@ class PayPalConfig:
     def from_env(cls, environ=None) -> "PayPalConfig":
         import os
 
-        from .action_class import guard_no_money_in_autonomy
-        guard_no_money_in_autonomy("PayPal API access")
+        # Read-only by construction: every call in this module is a GET (or
+        # the token fetch a GET needs). Inside the autonomous loop this is
+        # permitted ONLY inside an explicit `paypal_read_context()` - see
+        # action_class.guard_paypal. Money-moving calls stay blocked.
+        from .action_class import guard_paypal
+        guard_paypal("config")
 
         environ = environ if environ is not None else os.environ
         cid = environ.get("PAYPAL_CLIENT_ID", "").strip()
@@ -93,6 +111,8 @@ class PayPalClient:
     def _access_token(self) -> str:
         if self._token and time.time() < self._token_expiry - 60:
             return self._token
+        from .action_class import guard_paypal
+        guard_paypal("oauth_token")
         basic = base64.b64encode(
             f"{self.config.client_id}:{self.config.client_secret}".encode()
         ).decode()
@@ -121,9 +141,13 @@ class PayPalClient:
         )
 
     def get_order(self, order_id: str) -> dict:
+        from .action_class import guard_paypal
+        guard_paypal("get_order")
         return self._get(f"/v2/checkout/orders/{urllib.parse.quote(order_id)}")
 
     def search_transactions(self, start: datetime, end: datetime) -> list[dict]:
+        from .action_class import guard_paypal
+        guard_paypal("search_transactions")
         out: list[dict] = []
         page = 1
         while True:
