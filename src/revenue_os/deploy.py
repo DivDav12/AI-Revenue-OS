@@ -164,18 +164,21 @@ def deploy_files(config: GitHubPagesConfig, files: dict[str, bytes], *,
     deployed: list[str] = []
     unchanged: list[str] = []
     urls: dict[str, str] = {}
+    commit_sha = ""
     for filename, content in files.items():
         repo_path = config.repo_path(filename)
         existing = client.get_file(repo_path)
         if existing is not None and existing["content_bytes"] == content:
             unchanged.append(filename)
         else:
-            client.put_file(repo_path, content, message=msg,
-                            sha=(existing or {}).get("sha") or None)
+            resp = client.put_file(repo_path, content, message=msg,
+                                   sha=(existing or {}).get("sha") or None)
+            commit_sha = ((resp or {}).get("commit") or {}).get("sha") or commit_sha
             deployed.append(filename)
         urls[filename] = config.public_url(filename)
     return {"deployed": deployed, "unchanged": unchanged, "urls": urls,
-            "branch": config.branch, "repo": f"{config.owner}/{config.repo}"}
+            "branch": config.branch, "repo": f"{config.owner}/{config.repo}",
+            "commit_sha": commit_sha}
 
 
 def deploy_checkout(data_dir, candidate_name: str, *,

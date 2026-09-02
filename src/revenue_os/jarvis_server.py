@@ -56,7 +56,8 @@ _CONTROL_ACTIONS = ("enable", "disable", "pause", "resume", "run",
                     "ack-gate", "reopen-gate", "outreach-status", "resolve-blocker",
                     "set-mode", "stop-job", "prepare-outreach", "refresh",
                     "run-autonomy", "approve-request", "deny-request",
-                    "accept-opportunity", "abandon-opportunity", "run-worker")
+                    "accept-opportunity", "abandon-opportunity", "run-worker",
+                    "release-task")
 
 _QUALIFIED = ("validated", "launched", "earning")
 
@@ -455,6 +456,20 @@ def _apply_control_inner(data_dir, actor: str, form: dict, action: str) -> str:
             return "error: fleet is paused - resume before draining the queue"
         ticks = max(1, min(200, int((form.get("max_ticks") or ["50"])[0] or 50)))
         return _start_job("worker drain", _worker_job, data_dir, ticks)
+
+    if action == "release-task":
+        from . import acceptance
+        tid = (form.get("task") or [""])[0]
+        ctrl = agent_control.load_agent_control(data_dir)
+        if ctrl.is_paused():
+            return "error: fleet is paused - resume first"
+        try:
+            r = acceptance.release_task(data_dir, tid, actor=actor)
+            return (f"ok: {r['task_type']} released by {actor} -> {r['status']}; "
+                    "the worker runs it once dependencies are met (publishes the "
+                    "page to your GitHub Pages; no checkout, no fees)")
+        except acceptance.AcceptanceError as exc:
+            return f"error: {exc}"
 
     if action in ("accept-opportunity", "abandon-opportunity"):
         from . import acceptance
@@ -1304,8 +1319,22 @@ def _execution_panel(execution: list, board: dict, csrf: str) -> str:
             f"{_esc(t['task_type'].replace('_', ' ').lower())}</span>"
             for t in row.get("tasks", []))
         nxt = row.get("current_task") or row.get("next_task") or "—"
-        blk = (f"<div class=x-blk>blocked: {_esc(row['blocker'])} — approve it "
-               f"in HUMAN APPROVALS</div>" if row.get("blocker") else "")
+        release = ""
+        if row.get("blocked_task_id"):
+            release = _cbtn(csrf, "release-task", "Approve deployment",
+                            "j-btn j-enable",
+                            hidden={"task": row["blocked_task_id"]},
+                            title="publishes the landing page to your GitHub "
+                                  "Pages under your account — no checkout, no "
+                                  "fees; the deploy still fails closed if "
+                                  "GITHUB_TOKEN is not set")
+        blk = (f"<div class=x-blk>blocked: {_esc(row['blocker'])}</div>"
+               if row.get("blocker") else "")
+        live = ""
+        if row.get("live_url"):
+            live = (f"<div class=xlive>live: <a href=\"{_esc(row['live_url'])}\" "
+                    f"target=_blank rel=noopener>{_esc(row['live_url'])}</a> "
+                    f"<small>({_esc(row.get('deployment_provider', ''))})</small></div>")
         abandon = _cbtn(csrf, "abandon-opportunity", "Abandon", "j-btn j-disable",
                         hidden={"opp": oid})
         body += (
@@ -1315,8 +1344,8 @@ def _execution_panel(execution: list, board: dict, csrf: str) -> str:
             f"<div class=xchips>{chips}</div>"
             f"<div class=xmeta>next: <b>{_esc(nxt)}</b>"
             f" · accepted by {_esc(row.get('accepted_by') or 'you')}</div>"
-            f"{blk}"
-            f"<div class=j-actions>{abandon}</div>"
+            f"{blk}{live}"
+            f"<div class=j-actions>{release}{abandon}</div>"
             f"</div>")
 
     # acceptable = discovered / evaluating opportunities not already accepted
@@ -2079,6 +2108,8 @@ a.j-btn{text-decoration:none;display:inline-block}
 .xtask.x-failed_final,.xtask.x-cancelled{border-color:#7a2e2e;color:#c98a8a;text-decoration:line-through}
 .xmeta{font-size:10.5px;color:#8fa8ba}
 .x-blk{font-size:10.5px;color:#ffb4b4;margin-top:3px}
+.xlive{font-size:10.5px;color:#8ff0c0;margin-top:3px;word-break:break-all}
+.xlive a{color:#8ff0c0}
 .xcand{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:11px;color:#b8ccd8;padding:4px 0;border-top:1px solid #0e2131}
 .xcand small{color:#5f7c92}
 .x-h{font-size:9px;letter-spacing:.1em;color:#5f7c92;margin:10px 0 2px}

@@ -190,6 +190,34 @@ def abandon_opportunity(data_dir, opportunity_id: str, *, actor: str = "human",
             "state": store.get(opportunity_id).get("state"), "moved": moved}
 
 
+def release_task(data_dir, task_id: str, *, actor: str = "human") -> dict:
+    """Human releases a BLOCKED_APPROVAL task (e.g. DEPLOY). This is the
+    satisfaction of the approval gate - it is an explicit, logged human
+    action; it never runs the task, only makes it eligible. The worker
+    still checks dependencies before it becomes READY."""
+    data_dir = Path(data_dir)
+    q = load_tasks(data_dir)
+    t = q.get(task_id)
+    if t is None:
+        raise AcceptanceError(f"unknown task {task_id!r}")
+    if t.status != "BLOCKED_APPROVAL":
+        raise AcceptanceError(f"task {task_id} is {t.status}, not BLOCKED_APPROVAL")
+    q.unblock(task_id)
+    res = q.resolve_dependencies()
+    q.save()
+    ev = load_events(data_dir)
+    ev.emit("TASK_UNBLOCKED", task_id=task_id, opportunity_id=t.opportunity_id,
+            task_type=t.task_type, actor=actor,
+            approval_type=t.approval_type)
+    for tid in res.get("promoted", []):
+        tt = q.get(tid)
+        ev.emit("TASK_READY", task_id=tid, opportunity_id=tt.opportunity_id,
+                task_type=tt.task_type, actor=actor)
+    ev.save()
+    return {"task_id": task_id, "task_type": t.task_type,
+            "status": q.get(task_id).status}
+
+
 def execution_view(data_dir, opportunity_id: str | None = None) -> list[dict]:
     """Read model: one row per accepted / task-bearing opportunity."""
     data_dir = Path(data_dir)
@@ -214,6 +242,7 @@ def execution_view(data_dir, opportunity_id: str | None = None) -> list[dict]:
                     if t.status in ("PENDING", "BLOCKED_APPROVAL")), None)
         blocked = next((t for t in tasks if t.status == "BLOCKED_APPROVAL"), None)
         cur = running or ready
+        deployment = (rec.get("execution") or {}).get("deployment") or {}
 
         rows.append({
             "opportunity_id": oid,
@@ -223,8 +252,11 @@ def execution_view(data_dir, opportunity_id: str | None = None) -> list[dict]:
             "accepted_by": (rec.get("execution") or {}).get("accepted_by", ""),
             "current_task": cur.task_type if cur else "",
             "next_task": nxt.task_type if nxt else "",
+            "blocked_task_id": blocked.task_id if blocked else "",
             "blocker": (f"{blocked.task_type} needs a {blocked.approval_type} "
                         "approval" if blocked else ""),
+            "live_url": (rec.get("execution") or {}).get("live_url", ""),
+            "deployment_provider": deployment.get("provider", ""),
             "counts": {s: n for s in TASK_STATUSES
                        if (n := sum(1 for t in tasks if t.status == s))},
             "tasks": [{"task_id": t.task_id, "task_type": t.task_type,

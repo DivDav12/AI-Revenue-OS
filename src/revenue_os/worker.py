@@ -212,7 +212,7 @@ class Worker:
             ev.emit("TASK_SUCCEEDED", task_id=t.task_id,
                     opportunity_id=t.opportunity_id, task_type=t.task_type,
                     actor=self.name, actual_cost=result.actual_cost)
-            self._transition(t, _SUCCESS_STATE.get(t.task_type), ev, when="success")
+            self._on_success(t, result, ev)
         else:
             q.mark_failed(t.task_id, result.error, retryable=result.retryable,
                           now=now)
@@ -306,6 +306,60 @@ class Worker:
                 actor=self.name, **{"from": tr["previous_state"],
                                     "to": tr["next_state"],
                                     "reason": tr["reason"]})
+
+    def _success_target(self, task: ExecutionTask, result: AdapterResult) -> str | None:
+        """The opportunity state a SUCCEEDED task moves to - with the hard
+        rule that DEPLOY only reaches LIVE on a confirmed live_url."""
+        target = _SUCCESS_STATE.get(task.task_type)
+        if target == "LIVE":
+            from .deployment import valid_live_url
+            if not valid_live_url((result.output or {}).get("live_url", "")):
+                return None
+        return target
+
+    def _on_success(self, task: ExecutionTask, result: AdapterResult,
+                    ev: EventLog) -> None:
+        store = load_opportunities(self.data_dir)
+        rec = store.get(task.opportunity_id)
+        if rec is None:
+            return
+        dirty = False
+
+        if task.task_type == "DEPLOY":
+            from .deployment import valid_live_url
+            out = result.output or {}
+            url = out.get("live_url", "")
+            if valid_live_url(url):
+                store.record_deployment(task.opportunity_id, dict(out))
+                dirty = True
+                ev.emit("DEPLOYMENT_COMPLETE", task_id=task.task_id,
+                        opportunity_id=task.opportunity_id, task_type="DEPLOY",
+                        actor=self.name, live_url=url,
+                        deployment_id=out.get("deployment_id", ""),
+                        provider=out.get("provider", ""),
+                        commit_sha=out.get("commit_sha", ""),
+                        idempotent=bool(out.get("idempotent")))
+
+        target = self._success_target(task, result)
+        if target:
+            frm = rec.get("state") or ostate.INITIAL
+            if ostate.can_transition(frm, target):
+                try:
+                    tr = store.transition(
+                        task.opportunity_id, target,
+                        reason=f"{task.task_type} success", source="task",
+                        actor=self.name, task_id=task.task_id)
+                    dirty = True
+                    ev.emit("OPPORTUNITY_TRANSITIONED", task_id=task.task_id,
+                            opportunity_id=task.opportunity_id,
+                            task_type=task.task_type, actor=self.name,
+                            **{"from": tr["previous_state"],
+                               "to": tr["next_state"], "reason": tr["reason"]})
+                except ostate.IllegalTransition:
+                    pass
+
+        if dirty:
+            store.save()
 
     def _resolve(self, q: TaskQueue, ev: EventLog) -> dict:
         res = q.resolve_dependencies()

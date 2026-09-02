@@ -14,6 +14,13 @@ until then the worker fails such a task cleanly as "no adapter".
 from __future__ import annotations
 
 from . import agent_runner
+from .deployment import (
+    DeploymentAdapter,
+    DeploymentArtifact,
+    default_deployment_adapter,
+    slugify,
+    valid_live_url,
+)
 from .worker import AdapterContext, AdapterRegistry, AdapterResult, TaskAdapter
 
 # ---------------------------------------------------------------------------
@@ -161,6 +168,65 @@ class AnalyzeAdapter(TaskAdapter):
         })
 
 
+class DeployTaskAdapter(TaskAdapter):
+    """Publishes the built landing page through a DeploymentAdapter.
+
+    The DEPLOY task is born BLOCKED_APPROVAL (acceptance.CHAIN) - a human
+    must release it before the worker ever calls this. Here we only:
+      * refuse if there is no built page to deploy
+      * short-circuit if this opportunity already has a confirmed live_url
+        for the same content (idempotency)
+      * call the adapter and translate the DeploymentResult:
+          blocked / transient failure -> retryable AdapterResult failure
+          success without a valid URL  -> non-retryable failure
+          success + valid URL          -> ok (worker then -> LIVE)
+    """
+
+    task_types = ("DEPLOY",)
+    name = "deploy"
+
+    def __init__(self, adapter: DeploymentAdapter | None = None) -> None:
+        self._adapter = adapter
+
+    def _adapter_for(self) -> DeploymentAdapter:
+        return self._adapter if self._adapter is not None else default_deployment_adapter()
+
+    def run(self, ctx: AdapterContext) -> AdapterResult:
+        page = (ctx.dep_outputs.get("BUILD_PAGE")
+                or ctx.dep_outputs.get("BUILD_PRODUCT") or {})
+        html = str(page.get("landing_html") or "")
+        if not html.strip():
+            return AdapterResult(
+                ok=False, retryable=False,
+                error="no landing_html from BUILD_PAGE - nothing to deploy")
+
+        oid = ctx.opportunity.get("id") or ctx.task.opportunity_id
+        slug = slugify(oid)
+        artifact = DeploymentArtifact(opportunity_id=ctx.task.opportunity_id,
+                                      slug=slug, files={"index.html": html})
+
+        prior = (ctx.opportunity.get("execution") or {}).get("deployment") or {}
+        if (prior.get("success") and valid_live_url(prior.get("live_url", ""))
+                and prior.get("content_hash") == artifact.content_hash()):
+            return AdapterResult(ok=True, output={**prior, "idempotent": True})
+
+        result = self._adapter_for().deploy(artifact)
+        out = {**result.to_dict(), "slug": slug,
+               "content_hash": artifact.content_hash()}
+
+        if not result.success:
+            return AdapterResult(
+                ok=False, output=out,
+                retryable=True,      # missing creds / transient - fixable, retry
+                error=(f"deployment BLOCKED: {result.error}" if result.blocked
+                       else f"deployment failed: {result.error}"))
+        if not valid_live_url(result.live_url):
+            return AdapterResult(
+                ok=False, output=out, retryable=False,
+                error="deployment reported success but returned no valid live_url")
+        return AdapterResult(ok=True, output=out)
+
+
 class OptimizeAdapter(TaskAdapter):
     task_types = ("OPTIMIZE",)
     name = "optimize"
@@ -193,6 +259,7 @@ def default_registry() -> AdapterRegistry:
     reg.register(AgentTaskAdapter(
         ("VALIDATE_PRODUCT", "VALIDATE_PAGE"),
         "quality_check", _p_qc, objective="validate"))
+    reg.register(DeployTaskAdapter())
     reg.register(AnalyzeAdapter())
     reg.register(OptimizeAdapter())
     return reg

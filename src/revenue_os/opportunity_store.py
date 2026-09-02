@@ -251,6 +251,17 @@ class OpportunityStore:
     def is_accepted(self, oid: str) -> bool:
         return bool((self._by_id.get(oid) or {}).get("execution", {}).get("accepted"))
 
+    def record_deployment(self, oid: str, deployment: dict) -> dict:
+        """Persist the confirmed deployment (provider, live_url, deployment_id,
+        commit_sha) under `execution`. A later DEPLOY re-run reads this and
+        no-ops instead of re-publishing."""
+        r = self._by_id[oid]
+        r.setdefault("execution", {})["deployment"] = dict(deployment)
+        if deployment.get("live_url"):
+            r["execution"]["live_url"] = deployment["live_url"]
+        r["updated_at"] = now_iso()
+        return r
+
     def add_experiment(self, oid: str, kind: str, note: str,
                        result: str = "") -> dict:
         r = self._by_id[oid]
