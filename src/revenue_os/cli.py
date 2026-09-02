@@ -1330,6 +1330,27 @@ def _cmd_jarvis(args) -> int:
     return 0
 
 
+def _cmd_worker(args) -> int:
+    """Drain the ready ExecutionTask queue once. Runs real deterministic
+    roster agents / pure adapters only - EUR 0, no LLM, no money, no
+    external send. Blocked-approval and no-adapter task types are left
+    untouched / failed cleanly."""
+    from . import worker as _worker
+
+    data_dir = _data_dir(args)
+    if args.status:
+        from .events import load_events
+        from .execution import load_tasks
+        q = load_tasks(data_dir)
+        print(json.dumps({"tasks": q.counts(),
+                          "ready": [t.task_id for t in q.ready()],
+                          "events": len(load_events(data_dir))}, indent=2))
+        return 0
+    out = _worker.run_worker(data_dir, max_ticks=max(1, int(args.max_ticks)))
+    print(json.dumps(out, indent=2))
+    return 0
+
+
 def _cmd_autonomy(args) -> int:
     """The autonomous revenue loop. €0, no LLM, no money, no external send."""
     from . import autonomy
@@ -2285,6 +2306,18 @@ def build_parser() -> argparse.ArgumentParser:
                     help="parallel opportunity experiments")
     au.add_argument("--json", action="store_true")
     au.set_defaults(func=_cmd_autonomy)
+
+    wk = sub.add_parser(
+        "worker", parents=[common],
+        help="drain the ExecutionTask queue once (claim -> real agent/adapter "
+             "-> result -> event -> opportunity transition); EUR 0, no LLM, "
+             "no money, no external send",
+    )
+    wk.add_argument("--status", action="store_true",
+                    help="show queue + event counts only, run nothing")
+    wk.add_argument("--max-ticks", type=int, default=100,
+                    help="upper bound on tasks processed in this drain")
+    wk.set_defaults(func=_cmd_worker)
 
     cand = sub.add_parser("candidate", parents=[common], help="show one candidate")
     cand.add_argument("name")

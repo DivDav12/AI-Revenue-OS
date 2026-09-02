@@ -252,12 +252,13 @@ class TaskQueue:
         """Promote PENDING tasks whose deps all SUCCEEDED to READY; fail
         PENDING tasks whose deps ended in FAILED_FINAL / CANCELLED.
         Idempotent - safe to call every tick."""
-        promoted, failed = [], []
+        promoted, failed, blocked = [], [], []
         for t in self._by_id.values():
             if t.status != "PENDING":
                 continue
             if t.requires_approval:
                 self._set(t, "BLOCKED_APPROVAL")
+                blocked.append(t.task_id)
                 continue
             dep_states = [self._by_id[d].status for d in t.depends_on
                           if d in self._by_id]
@@ -273,7 +274,7 @@ class TaskQueue:
             elif all(s == "SUCCEEDED" for s in dep_states):
                 self._set(t, "READY")
                 promoted.append(t.task_id)
-        return {"promoted": promoted, "failed": failed}
+        return {"promoted": promoted, "failed": failed, "blocked": blocked}
 
     def requeue_due(self, *, now: str | None = None) -> list[str]:
         """FAILED_RETRYABLE tasks whose backoff has elapsed go back to
