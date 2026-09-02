@@ -71,6 +71,7 @@ class Opportunity:
     parent_id: str = ""               # if spawned as an adjacent opportunity
     experiments: list = field(default_factory=list)   # [{ts, kind, note, result}]
     transitions: list = field(default_factory=list)   # append-only state history
+    execution: dict = field(default_factory=dict)     # {accepted, accepted_by, chain}
     results: dict = field(default_factory=dict)       # {revenue_eur, leads, signups, ...}
     notes: str = ""
     created_at: str = ""
@@ -168,7 +169,7 @@ class OpportunityStore:
             return self._by_id[opp.id]
         # preserve lifecycle + history; refresh the estimates
         keep = {k: existing[k] for k in ("status", "state", "experiments",
-                                         "transitions", "results",
+                                         "transitions", "execution", "results",
                                          "created_at", "notes")
                 if k in existing}
         merged = {**opp.to_dict(), **keep}
@@ -236,6 +237,19 @@ class OpportunityStore:
         r.setdefault("transitions", []).append(rec)
         r["updated_at"] = now_iso()
         return rec
+
+    def mark_accepted(self, oid: str, *, by: str, task_ids: list) -> dict:
+        """Breadcrumb: this opportunity was accepted for execution and owns
+        the given ExecutionTask chain. The autonomy loop skips accepted
+        opportunities so the two systems do not fight over the record."""
+        r = self._by_id[oid]
+        r["execution"] = {"accepted": True, "accepted_by": str(by),
+                          "accepted_at": now_iso(), "chain": list(task_ids)}
+        r["updated_at"] = now_iso()
+        return r
+
+    def is_accepted(self, oid: str) -> bool:
+        return bool((self._by_id.get(oid) or {}).get("execution", {}).get("accepted"))
 
     def add_experiment(self, oid: str, kind: str, note: str,
                        result: str = "") -> dict:

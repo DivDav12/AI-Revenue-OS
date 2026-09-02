@@ -204,11 +204,17 @@ def run_cycle(data_dir, *, capacity: int = strategist.DEFAULT_CAPACITY,
         # 2 SCORE - promote discovered -> evaluating, then keep the shortlist
         # legible WITHOUT collapsing to one category: keep the top
         # `_PER_CAT_SHORTLIST` per category, drop the rest.
+        # opportunities a human ACCEPTED for execution (acceptance.py) are
+        # driven by the ExecutionTask chain + worker, not this loop.
+        accepted = {r["id"] for r in opps.all() if opps.is_accepted(r["id"])}
         promoted = 0
         for r in opps.by_status("discovered"):
+            if r["id"] in accepted:
+                continue
             opps.set_status(r["id"], "evaluating")
             promoted += 1
-        shortlist = opps.by_status("evaluating")
+        shortlist = [r for r in opps.by_status("evaluating")
+                     if r["id"] not in accepted]
         seen_cat: dict = {}
         kept, pruned = [], 0
         for r in shortlist:                       # already score-sorted
@@ -232,8 +238,10 @@ def run_cycle(data_dir, *, capacity: int = strategist.DEFAULT_CAPACITY,
 
         # 3 SELECT -------------------------------------------------
         money_blocked = _money_blocked_ids(opps, appr)
+        board_for_select = {k: [x for x in v if x["id"] not in accepted]
+                            for k, v in opps.board().items()}
         picks = strategist.select_experiments(
-            opps.board(), capacity=capacity, money_blocked=money_blocked)
+            board_for_select, capacity=capacity, money_blocked=money_blocked)
         for r in picks:
             opps.set_status(r["id"], "building", note="strategist selected")
         report["decisions"].append(

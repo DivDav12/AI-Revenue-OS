@@ -55,7 +55,8 @@ _CONTROL_ACTIONS = ("enable", "disable", "pause", "resume", "run",
                     "run-pipeline", "run-sweep",
                     "ack-gate", "reopen-gate", "outreach-status", "resolve-blocker",
                     "set-mode", "stop-job", "prepare-outreach", "refresh",
-                    "run-autonomy", "approve-request", "deny-request")
+                    "run-autonomy", "approve-request", "deny-request",
+                    "accept-opportunity", "abandon-opportunity", "run-worker")
 
 _QUALIFIED = ("validated", "launched", "earning")
 
@@ -377,14 +378,31 @@ def _sweep_job(data_dir, name, restart, actor) -> None:
 
 def _autonomy_job(data_dir, cycles: int) -> None:
     """Background target: run N autonomous revenue cycles, honouring STOP
-    and the global pause. EUR 0, no LLM, no money, no external send."""
-    from . import autonomy
+    and the global pause. EUR 0, no LLM, no money, no external send.
+    After each cycle it also drains the ExecutionTask queue (bounded) so an
+    accepted opportunity's chain progresses without a separate button."""
+    from . import autonomy, worker
     from .agent_control import load_agent_control
 
     for _ in range(cycles):
         if _stop_requested() or load_agent_control(data_dir).is_paused():
             return
         autonomy.run_cycle(data_dir)
+        try:
+            worker.run_worker(data_dir, max_ticks=25)
+        except Exception:
+            logger.exception("worker drain after autonomy cycle failed")
+
+
+def _worker_job(data_dir, max_ticks: int) -> None:
+    """Background target: drain the ExecutionTask queue once. Honours STOP
+    and the global pause. EUR 0, no LLM, no money, no external send."""
+    from . import worker
+    from .agent_control import load_agent_control
+
+    if _stop_requested() or load_agent_control(data_dir).is_paused():
+        return
+    worker.run_worker(data_dir, max_ticks=max(1, int(max_ticks)))
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +448,33 @@ def _apply_control_inner(data_dir, actor: str, form: dict, action: str) -> str:
             return "error: fleet is paused - resume before running the loop"
         cycles = max(1, min(10, int((form.get("cycles") or ["1"])[0] or 1)))
         return _start_job("autonomy loop", _autonomy_job, data_dir, cycles)
+
+    if action == "run-worker":
+        ctrl = agent_control.load_agent_control(data_dir)
+        if ctrl.is_paused():
+            return "error: fleet is paused - resume before draining the queue"
+        ticks = max(1, min(200, int((form.get("max_ticks") or ["50"])[0] or 50)))
+        return _start_job("worker drain", _worker_job, data_dir, ticks)
+
+    if action in ("accept-opportunity", "abandon-opportunity"):
+        from . import acceptance
+        oid = (form.get("opp") or [""])[0]
+        try:
+            if action == "accept-opportunity":
+                r = acceptance.accept_opportunity(data_dir, oid, actor=actor)
+                n = len(r["created"])
+                return (f"ok: accepted {oid[:12]} -> {r['state']}; "
+                        f"{n} task(s) queued"
+                        + (f", {len(r['reused'])} already existed"
+                           if r["reused"] else "")
+                        + " - hit 'Run worker' or enable AUTONOMOUS to execute")
+            r = acceptance.abandon_opportunity(
+                data_dir, oid, actor=actor,
+                reason=(form.get("reason") or [""])[0])
+            return (f"ok: abandoned {oid[:12]} -> {r['state']}; "
+                    f"{len(r['cancelled'])} task(s) cancelled")
+        except acceptance.AcceptanceError as exc:
+            return f"error: {exc}"
 
     if action in ("approve-request", "deny-request"):
         from .approvals import load_approvals
@@ -940,6 +985,11 @@ def jarvis_snapshot(data_dir) -> dict:
                             "pending": {"money": [], "identity": [], "legal": []},
                             "approval_counts": {}}
     try:
+        from . import acceptance as _acc
+        snap["execution"] = _acc.execution_view(data_dir)
+    except Exception:
+        snap["execution"] = []
+    try:
         from .llm_gateway import status as _llm_status
         snap["llm"] = _llm_status(data_dir)
     except Exception:
@@ -1236,6 +1286,71 @@ def _opportunity_board_panel(board: dict) -> str:
     return (f"<section class=panel><h3>OPPORTUNITY BOARD — the fleet is not "
             f"locked to one business model</h3><div class=opp-board>{cols}</div>"
             f"</section>")
+
+
+def _execution_panel(execution: list, board: dict, csrf: str) -> str:
+    """Opportunity ACCEPTANCE - a business decision, separate from the human
+    approval panel. Accepting builds a real ExecutionTask chain."""
+    execution = execution or []
+    accepted_ids = {row["opportunity_id"] for row in execution}
+
+    body = ""
+    for row in execution:
+        oid = row["opportunity_id"]
+        chips = "".join(
+            f"<span class='xtask x-{t['status'].lower()}' "
+            f"title=\"{_esc(t['task_type'])}: {_esc(t['status'])}"
+            + (f" — {_esc(t['error'])}" if t.get("error") else "") + "\">"
+            f"{_esc(t['task_type'].replace('_', ' ').lower())}</span>"
+            for t in row.get("tasks", []))
+        nxt = row.get("current_task") or row.get("next_task") or "—"
+        blk = (f"<div class=x-blk>blocked: {_esc(row['blocker'])} — approve it "
+               f"in HUMAN APPROVALS</div>" if row.get("blocker") else "")
+        abandon = _cbtn(csrf, "abandon-opportunity", "Abandon", "j-btn j-disable",
+                        hidden={"opp": oid})
+        body += (
+            f"<div class=xrow>"
+            f"<div class=xrow-h><b>{_esc(row.get('title', ''))[:70]}</b>"
+            f"<span class=xstate>{_esc(row.get('state', ''))}</span></div>"
+            f"<div class=xchips>{chips}</div>"
+            f"<div class=xmeta>next: <b>{_esc(nxt)}</b>"
+            f" · accepted by {_esc(row.get('accepted_by') or 'you')}</div>"
+            f"{blk}"
+            f"<div class=j-actions>{abandon}</div>"
+            f"</div>")
+
+    # acceptable = discovered / evaluating opportunities not already accepted
+    acceptable = []
+    for col in ("evaluating", "discovered"):
+        for r in (board.get(col) or []):
+            if r["id"] in accepted_ids:
+                continue
+            acceptable.append(r)
+    acc_html = ""
+    for r in acceptable[:6]:
+        btn = _cbtn(csrf, "accept-opportunity", "Accept →", "j-btn j-enable",
+                    hidden={"opp": r["id"]})
+        acc_html += (f"<div class=xcand><span>{_esc(r.get('title', ''))[:64]}"
+                     f"<small> · {_esc(r.get('category', ''))} · score "
+                     f"{r.get('score', 0)}</small></span>{btn}</div>")
+    if not acc_html:
+        acc_html = "<p>no un-accepted opportunities on the shortlist right now</p>"
+
+    run_btn = _cbtn(csrf, "run-worker", "Run worker", "j-btn",
+                    hidden={"max_ticks": "50"})
+    if not body:
+        body = ("<p>Nothing accepted yet. Accepting an opportunity is a "
+                "business decision — it does not spend money or perform any "
+                "protected action; the money / identity / legal gates still "
+                "sit inside the task chain.</p>")
+    return (
+        f"<section class='panel accent'><h3>EXECUTION — accepted opportunities "
+        f"&amp; their task chains</h3>"
+        f"<div class=j-actions>{run_btn}<span class=x-note>drains the queue "
+        f"once; AUTONOMOUS mode drains it every cycle</span></div>"
+        f"{body}"
+        f"<h4 class=x-h>ACCEPT AN OPPORTUNITY</h4>{acc_html}"
+        f"</section>")
 
 
 _APPR_ICON = {"money": "💰", "identity": "🪪", "legal": "⚖️"}
@@ -1952,6 +2067,22 @@ a.j-btn{text-decoration:none;display:inline-block}
 .opp-col li.more{color:#5f7c92;list-style:none;margin-left:-14px}
 .oc-successful{border-color:#2b6b4a}.oc-abandoned{opacity:.55}
 .oc-testing,.oc-active{border-color:#7a5c1e}
+.xrow{border-top:1px solid #16324a;padding:9px 0;margin-top:6px}
+.xrow-h{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.xstate{font-size:9px;letter-spacing:.08em;color:#8ff0c0;border:1px solid #2b6b4a;border-radius:4px;padding:1px 6px;white-space:nowrap}
+.xchips{margin:6px 0;display:flex;flex-wrap:wrap;gap:4px}
+.xtask{font-size:9.5px;padding:1px 6px;border-radius:9px;border:1px solid #14293b;color:#9fb6c6}
+.xtask.x-succeeded{border-color:#2b6b4a;color:#8ff0c0}
+.xtask.x-running{border-color:#7a5c1e;color:#ffd98a}
+.xtask.x-ready{border-color:#2f5a7a;color:#bfe0ff}
+.xtask.x-blocked_approval{border-color:#7a2e2e;color:#ffb4b4}
+.xtask.x-failed_final,.xtask.x-cancelled{border-color:#7a2e2e;color:#c98a8a;text-decoration:line-through}
+.xmeta{font-size:10.5px;color:#8fa8ba}
+.x-blk{font-size:10.5px;color:#ffb4b4;margin-top:3px}
+.xcand{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:11px;color:#b8ccd8;padding:4px 0;border-top:1px solid #0e2131}
+.xcand small{color:#5f7c92}
+.x-h{font-size:9px;letter-spacing:.1em;color:#5f7c92;margin:10px 0 2px}
+.x-note{font-size:10px;color:#5f7c92;margin-left:8px}
 .appr{border-top:1px solid #16324a;padding:9px 0;margin-top:6px}
 .appr-k{font-weight:600;letter-spacing:.08em;color:#eaf6ff;margin-top:10px}
 .appr-what{color:#eaf6ff;font-size:13px}
@@ -2195,6 +2326,7 @@ def render_console(data_dir, *, flash: str | None = None,
         f"{_p('p-appr', _approvals_panel((snap.get('autonomy') or {}).get('pending') or {}, csrf))}"
         f"{_p('p-auto', _autonomy_panel(snap.get('autonomy') or {}))}"
         f"{_p('p-oppb', _opportunity_board_panel((snap.get('autonomy') or {}).get('board') or {}))}"
+        f"{_p('p-exec', _execution_panel(snap.get('execution') or [], (snap.get('autonomy') or {}).get('board') or {}, csrf))}"
         f"{_p('p-recs', _recommends_panel(snap.get('recommendations') or []))}"
         f"{_p('p-human', _human_actions_panel(snap.get('human_actions') or [], csrf))}"
         f"{_p('p-pipe', _pipeline_panel(snap['pipeline'], snap.get('job') or {}))}"
