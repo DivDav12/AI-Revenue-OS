@@ -134,6 +134,59 @@ def record_payment(
     return candidate
 
 
+def record_opportunity_payment(
+    ledger: RevenueLedger,
+    *,
+    opportunity_id: str,
+    amount: float,
+    ref: str,
+    currency: str = "EUR",
+    received_at: str | None = None,
+    note: str = "",
+    actor: str = "payment-adapter",
+    customer_ref: str = "",
+) -> dict:
+    """Book a CONFIRMED INCOMING payment for an opportunity into the shared
+    revenue ledger (data/revenue.json - the same file record_payment uses).
+
+    This records money a provider has ALREADY processed. It moves no money,
+    captures nothing, and triggers no spend. Idempotent by `ref`: a second
+    call with the same reference books nothing and returns
+    {"outcome": "already_booked"}.
+
+    Distinct from record_payment() (which is the Candidate lifecycle path and
+    is guarded against autonomous execution); an opportunity has no Candidate
+    lifecycle, and recording an incoming sale is not an autonomous-money risk.
+    """
+    if not ref:
+        raise ValueError("a stable provider reference is required for idempotency")
+    if not opportunity_id:
+        raise ValueError("opportunity_id is required")
+    if amount <= 0:
+        raise ValueError("amount must be positive")
+
+    if ledger.has_ref(ref):
+        return {"outcome": "already_booked", "ref": ref,
+                "opportunity_total": ledger.total_for(opportunity_id)}
+
+    entry = {
+        "candidate_name": opportunity_id,     # ledger's existing grouping key
+        "opportunity_id": opportunity_id,
+        "amount": round(float(amount), 2),
+        "currency": currency,
+        "received_at": received_at or now_iso(),
+        "note": note or "opportunity payment (incoming)",
+        "actor": actor,
+        "ref": ref,
+    }
+    if customer_ref:
+        entry["customer_ref"] = customer_ref
+    ledger.add(entry)
+    ledger.save()
+    return {"outcome": "booked", "ref": ref, "entry": entry,
+            "opportunity_total": ledger.total_for(opportunity_id)}
+
+
 def revenue_summary(store: CandidateStore, ledger: RevenueLedger) -> dict:
     per_candidate = {}
     for cand in store.all():

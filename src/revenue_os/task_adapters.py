@@ -21,6 +21,7 @@ from .deployment import (
     slugify,
     valid_live_url,
 )
+from .payments import PaymentAdapter, default_payment_adapter, process_payment_event
 from .worker import AdapterContext, AdapterRegistry, AdapterResult, TaskAdapter
 
 # ---------------------------------------------------------------------------
@@ -227,6 +228,76 @@ class DeployTaskAdapter(TaskAdapter):
         return AdapterResult(ok=True, output=out)
 
 
+class CheckRevenueAdapter(TaskAdapter):
+    """Turns the CHECK_REVENUE task into the real incoming-payment path:
+
+      poll the payment provider  (PaymentAdapter)
+        -> process each confirmed event  (process_payment_event, idempotent)
+          -> revenue.record_opportunity_payment  (the shared RevenueLedger)
+
+    The worker then emits PAYMENT_DETECTED / REVENUE_RECORDED for the rows
+    that were NEWLY booked this run, and transitions the opportunity to
+    FIRST_SALE if this run booked its first-ever revenue.
+
+    Books INCOMING revenue only - no capture, no transfer, no spend.
+    """
+
+    task_types = ("CHECK_REVENUE",)
+    name = "check-revenue"
+
+    def __init__(self, payment_adapter: PaymentAdapter | None = None) -> None:
+        self._pa = payment_adapter
+
+    def _pa_for(self) -> PaymentAdapter:
+        return self._pa if self._pa is not None else default_payment_adapter()
+
+    def run(self, ctx: AdapterContext) -> AdapterResult:
+        from .revenue import RevenueLedger
+
+        oid = ctx.task.opportunity_id
+        poll = self._pa_for().poll(opportunity_id=oid)
+        if not poll.ok:
+            return AdapterResult(
+                ok=False,
+                retryable=not poll.blocked,   # "no provider" won't self-heal
+                error=(f"payment check BLOCKED: {poll.error}" if poll.blocked
+                       else f"payment provider error: {poll.error}"),
+                output={"provider": poll.provider, "blocked": poll.blocked})
+
+        ledger_path = ctx.data_dir / "revenue.json"
+        total_before = RevenueLedger.load(ledger_path).total_for(oid)
+
+        payments: list[dict] = []
+        newly_booked: list[dict] = []
+        rejected: list[dict] = []
+        for ev in poll.events:
+            ledger = RevenueLedger.load(ledger_path)      # reload: prior loop booked
+            r = process_payment_event(ledger, ev, actor="check-revenue")
+            if not r.success:
+                rejected.append({"reference": ev.reference, "reason": r.error})
+                continue
+            row = {"reference": r.reference, "amount": r.amount,
+                   "currency": r.currency, "provider": r.provider,
+                   "ledger_ref": r.payment_id, "customer_ref": r.customer_ref,
+                   "already_booked": r.already_booked}
+            payments.append(row)
+            if not r.already_booked:
+                newly_booked.append(row)
+
+        total_after = RevenueLedger.load(ledger_path).total_for(oid)
+        first_sale = total_before <= 0.0 and total_after > 0.0
+
+        return AdapterResult(ok=True, output={
+            "provider": poll.provider,
+            "payments": payments,
+            "newly_booked": newly_booked,
+            "rejected": rejected,
+            "newly_booked_eur": round(sum(r["amount"] for r in newly_booked), 2),
+            "opportunity_total_eur": round(total_after, 2),
+            "first_sale": bool(first_sale),
+        })
+
+
 class OptimizeAdapter(TaskAdapter):
     task_types = ("OPTIMIZE",)
     name = "optimize"
@@ -260,6 +331,7 @@ def default_registry() -> AdapterRegistry:
         ("VALIDATE_PRODUCT", "VALIDATE_PAGE"),
         "quality_check", _p_qc, objective="validate"))
     reg.register(DeployTaskAdapter())
+    reg.register(CheckRevenueAdapter())
     reg.register(AnalyzeAdapter())
     reg.register(OptimizeAdapter())
     return reg

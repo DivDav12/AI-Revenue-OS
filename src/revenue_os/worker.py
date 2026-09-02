@@ -309,13 +309,15 @@ class Worker:
 
     def _success_target(self, task: ExecutionTask, result: AdapterResult) -> str | None:
         """The opportunity state a SUCCEEDED task moves to - with the hard
-        rule that DEPLOY only reaches LIVE on a confirmed live_url."""
-        target = _SUCCESS_STATE.get(task.task_type)
-        if target == "LIVE":
+        rules that DEPLOY only reaches LIVE on a confirmed live_url, and
+        CHECK_REVENUE only reaches FIRST_SALE when it booked the first sale."""
+        out = result.output or {}
+        if task.task_type == "DEPLOY":
             from .deployment import valid_live_url
-            if not valid_live_url((result.output or {}).get("live_url", "")):
-                return None
-        return target
+            return "LIVE" if valid_live_url(out.get("live_url", "")) else None
+        if task.task_type == "CHECK_REVENUE":
+            return "FIRST_SALE" if out.get("first_sale") else None
+        return _SUCCESS_STATE.get(task.task_type)
 
     def _on_success(self, task: ExecutionTask, result: AdapterResult,
                     ev: EventLog) -> None:
@@ -339,6 +341,26 @@ class Worker:
                         provider=out.get("provider", ""),
                         commit_sha=out.get("commit_sha", ""),
                         idempotent=bool(out.get("idempotent")))
+
+        if task.task_type == "CHECK_REVENUE":
+            out = result.output or {}
+            # events fire ONLY for rows newly booked this run -> a re-run over
+            # an already-booked payment emits nothing (idempotent).
+            for p in out.get("newly_booked", []):
+                ev.emit("PAYMENT_DETECTED", task_id=task.task_id,
+                        opportunity_id=task.opportunity_id,
+                        task_type="CHECK_REVENUE", actor=self.name,
+                        reference=p.get("reference", ""),
+                        amount=p.get("amount", 0), currency=p.get("currency", ""),
+                        provider=p.get("provider", ""),
+                        customer_ref=p.get("customer_ref", ""))
+                ev.emit("REVENUE_RECORDED", task_id=task.task_id,
+                        opportunity_id=task.opportunity_id,
+                        task_type="CHECK_REVENUE", actor=self.name,
+                        reference=p.get("reference", ""),
+                        ledger_ref=p.get("ledger_ref", ""),
+                        amount=p.get("amount", 0), currency=p.get("currency", ""),
+                        opportunity_total_eur=out.get("opportunity_total_eur", 0))
 
         target = self._success_target(task, result)
         if target:

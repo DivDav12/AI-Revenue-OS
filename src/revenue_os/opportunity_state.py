@@ -94,7 +94,9 @@ _FORWARD: dict[str, set[str]] = {
     "VALIDATING":        {"READY_TO_DEPLOY", "BUILDING", "FAILED"},
     "READY_TO_DEPLOY":   {"DEPLOYING"},
     "DEPLOYING":         {"LIVE", "READY_TO_DEPLOY", "FAILED"},
-    "LIVE":              {"ACQUIRING_TRAFFIC", "MEASURING"},
+    # a confirmed first payment can land on a live page before any separate
+    # measurement phase is entered (Phase 11).
+    "LIVE":              {"ACQUIRING_TRAFFIC", "MEASURING", "FIRST_SALE"},
     "ACQUIRING_TRAFFIC": {"MEASURING", "LIVE"},
     "MEASURING":         {"FIRST_VISITOR", "FIRST_LEAD", "FIRST_SALE",
                           "NO_TRACTION", "OPTIMIZING", "ACQUIRING_TRAFFIC"},
