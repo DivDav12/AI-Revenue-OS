@@ -107,7 +107,8 @@ _START_STATE: dict[str, str] = {
     "VALIDATE_PRODUCT": "VALIDATING",
     "VALIDATE_PAGE": "VALIDATING",
     "DEPLOY": "DEPLOYING",
-    "DELIVER": "DELIVERING",
+    # DELIVER intentionally has NO start transition: DELIVERING is reached
+    # only from a confirmed successful delivery (see _on_success).
     "OPTIMIZE": "OPTIMIZING",
 }
 
@@ -117,7 +118,8 @@ _SUCCESS_STATE: dict[str, str] = {
     "VALIDATE_PRODUCT": "READY_TO_DEPLOY",
     "VALIDATE_PAGE": "READY_TO_DEPLOY",
     "DEPLOY": "LIVE",
-    "DELIVER": "ACTIVE",
+    # DELIVER drives FIRST_SALE -> DELIVERING -> ACTIVE in _on_success, only
+    # on a confirmed successful delivery - not through this generic path.
 }
 
 
@@ -212,7 +214,7 @@ class Worker:
             ev.emit("TASK_SUCCEEDED", task_id=t.task_id,
                     opportunity_id=t.opportunity_id, task_type=t.task_type,
                     actor=self.name, actual_cost=result.actual_cost)
-            self._on_success(t, result, ev)
+            self._on_success(t, result, ev, q)
         else:
             q.mark_failed(t.task_id, result.error, retryable=result.retryable,
                           now=now)
@@ -317,10 +319,12 @@ class Worker:
             return "LIVE" if valid_live_url(out.get("live_url", "")) else None
         if task.task_type == "CHECK_REVENUE":
             return "FIRST_SALE" if out.get("first_sale") else None
+        if task.task_type == "DELIVER":
+            return None                # DELIVERING/ACTIVE handled in _on_success
         return _SUCCESS_STATE.get(task.task_type)
 
     def _on_success(self, task: ExecutionTask, result: AdapterResult,
-                    ev: EventLog) -> None:
+                    ev: EventLog, q: TaskQueue) -> None:
         store = load_opportunities(self.data_dir)
         rec = store.get(task.opportunity_id)
         if rec is None:
@@ -361,10 +365,46 @@ class Worker:
                         ledger_ref=p.get("ledger_ref", ""),
                         amount=p.get("amount", 0), currency=p.get("currency", ""),
                         opportunity_total_eur=out.get("opportunity_total_eur", 0))
+                # exactly ONE DELIVER task per confirmed payment (idempotency
+                # key = opp + provider ref). Re-processing an already-booked
+                # payment yields no newly_booked row -> no second DELIVER.
+                self._spawn_deliver(task, p, ev, q)
+
+        if task.task_type == "DELIVER" and (result.output or {}).get("success"):
+            out = result.output or {}
+            pref = str((task.input or {}).get("payment_ref", ""))
+            store.record_delivery(task.opportunity_id, pref, dict(out))
+            dirty = True
+            ev.emit("DELIVERY_COMPLETE", task_id=task.task_id,
+                    opportunity_id=task.opportunity_id, task_type="DELIVER",
+                    actor=self.name, payment_ref=pref,
+                    delivery_id=out.get("delivery_id", ""),
+                    reference=out.get("reference", ""),
+                    recipient=out.get("recipient", ""),
+                    provider=out.get("provider", ""),
+                    idempotent=bool(out.get("idempotent")))
+            # DELIVERING and then ACTIVE - BOTH reached only from a confirmed
+            # successful delivery (no speculative "start" transition).
+            for tgt, why in (("DELIVERING", "delivery confirmed"),
+                             ("ACTIVE", "delivery complete")):
+                cur = (store.get(task.opportunity_id) or {}).get("state") \
+                    or ostate.INITIAL
+                if ostate.can_transition(cur, tgt):
+                    try:
+                        tr = store.transition(
+                            task.opportunity_id, tgt, reason=f"DELIVER: {why}",
+                            source="task", actor=self.name, task_id=task.task_id)
+                        ev.emit("OPPORTUNITY_TRANSITIONED", task_id=task.task_id,
+                                opportunity_id=task.opportunity_id,
+                                task_type="DELIVER", actor=self.name,
+                                **{"from": tr["previous_state"],
+                                   "to": tr["next_state"], "reason": tr["reason"]})
+                    except ostate.IllegalTransition:
+                        pass
 
         target = self._success_target(task, result)
         if target:
-            frm = rec.get("state") or ostate.INITIAL
+            frm = (store.get(task.opportunity_id) or {}).get("state") or ostate.INITIAL
             if ostate.can_transition(frm, target):
                 try:
                     tr = store.transition(
@@ -382,6 +422,26 @@ class Worker:
 
         if dirty:
             store.save()
+
+    def _spawn_deliver(self, check_task: ExecutionTask, payment: dict,
+                       ev: EventLog, q: TaskQueue) -> None:
+        oid = check_task.opportunity_id
+        pref = str(payment.get("ledger_ref") or payment.get("reference") or "")
+        if not pref:
+            return
+        before = {t.task_id for t in q.all()}
+        t = q.create(
+            oid, "DELIVER", priority=7,
+            idempotency_key=f"deliver:{oid}:{pref}",
+            input={"payment_ref": pref,
+                   "amount": payment.get("amount", 0),
+                   "currency": payment.get("currency", "EUR"),
+                   "customer_ref": payment.get("customer_ref", ""),
+                   "provider": payment.get("provider", "")})
+        if t.task_id not in before:
+            ev.emit("TASK_CREATED", task_id=t.task_id, opportunity_id=oid,
+                    task_type="DELIVER", actor=self.name, depends_on=[],
+                    priority=7, payment_ref=pref)
 
     def _resolve(self, q: TaskQueue, ev: EventLog) -> dict:
         res = q.resolve_dependencies()

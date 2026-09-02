@@ -21,6 +21,12 @@ from .deployment import (
     slugify,
     valid_live_url,
 )
+from .delivery_adapters import (
+    DeliveryAdapter,
+    DeliveryArtifact,
+    DeliveryRecipient,
+    default_delivery_adapter,
+)
 from .payments import PaymentAdapter, default_payment_adapter, process_payment_event
 from .worker import AdapterContext, AdapterRegistry, AdapterResult, TaskAdapter
 
@@ -298,6 +304,69 @@ class CheckRevenueAdapter(TaskAdapter):
         })
 
 
+class DeliverTaskAdapter(TaskAdapter):
+    """Delivers the purchased digital product for ONE confirmed payment.
+
+    A DELIVER task is spawned by the worker on each newly-booked payment
+    (idempotency_key = opp + provider ref), so there is exactly one per
+    payment. Here we additionally:
+      * refuse if the payment carried no customer reference
+      * short-circuit (idempotent) if this payment_ref already has a
+        confirmed delivery recorded on the opportunity (survives restart)
+      * call the DeliveryAdapter and translate the DeliveryResult
+    """
+
+    task_types = ("DELIVER",)
+    name = "deliver"
+
+    def __init__(self, adapter: DeliveryAdapter | None = None) -> None:
+        self._adapter = adapter
+
+    def _adapter_for(self) -> DeliveryAdapter:
+        return self._adapter if self._adapter is not None else default_delivery_adapter()
+
+    def run(self, ctx: AdapterContext) -> AdapterResult:
+        inp = ctx.task.input or {}
+        pref = str(inp.get("payment_ref", ""))
+        if not pref:
+            return AdapterResult(ok=False, retryable=False,
+                                 error="DELIVER task has no payment_ref")
+
+        prior = ((ctx.opportunity.get("execution") or {}).get("deliveries")
+                 or {}).get(pref)
+        if prior and prior.get("success"):
+            return AdapterResult(ok=True, output={**prior, "payment_ref": pref,
+                                                  "idempotent": True})
+
+        customer_ref = str(inp.get("customer_ref", ""))
+        if not customer_ref:
+            return AdapterResult(
+                ok=False, retryable=False,
+                error="the payment carried no customer reference - a digital "
+                      "product cannot be delivered")
+
+        opp = ctx.opportunity
+        live_url = (opp.get("execution") or {}).get("live_url", "")
+        artifact = DeliveryArtifact(
+            opportunity_id=ctx.task.opportunity_id,
+            product_name=opp.get("title", "your purchase"),
+            live_url=live_url,
+            body=(f"Thank you for your purchase of \"{opp.get('title', '')}\".\n\n"
+                  + (f"Access it here: {live_url}\n" if live_url else "")))
+        recipient = DeliveryRecipient(reference=customer_ref,
+                                      opportunity_id=ctx.task.opportunity_id)
+
+        result = self._adapter_for().deliver(artifact, recipient)
+        out = {**result.to_dict(), "payment_ref": pref}
+        if not result.success:
+            return AdapterResult(
+                ok=False, output=out,
+                retryable=not result.blocked,   # "no provider" won't self-heal
+                error=(f"delivery BLOCKED: {result.error}" if result.blocked
+                       else f"delivery failed: {result.error}"))
+        return AdapterResult(ok=True, output=out)
+
+
 class OptimizeAdapter(TaskAdapter):
     task_types = ("OPTIMIZE",)
     name = "optimize"
@@ -332,6 +401,7 @@ def default_registry() -> AdapterRegistry:
         "quality_check", _p_qc, objective="validate"))
     reg.register(DeployTaskAdapter())
     reg.register(CheckRevenueAdapter())
+    reg.register(DeliverTaskAdapter())
     reg.register(AnalyzeAdapter())
     reg.register(OptimizeAdapter())
     return reg

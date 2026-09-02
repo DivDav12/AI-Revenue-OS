@@ -251,6 +251,16 @@ class OpportunityStore:
     def is_accepted(self, oid: str) -> bool:
         return bool((self._by_id.get(oid) or {}).get("execution", {}).get("accepted"))
 
+    def record_delivery(self, oid: str, payment_ref: str, delivery: dict) -> dict:
+        """Persist a CONFIRMED delivery keyed by the payment reference under
+        `execution.deliveries`. A later DELIVER re-run for the same payment
+        reads this and no-ops instead of sending again (survives restart)."""
+        r = self._by_id[oid]
+        r.setdefault("execution", {}).setdefault("deliveries", {})[
+            str(payment_ref)] = dict(delivery)
+        r["updated_at"] = now_iso()
+        return r
+
     def record_deployment(self, oid: str, deployment: dict) -> dict:
         """Persist the confirmed deployment (provider, live_url, deployment_id,
         commit_sha) under `execution`. A later DEPLOY re-run reads this and

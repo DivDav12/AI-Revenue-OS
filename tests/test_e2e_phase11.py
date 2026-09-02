@@ -149,18 +149,24 @@ class Phase11E2ETests(unittest.TestCase):
         self.assertTrue(load_tasks(self.d).get(cr2.task_id).output.get("payments"))
         self.assertFalse(load_tasks(self.d).get(cr2.task_id).output.get("first_sale"))
 
-        # ---- Phase 11 STOPS at FIRST_SALE ----------------------------
+        # ---- the payment leg stops at FIRST_SALE ---------------------
+        # (Phase 12 spawns a DELIVER task on the confirmed payment, but with
+        #  no delivery provider configured here it cannot complete, so the
+        #  opportunity correctly does NOT advance past FIRST_SALE.)
         state = load_opportunities(self.d).get(OID)["state"]
         self.assertEqual(state, "FIRST_SALE")
         seen = {t["next_state"] for t in load_opportunities(self.d).get(OID)["transitions"]}
         for later in ("DELIVERING", "ACTIVE", "PROFITABLE"):
             self.assertNotIn(later, seen)
-        self.assertNotIn("DELIVER", {t.task_type for t in load_tasks(self.d).all()})
+        for dt in [t for t in load_tasks(self.d).all() if t.task_type == "DELIVER"]:
+            self.assertNotEqual(dt.status, "SUCCEEDED")
+        self.assertNotIn("DELIVERY_COMPLETE",
+                         [e["type"] for e in load_events(self.d).all()])
         self.assertNotIn("OPTIMIZE", {t.task_type for t in load_tasks(self.d).all()})
-        self.assertFalse((self.d / "deliveries.json").exists())
 
         # ---- O: no external side effects, ids consistent -------------
-        for artefact in ("llm_spend.json", "spend.json", "messages.json"):
+        for artefact in ("llm_spend.json", "spend.json", "messages.json",
+                         "deliveries.json"):
             self.assertFalse((self.d / artefact).exists(), artefact)
         self.assertTrue(all(t.opportunity_id == OID
                             for t in load_tasks(self.d).all()))
