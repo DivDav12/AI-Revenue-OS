@@ -17,6 +17,7 @@ _SRC = Path(revenue_os.__file__).parent
 # module file -> the agent class it defines
 _AGENT_MODULES = {
     "supplier_finder.py": "SupplierFinderAgent",
+    "distribution.py": "DistributionAgent",
     "designer.py": "DesignerAgent",
     "store_builder.py": "StoreBuilderAgent",
     "developer.py": "DeveloperAgent",

@@ -97,6 +97,14 @@ AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec("outreach_drafter", "Outreach Drafter", "acquisition",
               "Draft the reply", "draft_outreach", node="copywriter",
               gate="human", status="live", depends_on=("opportunity_scorer",)),
+    # Deterministic channel research: for a selected opportunity + its offer,
+    # ranks free / very-low-cost distribution channels and turns each into a
+    # human-review recommendation. Research only - it never posts, messages,
+    # creates an account, buys ads, or spends money (gate stays autonomous
+    # because it produces no outward action).
+    AgentSpec("distribution_strategist", "Distribution Strategist", "acquisition",
+              "Channel research & priority", "research_distribution",
+              node="offer", status="live", depends_on=("opportunity_finder",)),
     # --- marketing cluster (all human-gated: real ad spend) -----------
     AgentSpec("ads_manager", "Ads Manager", "marketing", "Campaigns",
               "run_ads", node="offer", gate="human", status="live",

@@ -24,19 +24,38 @@ def llm_spend_log(data_dir) -> LlmSpendLog:
 
 
 def record_llm_spend(data_dir, activity: str, worker) -> None:
+    entry = entry_from(activity, worker)
     log = llm_spend_log(data_dir)
-    log.add(entry_from(activity, worker))
+    log.add(entry)
     log.save()
+    try:  # mirror into the gateway's call-by-call audit
+        from .action_class import in_autonomous_context
+        from .llm_gateway import gateway
+        gateway(data_dir).record(
+            task=activity, model=entry.get("model", ""),
+            est_usd=entry.get("cost_usd", 0.0), actual_usd=entry.get("cost_usd", 0.0),
+            in_tokens=entry.get("input_tokens", 0),
+            out_tokens=entry.get("output_tokens", 0),
+            cache_hit=entry.get("cache_hits", 0) > 0,
+            autonomous=in_autonomous_context(),
+            outcome="ceiling_hit" if entry.get("ceiling_hit") else "ok")
+    except Exception:
+        pass
 
 
-def budget_gate(data_dir, est: float, per_run_ceiling: float) -> float:
-    """Refuse if recorded LLM spend + this run's estimate exceeds the
-    cumulative cap OR the pre-sale hard limit (EUR 3.00 total before the
-    first real sale); otherwise return the effective per-run ceiling
-    (never more than what is left under either cap)."""
+def budget_gate(data_dir, est: float, per_run_ceiling: float,
+                *, task: str = "generic") -> float:
+    """Refuse if this LLM run would breach ANY limit - the pre-sale hard
+    cap, the cumulative `llm_budget.json` cap, OR the LLM gateway's
+    per-call / task / hourly / daily / global / rate limits. Otherwise
+    return the effective per-run ceiling (the smallest headroom).
+
+    Inside the autonomous loop this also enforces the gateway's
+    `autonomous_enabled` switch (default off -> raises LlmUnavailable)."""
     from .budget import guard, presale_active, presale_remaining_usd
+    from .llm_gateway import gateway
 
-    guard(data_dir, est)   # BudgetBlocked (a ValueError) before the first sale
+    guard(data_dir, est)   # BudgetBlocked before the first sale
 
     cap = llm_budget(data_dir).cap
     spent = llm_spend_log(data_dir).summary()["total_cost_usd"]
@@ -46,7 +65,10 @@ def budget_gate(data_dir, est: float, per_run_ceiling: float) -> float:
             f"recorded LLM spend ${spent} + estimated ${est} exceeds the "
             f"cumulative cap ${cap}; raise it with `llm-budget <amount>`"
         )
-    ceiling = min(per_run_ceiling, remaining)
+
+    gw_ceiling = gateway(data_dir).preflight(est, task=task)   # may raise
+
+    ceiling = min(per_run_ceiling, remaining, gw_ceiling)
     if presale_active(data_dir):
         ceiling = min(ceiling, presale_remaining_usd(data_dir))
     return ceiling
@@ -72,9 +94,9 @@ def build_evaluator(*, mode: str, source, limit: int, model: str,
             f"estimated eval cost ${est} exceeds the ${max_cost_usd} ceiling; "
             "nothing was evaluated"
         )
-    ceiling = budget_gate(data_dir, est, max_cost_usd)
+    ceiling = budget_gate(data_dir, est, max_cost_usd, task="evaluate")
     normalizer = LlmNormalizer(
-        client=build_client(), model=model, max_cost_usd=ceiling,
+        client=build_client(data_dir), model=model, max_cost_usd=ceiling,
         cache=cache, refresh=refresh,
     )
     return normalizer, "llm", est, cache
@@ -101,9 +123,9 @@ def build_planner(*, mode: str, store, model: str, max_cost_usd: float,
             f"estimated plan cost ${est} exceeds the ${max_cost_usd} ceiling; "
             "nothing was planned"
         )
-    ceiling = budget_gate(data_dir, est, max_cost_usd)
+    ceiling = budget_gate(data_dir, est, max_cost_usd, task="plan")
     planner = LlmPlanner(
-        client=build_client(), model=model, max_cost_usd=ceiling,
+        client=build_client(data_dir), model=model, max_cost_usd=ceiling,
         cache=cache, refresh=refresh,
     )
     return planner, cache
@@ -130,9 +152,9 @@ def build_researcher(*, mode: str, store, model: str, max_cost_usd: float,
             f"estimated research cost ${est} exceeds the ${max_cost_usd} ceiling; "
             "nothing was researched"
         )
-    ceiling = budget_gate(data_dir, est, max_cost_usd)
+    ceiling = budget_gate(data_dir, est, max_cost_usd, task="research")
     worker = ResearchWorker(
-        client=build_client(), model=model, max_cost_usd=ceiling,
+        client=build_client(data_dir), model=model, max_cost_usd=ceiling,
         cache=cache, refresh=refresh, mode=worker_mode,
     )
     return worker, cache
@@ -161,9 +183,9 @@ def build_competitor_analyzer(*, mode: str, store, model: str, max_cost_usd: flo
             f"estimated competition cost ${est} exceeds the ${max_cost_usd} "
             "ceiling; nothing was analysed"
         )
-    ceiling = budget_gate(data_dir, est, max_cost_usd)
+    ceiling = budget_gate(data_dir, est, max_cost_usd, task="competition")
     worker = CompetitionWorker(
-        client=build_client(), model=model, max_cost_usd=ceiling,
+        client=build_client(data_dir), model=model, max_cost_usd=ceiling,
         cache=cache, refresh=refresh, mode=worker_mode,
     )
     return worker, cache
@@ -191,9 +213,9 @@ def build_copywriter(*, mode: str, store, model: str, max_cost_usd: float,
             f"estimated copy cost ${est} exceeds the ${max_cost_usd} ceiling; "
             "nothing was drafted"
         )
-    ceiling = budget_gate(data_dir, est, max_cost_usd)
+    ceiling = budget_gate(data_dir, est, max_cost_usd, task="copy")
     worker = CopywriterWorker(
-        client=build_client(), model=model, max_cost_usd=ceiling,
+        client=build_client(data_dir), model=model, max_cost_usd=ceiling,
         cache=cache, refresh=refresh,
     )
     return worker, cache
@@ -208,8 +230,8 @@ def build_decider(*, mode: str, model: str, max_cost_usd: float, data_dir):
     from .decide_llm import LlmDecisionPolicy
     from .llm_normalize import build_client
 
-    ceiling = budget_gate(data_dir, 0.01, max_cost_usd)  # one small call
-    return LlmDecisionPolicy(client=build_client(), model=model, max_cost_usd=ceiling)
+    ceiling = budget_gate(data_dir, 0.01, max_cost_usd, task="decide")  # one small call
+    return LlmDecisionPolicy(client=build_client(data_dir), model=model, max_cost_usd=ceiling)
 
 
 def build_proposer(*, mode: str, store, model: str, max_cost_usd: float,
@@ -233,9 +255,9 @@ def build_proposer(*, mode: str, store, model: str, max_cost_usd: float,
             f"estimated offer cost ${est} exceeds the ${max_cost_usd} ceiling; "
             "nothing was proposed"
         )
-    ceiling = budget_gate(data_dir, est, max_cost_usd)
+    ceiling = budget_gate(data_dir, est, max_cost_usd, task="offer")
     proposer = LlmOfferProposer(
-        client=build_client(), model=model, max_cost_usd=ceiling,
+        client=build_client(data_dir), model=model, max_cost_usd=ceiling,
         cache=cache, refresh=refresh,
     )
     return proposer, cache

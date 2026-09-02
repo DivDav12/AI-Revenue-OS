@@ -20,8 +20,9 @@ _OFFER = {
     "call_to_action": "Get the pack",
 }
 _LLM_STEPS = {"research", "analyze_competition", "write_copy"}
-_DET_STEPS = {"select", "find_suppliers", "package_deliverable", "design_assets",
-              "build_store", "quality_check"}
+_DET_STEPS = {"select", "find_suppliers", "research_distribution",
+              "package_deliverable", "design_assets", "build_store",
+              "quality_check"}
 
 
 def _seed(d: Path, *, status="validated", offer=_OFFER, name="dt") -> None:
@@ -56,6 +57,60 @@ class PipelineRunTests(unittest.TestCase):
         self.assertTrue(any("not published" in x for x in hg["not_done"]))
         self.assertTrue(any("no money spent" in x for x in hg["not_done"]))
         self.assertTrue(any("store_builder" in x for x in hg["human_gated_next"]))
+
+    def test_disabled_chain_agent_blocks_the_pipeline(self):
+        from revenue_os.agent_control import AgentControl
+
+        _seed(self.d)
+        ctrl = AgentControl.load(self.d / "agent_control.json")
+        ctrl.set_agent("designer", False, note="held")
+        ctrl.save()
+
+        rep = run_pipeline(self.d, "dt")
+        self.assertEqual(rep["status"], "blocked")
+        by = {s["step"]: s for s in rep["steps"]}
+        self.assertEqual(by["design_assets"]["status"], "blocked")
+        # a step before the disabled one still ran; a step after never started
+        self.assertEqual(by["find_suppliers"]["status"], "ok")
+        self.assertEqual(by["quality_check"]["status"], "pending")
+        self.assertIn("disabled", rep["human_gate"]["reason"])
+
+        # re-enable -> a re-run completes
+        ctrl.set_agent("designer", True)
+        ctrl.save()
+        rep = run_pipeline(self.d, "dt")
+        self.assertEqual(rep["status"], "prepared")
+
+    def test_global_pause_blocks_the_pipeline(self):
+        from revenue_os.agent_control import AgentControl
+
+        _seed(self.d)
+        ctrl = AgentControl.load(self.d / "agent_control.json")
+        ctrl.set_paused(True, reason="maintenance window")
+        ctrl.save()
+        rep = run_pipeline(self.d, "dt")
+        self.assertEqual(rep["status"], "blocked")
+        self.assertIn("paused", rep["human_gate"]["reason"])
+
+    def test_skip_deploy_records_skipped_without_touching_the_host(self):
+        _seed(self.d, status="launched")
+        page_dir = self.d / "deliverables" / "dt"
+        page_dir.mkdir(parents=True)
+        (page_dir / "checkout.html").write_bytes(b"<html>pay</html>")
+        rep = run_pipeline(self.d, "dt", skip_deploy=True)
+        by = {s["step"]: s for s in rep["steps"]}
+        self.assertEqual(by["deploy"]["status"], "skipped")
+        self.assertIn("JARVIS", by["deploy"]["reason"])
+        self.assertEqual(rep["status"], "prepared")
+        self.assertFalse(rep["human_gate"]["payment_ready"])
+
+    def test_step_delay_only_paces_and_marks_running(self):
+        import time
+        _seed(self.d)
+        t0 = time.monotonic()
+        rep = run_pipeline(self.d, "dt", step_delay=0.05)
+        self.assertGreater(time.monotonic() - t0, 0.2)
+        self.assertEqual(rep["status"], "prepared")
 
     def test_deploy_step_publishes_and_marks_payment_ready(self):
         from revenue_os import deploy as dep

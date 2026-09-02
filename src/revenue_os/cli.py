@@ -71,6 +71,7 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+from .action_class import ActionBlocked
 from .approval import record_decision
 from .revenuedashboard import render_html
 from .discovery_log import DiscoveryLog
@@ -183,10 +184,10 @@ def _acq_llm_scorer(data_dir: Path, *, model: str, max_cost: float,
         raise ValueError(
             f"estimated acquisition-llm cost ${est} exceeds the ${max_cost} "
             "ceiling; nothing was scored")
-    ceiling = _llm_budget_gate(data_dir, est, max_cost)
+    ceiling = _llm_budget_gate(data_dir, est, max_cost, task="lead_scoring")
     cache = LlmCache.load(data_dir / "llm_acquisition_cache.json")
     scorer = AcquisitionLlmScorer(
-        client=build_client(), model=model, max_cost_usd=ceiling,
+        client=build_client(data_dir), model=model, max_cost_usd=ceiling,
         cache=cache, refresh=refresh)
     return scorer, cache
 
@@ -203,9 +204,9 @@ def _acq_web_source(data_dir: Path, *, model: str, max_cost: float,
         raise ValueError(
             f"estimated web-search cost ${est} exceeds the ${max_cost} ceiling; "
             "run without --source web or raise --max-cost")
-    ceiling = _llm_budget_gate(data_dir, est, max_cost)
+    ceiling = _llm_budget_gate(data_dir, est, max_cost, task="lead_discovery")
     cache = LlmCache.load(data_dir / "llm_acquisition_web_cache.json")
-    src = WebSearchSource(client=build_client(), model=model,
+    src = WebSearchSource(client=build_client(data_dir), model=model,
                           max_cost_usd=ceiling, cache=cache, refresh=refresh)
     return src, cache
 
@@ -224,9 +225,9 @@ def _outreach_drafter(data_dir: Path, *, model: str, max_cost: float,
         raise ValueError(
             f"estimated outreach-draft cost ${est} exceeds the ${max_cost} "
             "ceiling; run without --draft llm or raise --max-cost")
-    ceiling = _llm_budget_gate(data_dir, est, max_cost)
+    ceiling = _llm_budget_gate(data_dir, est, max_cost, task="outreach")
     drafter = OutreachDrafter(
-        client=build_client(), model=model, max_cost_usd=ceiling,
+        client=build_client(data_dir), model=model, max_cost_usd=ceiling,
         checkout_url=checkout_url, cache=cache, refresh=refresh)
     return drafter, cache
 
@@ -1051,6 +1052,75 @@ def _cmd_outcomes(args) -> int:
     return 0
 
 
+def _cmd_llm_policy(args) -> int:
+    """Show or change the autonomous LLM budget policy. Changing it never
+    spends money; it configures the limits that apply once an LLM is
+    connected. Not part of the autonomous loop - a human runs this."""
+    from . import llm_gateway as G
+
+    data_dir = _data_dir(args)
+    pol = G.load_policy(data_dir)
+
+    if args.emergency_stop:
+        pol.emergency_stop = True
+        G.save_policy(data_dir, pol, by=args.actor)
+        print("EMERGENCY STOP engaged - all LLM calls are blocked everywhere.")
+        return 0
+    if args.resume:
+        pol.emergency_stop = False
+        G.save_policy(data_dir, pol, by=args.actor)
+        print("emergency stop cleared.")
+        return 0
+    if args.enable:
+        pol.enabled = True
+        if args.provider:
+            pol.provider = args.provider
+        elif pol.provider == "none":
+            pol.provider = "anthropic"
+        G.save_policy(data_dir, pol, by=args.actor)
+        print(f"LLM tier ENABLED (provider={pol.provider}).")
+        return 0
+    if args.disable:
+        pol.enabled = False
+        pol.autonomous_enabled = False
+        G.save_policy(data_dir, pol, by=args.actor)
+        print("LLM tier DISABLED (autonomous LLM also revoked).")
+        return 0
+    if args.enable_autonomous:
+        if not pol.enabled:
+            print("error: enable the LLM tier first (`llm-policy --enable`)",
+                  file=sys.stderr)
+            return 1
+        pol.autonomous_enabled = True
+        G.save_policy(data_dir, pol, by=args.actor)
+        print("the autonomous loop MAY now use the LLM, within all configured limits.")
+        return 0
+    if args.disable_autonomous:
+        pol.autonomous_enabled = False
+        G.save_policy(data_dir, pol, by=args.actor)
+        print("autonomous LLM use revoked.")
+        return 0
+
+    changed = False
+    for f in ("provider", "model", "per_call_usd", "hourly_usd", "daily_usd",
+              "global_usd", "task_default_usd", "max_calls_per_min"):
+        v = getattr(args, f.replace("-", "_"), None)
+        if v is not None:
+            cur = getattr(pol, f)
+            setattr(pol, f, type(cur)(v))
+            changed = True
+    for kv in (args.task_limit or []):
+        k, _, v = kv.partition("=")
+        pol.task_limits[k.strip()] = float(v)
+        changed = True
+    if changed:
+        G.save_policy(data_dir, pol, by=args.actor)
+
+    st = G.status(data_dir)
+    print(json.dumps(st, indent=2))
+    return 0
+
+
 def _cmd_llm_costs(args) -> int:
     data_dir = _data_dir(args)
     entries = _llm_spend_log(data_dir).entries()
@@ -1250,6 +1320,48 @@ def _cmd_dashboard_serve(args) -> int:
     from .dashboard_server import serve
 
     serve(_data_dir(args), host=args.host, port=args.port, actor=args.actor)
+    return 0
+
+
+def _cmd_jarvis(args) -> int:
+    from .jarvis_server import serve
+
+    serve(_data_dir(args), host=args.host, port=args.port, actor=args.actor)
+    return 0
+
+
+def _cmd_autonomy(args) -> int:
+    """The autonomous revenue loop. €0, no LLM, no money, no external send."""
+    from . import autonomy
+
+    data_dir = _data_dir(args)
+    if args.status:
+        print(json.dumps(autonomy.snapshot(data_dir), indent=2))
+        return 0
+    ticks = max(1, int(args.ticks))
+    for i in range(ticks):
+        rep = autonomy.run_cycle(data_dir, capacity=args.capacity)
+        if args.json:
+            print(json.dumps(rep, indent=2))
+        else:
+            ph = {p["phase"]: {k: v for k, v in p.items() if k != "phase"}
+                  for p in rep["phases"]}
+            print(f"cycle {i + 1}: "
+                  f"+{ph.get('discover', {}).get('new_opportunities', 0)} opps | "
+                  f"{len(rep['published'])} pages staged | approvals pending: "
+                  f"{rep['pending_approvals']['money']['pending']} money "
+                  f"{rep['pending_approvals']['identity']['pending']} identity "
+                  f"{rep['pending_approvals']['legal']['pending']} legal")
+            if rep.get("stopped"):
+                print(f"  STOPPED: {rep['stopped']}")
+                break
+            for b in rep.get("blockers", []):
+                print(f"  blocker [{b.get('class')}]: {b.get('what')} - {b.get('why')}")
+    if not args.json:
+        st = autonomy.snapshot(data_dir)["state"]
+        print(f"\nobjective : {st['objective']}")
+        print(f"next      : {st['next_action']}")
+        print(f"reasoning : {st['reasoning']}")
     return 0
 
 
@@ -1586,10 +1698,10 @@ def _cmd_draft_launch_plan(args) -> int:
         raise ValueError(
             f"estimated launch-plan cost ${est} exceeds the ${args.max_cost} "
             "ceiling; nothing was drafted")
-    ceiling = _llm_budget_gate(data_dir, est, args.max_cost)
+    ceiling = _llm_budget_gate(data_dir, est, args.max_cost, task="launch_plan")
 
     worker = LaunchPlanWorker(
-        client=build_client(), model=args.model, max_cost_usd=ceiling,
+        client=build_client(data_dir), model=args.model, max_cost_usd=ceiling,
         cache=cache, refresh=args.refresh, mode=mode,
     )
     updated = draft_launch_plan(intake, revenue_ledger, worker, args.order_id)
@@ -2090,6 +2202,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     llm_budget.set_defaults(func=_cmd_llm_budget)
 
+    lp = sub.add_parser(
+        "llm-policy", parents=[common, actor_only],
+        help="show/configure the autonomous LLM budget policy (per-call, "
+             "hourly, daily, global limits, rate limit, emergency stop, "
+             "provider/model). Configures limits only - never spends.",
+    )
+    lp.add_argument("--enable", action="store_true", help="turn the LLM tier on")
+    lp.add_argument("--disable", action="store_true", help="turn the LLM tier off")
+    lp.add_argument("--enable-autonomous", action="store_true",
+                    help="let the autonomous loop use the LLM (needs --enable first)")
+    lp.add_argument("--disable-autonomous", action="store_true")
+    lp.add_argument("--emergency-stop", action="store_true",
+                    help="kill switch: block ALL LLM calls everywhere")
+    lp.add_argument("--resume", action="store_true", help="clear the emergency stop")
+    lp.add_argument("--provider", choices=("none", "mock", "anthropic"), default=None)
+    lp.add_argument("--model", default=None)
+    lp.add_argument("--per-call-usd", type=float, default=None)
+    lp.add_argument("--hourly-usd", type=float, default=None)
+    lp.add_argument("--daily-usd", type=float, default=None)
+    lp.add_argument("--global-usd", type=float, default=None)
+    lp.add_argument("--task-default-usd", type=float, default=None)
+    lp.add_argument("--max-calls-per-min", type=int, default=None)
+    lp.add_argument("--task-limit", action="append", metavar="TASK=USD",
+                    help="per-task cost limit, e.g. --task-limit research=0.30")
+    lp.set_defaults(func=_cmd_llm_policy)
+
     dash = sub.add_parser(
         "dashboard", parents=[common], help="write a static HTML pipeline snapshot"
     )
@@ -2123,6 +2261,30 @@ def build_parser() -> argparse.ArgumentParser:
     dserve.add_argument("--actor", default="dashboard",
                         help="recorded as the actor for gate actions")
     dserve.set_defaults(func=_cmd_dashboard_serve)
+
+    jv = sub.add_parser(
+        "jarvis", parents=[common],
+        help="JARVIS agent command console on localhost (control plane: "
+             "enable/disable/pause/run agents; existing dashboard untouched)",
+    )
+    jv.add_argument("--port", type=int, default=8788)
+    jv.add_argument("--host", default="127.0.0.1",
+                    help="loopback only; a non-loopback host is refused")
+    jv.add_argument("--actor", default="jarvis",
+                    help="recorded as the actor for control + gate actions")
+    jv.set_defaults(func=_cmd_jarvis)
+
+    au = sub.add_parser(
+        "autonomy", parents=[common],
+        help="run the autonomous revenue loop (discover->build->stage->learn); "
+             "EUR 0, no LLM, no money, no external send",
+    )
+    au.add_argument("--status", action="store_true", help="show loop state only")
+    au.add_argument("--ticks", type=int, default=1, help="how many cycles to run")
+    au.add_argument("--capacity", type=int, default=3,
+                    help="parallel opportunity experiments")
+    au.add_argument("--json", action="store_true")
+    au.set_defaults(func=_cmd_autonomy)
 
     cand = sub.add_parser("candidate", parents=[common], help="show one candidate")
     cand.add_argument("name")
@@ -2387,6 +2549,10 @@ def main(argv: list[str] | None = None) -> int:
         return func(args)
     except (ValueError, FileNotFoundError) as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except ActionBlocked as exc:
+        # LLM disabled / not authorised / emergency-stopped, money firewall, etc.
+        print(f"blocked: {exc}", file=sys.stderr)
         return 1
 
 

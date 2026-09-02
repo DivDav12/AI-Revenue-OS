@@ -75,6 +75,8 @@ def guard(data_dir, estimate_usd: float) -> None:
     """Raise BudgetBlocked if this paid op would breach the pre-sale cap.
     A no-op once a real sale exists (growth capital is a human decision,
     never spent automatically by this guard)."""
+    from .action_class import guard_no_money_in_autonomy
+    guard_no_money_in_autonomy("spend money")   # autonomous loop never spends
     if not presale_active(data_dir):
         return
     spent = _spent_usd(data_dir)

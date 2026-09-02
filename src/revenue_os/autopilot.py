@@ -27,6 +27,7 @@ import os
 import tempfile
 from pathlib import Path
 
+from .action_class import ActionBlocked
 from .store import now_iso
 
 logger = logging.getLogger(__name__)
@@ -291,13 +292,15 @@ def run_cycle(data_dir, *, allow_web: bool = False, max_age_days: int = 14,
             if allow_web:
                 from .llm_cache import LlmCache
                 from .llm_normalize import build_client
+                from .llm_workers import budget_gate
                 from .acquisition_web import WebSearchSource
                 est = round(0.05 * len(SEARCH_QUERIES), 4)
-                budget.guard(data_dir, est)            # pre-sale hard cap
-                ceiling = min(est * 3, budget.presale_remaining_usd(data_dir)
-                              if budget.presale_active(data_dir) else 1.0)
+                # ALL limits in one place: pre-sale cap + cumulative cap +
+                # the LLM gateway (tier enabled? provider? emergency stop?
+                # per-call / task / rate). Raises before any client is built.
+                ceiling = budget_gate(data_dir, est, est * 3, task="lead_discovery")
                 web_cache = LlmCache.load(data_dir / "llm_acquisition_web_cache.json")
-                web_source = WebSearchSource(client=build_client(),
+                web_source = WebSearchSource(client=build_client(data_dir),
                                              max_cost_usd=ceiling, cache=web_cache)
             source = build_acquisition_source(names, web_source=web_source)
             store = AcquisitionStore.load(data_dir / "acquisition.json")
@@ -320,6 +323,9 @@ def run_cycle(data_dir, *, allow_web: bool = False, max_age_days: int = 14,
         except budget.BudgetBlocked as exc:
             report["notes"].append(str(exc))
             report["discovery"] = {"skipped": "budget"}
+        except ActionBlocked as exc:            # LLM tier off / not authorised
+            report["notes"].append(str(exc))
+            report["discovery"] = {"skipped": "llm_disabled"}
         except Exception as exc:
             logger.warning("discovery failed: %s", exc)
             report["notes"].append(f"discovery error: {exc}")

@@ -67,6 +67,26 @@ class RunAgentTests(unittest.TestCase):
         self.assertEqual(r.status, "error")
         self.assertIsNone(last_output(self.d, "develop"))
 
+    def test_disabled_agent_is_blocked_by_control_plane(self):
+        from revenue_os.agent_control import AgentControl
+        ctrl = AgentControl.load(self.d / "agent_control.json")
+        ctrl.set_agent("supplier_finder", False, note="paused for audit")
+        ctrl.save()
+        r = run_agent(self.d, "find_suppliers",
+                      {"opportunity": _OPP, "known_suppliers": []})
+        self.assertEqual(r.status, "error")
+        self.assertIn("control plane", r.error)
+        self.assertIsNone(last_output(self.d, "find_suppliers"))
+
+    def test_global_pause_blocks_dispatch(self):
+        from revenue_os.agent_control import AgentControl
+        ctrl = AgentControl.load(self.d / "agent_control.json")
+        ctrl.set_paused(True, reason="maintenance")
+        ctrl.save()
+        r = run_agent(self.d, "design_assets", {"opportunity": _OPP, "offer": _OFFER})
+        self.assertEqual(r.status, "error")
+        self.assertIn("paused", r.error)
+
 
 if __name__ == "__main__":
     unittest.main()

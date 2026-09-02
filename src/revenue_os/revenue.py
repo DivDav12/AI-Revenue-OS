@@ -98,6 +98,8 @@ def record_payment(
     received_at: str | None = None,
     ref: str = "",
 ) -> Candidate:
+    from .action_class import guard_no_money_in_autonomy
+    guard_no_money_in_autonomy("record a real payment / book revenue")
     if amount <= 0:
         raise ValueError("amount must be positive")
     candidate = store.get(name)

@@ -21,6 +21,7 @@ from .customer_support import CustomerSupportAgent
 from .deliverable import DeliverablePackagerAgent
 from .designer import DesignerAgent
 from .developer import DeveloperAgent
+from .distribution import DistributionAgent
 from .normalize import to_opportunity
 from .opportunity_finder import OpportunityFinderAgent
 from .orchestrator import Orchestrator
@@ -54,6 +55,7 @@ TREND_HUNTER = "trend_hunter"
 _ROSTER_AGENT_CLASSES = {
     "opportunity_scorer": AcquisitionAgent,
     "outreach_drafter": OutreachDrafterAgent,
+    "distribution_strategist": DistributionAgent,
     "supplier_finder": SupplierFinderAgent,
     "designer": DesignerAgent,
     "store_builder": StoreBuilderAgent,

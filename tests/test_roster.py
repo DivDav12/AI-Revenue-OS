@@ -6,18 +6,18 @@ from revenue_os.team import build_team
 
 
 class RosterTests(unittest.TestCase):
-    def test_twentyfour_agents_grouped_in_six_clusters(self):
-        self.assertEqual(len(roster.AGENTS), 24)
+    def test_twentyfive_agents_grouped_in_six_clusters(self):
+        self.assertEqual(len(roster.AGENTS), 25)
         self.assertEqual(set(roster.CLUSTERS),
                          {a.cluster for a in roster.AGENTS})
         counts = {c: len(v) for c, v in roster.by_cluster().items()}
         self.assertEqual(counts,
                          {"discovery": 6, "build": 6, "marketing": 3,
-                          "acquisition": 3, "revenue": 3, "support": 3})
+                          "acquisition": 4, "revenue": 3, "support": 3})
 
     def test_ids_and_capabilities_are_unique(self):
-        self.assertEqual(len({a.id for a in roster.AGENTS}), 24)
-        self.assertEqual(len({a.capability for a in roster.AGENTS}), 24)
+        self.assertEqual(len({a.id for a in roster.AGENTS}), 25)
+        self.assertEqual(len({a.capability for a in roster.AGENTS}), 25)
 
     def test_live_agents_are_the_implemented_workers(self):
         # every live agent except the ones that need a live search source
@@ -64,7 +64,7 @@ class RosterTests(unittest.TestCase):
     def test_phase_d_support_agents_are_live_and_all_agents_live(self):
         for agent_id in ("customer_support", "review_manager", "quality_control"):
             self.assertEqual(roster.get(agent_id).status, "live", agent_id)
-        self.assertEqual(len(roster.live()), 24)
+        self.assertEqual(len(roster.live()), 25)
         self.assertEqual(roster.planned(), ())
         self.assertEqual(roster.blocked(), ())
 

@@ -30,9 +30,10 @@ import json
 import logging
 import os
 import tempfile
+import time
 from pathlib import Path
 
-from . import agent_runner, roster
+from . import agent_control, agent_runner, roster
 from .store import CandidateStore, now_iso
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,7 @@ _STEPS: tuple[tuple[str, bool, tuple[str, ...]], ...] = (
     ("analyze_competition", False, ("select",)),
     ("find_suppliers", True, ("select",)),
     ("write_copy", False, ("select",)),
+    ("research_distribution", False, ("select",)),
     ("package_deliverable", True, ("select",)),
     ("design_assets", True, ("select",)),
     ("build_store", True, ("package_deliverable", "design_assets")),
@@ -249,6 +251,10 @@ def _payload(capability: str, cand, outs: dict) -> dict:
     if capability == "package_deliverable":
         return {"candidate": {"name": cand.name, "description": cand.description},
                 "offer": offer, "draft": copy, "plan": dict(cand.plan or {})}
+    if capability == "research_distribution":
+        return {"opportunity": {**opp, "target_customer": "", "category": ""},
+                "offer": offer, "copy": copy,
+                "signals": {"breakdown": dict(getattr(cand, "breakdown", {}) or {})}}
     if capability == "design_assets":
         return {"opportunity": opp, "offer": offer, "copy": copy}
     if capability == "build_store":
@@ -269,10 +275,24 @@ def _payload(capability: str, cand, outs: dict) -> dict:
 # the cycle
 # ---------------------------------------------------------------------------
 
-def run_pipeline(data_dir, candidate_name: str, *, restart: bool = False) -> dict:
+def run_pipeline(data_dir, candidate_name: str, *, restart: bool = False,
+                 skip_deploy: bool = False, step_delay: float = 0.0,
+                 should_stop=None) -> dict:
     """Advance the qualified candidate through the agent chain as far as it
     can without a human. Idempotent and restart-safe: a step already
-    `ok`/`skipped` with its output still on disk is not re-run."""
+    `ok`/`skipped` with its output still on disk is not re-run.
+
+    skip_deploy=True records the deploy step as skipped without touching
+    the static host - used by JARVIS, where publishing the checkout page
+    stays an explicit human/CLI action.
+
+    step_delay pauses that many seconds after each step is persisted -
+    purely a UI-pacing knob for JARVIS's live bars; results are identical.
+
+    should_stop() is an optional callable checked before each step; when it
+    returns True the pipeline finishes the atomic step it is on (none is
+    interrupted), records status `stopped`, and returns. Restart-safe: a
+    later run resumes from where it stopped."""
     data_dir = Path(data_dir)
     store = CandidateStore.load(data_dir / "candidates.json")
     cand = store.get(candidate_name)
@@ -301,6 +321,11 @@ def run_pipeline(data_dir, candidate_name: str, *, restart: bool = False) -> dic
     outs: dict[str, dict] = {}
 
     for cap, required, needs in _STEPS:
+        if should_stop is not None and should_stop():
+            st.data["status"] = "stopped"
+            st.data["error"] = "stop requested by operator (no step was interrupted)"
+            st.save()
+            return st.report()
         spec = roster.by_capability(cap)
         prev = st.data["steps"].get(cap, {})
         existing = agent_runner.last_output(data_dir, cap)
@@ -344,8 +369,15 @@ def run_pipeline(data_dir, candidate_name: str, *, restart: bool = False) -> dic
 
         # --- deploy: publish the checkout page (optional, retryable) --
         if cap == "deploy":
-            _run_deploy_step(data_dir, cand.name, st)
+            if skip_deploy:
+                st.mark("deploy", "skipped", reason=(
+                    "skipped by JARVIS - publishing the checkout page is a human "
+                    "action (run `revenue_os deploy-checkout` or the CLI pipeline)"))
+            else:
+                _run_deploy_step(data_dir, cand.name, st)
             st.save()
+            if step_delay:
+                time.sleep(step_delay)
             continue
 
         # --- LLM-only steps: consume real output or skip -------------
@@ -361,9 +393,33 @@ def run_pipeline(data_dir, candidate_name: str, *, restart: bool = False) -> dic
                                 f"with `agent-goal {_GOAL_FLAG[cap]}` + budget, then "
                                 f"re-run the pipeline to pick up its output."))
             st.save()
+            if step_delay:
+                time.sleep(step_delay)
             continue
 
+        # --- control plane: a disabled agent / global pause stops here
+        # (a not-live spec is left to the dispatch path below, which fails)
+        ctrl = agent_control.load_agent_control(data_dir)
+        if ctrl.is_paused() or not ctrl.is_enabled(spec.id):
+            _, ctrl_reason = ctrl.runnable(cap)
+            st.mark(cap, "blocked", reason=ctrl_reason)
+            st.data["status"] = "blocked"
+            st.data["human_gate"] = {
+                "reason": f"pipeline paused at {spec.name} - {ctrl_reason}",
+                "blocking_issues": [
+                    ctrl_reason,
+                    "re-enable the agent or lift the global pause in JARVIS, "
+                    "then re-run the pipeline",
+                ],
+            }
+            st.save()
+            return st.report()
+
         # --- deterministic step: run for real -----------------------
+        if step_delay:                       # let JARVIS show the step light up
+            st.mark(cap, "running")
+            st.save()
+            time.sleep(step_delay)
         try:
             res = agent_runner.run_agent(
                 data_dir, cap, _payload(cap, cand, outs),
@@ -393,6 +449,8 @@ def run_pipeline(data_dir, candidate_name: str, *, restart: bool = False) -> dic
 
         st.mark(cap, "ok", summary=_summary(out))
         st.save()
+        if step_delay:
+            time.sleep(step_delay)
 
     st.prepare(outs.get("quality_check") or {})
     st.save()

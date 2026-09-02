@@ -155,9 +155,9 @@ def estimate_cost_usd(signals, model: str, cache=None) -> float:
     return round(total_in / 1e6 * in_rate + total_out / 1e6 * out_rate, 4)
 
 
-def build_client():
-    """Construct a default Anthropic client, with clear errors for the
-    two common misconfigurations (missing package, missing credentials)."""
+def _real_anthropic_client():
+    """The ONLY real Anthropic constructor in the codebase. Reached solely
+    through `build_client` after every gate has passed."""
     try:
         import anthropic
     except ModuleNotFoundError as exc:
@@ -169,6 +169,40 @@ def build_client():
         return anthropic.Anthropic()
     except Exception as exc:  # missing / invalid credentials surface here
         raise ValueError(f"could not create Anthropic client: {exc}") from exc
+
+
+def build_client(data_dir=None):
+    """Construct the configured LLM client via EXPLICIT provider dispatch.
+
+    There is no "if not mock, use Anthropic" fall-through: an unknown /
+    disabled / "none" provider raises `LlmUnavailable`, never a paid client.
+
+    * `data_dir` given -> the gateway consults `llm_policy.json` and picks
+      exactly one provider:
+        - gates fail (tier off / emergency stop / autonomous not authorised
+          / unknown provider) -> raises `LlmUnavailable`
+        - provider "mock"     -> MockLlmClient (no network, $0)
+        - provider "anthropic"-> real Anthropic client
+    * no `data_dir` -> legacy path: refuses inside the autonomous context
+      (or when `REVENUE_OS_LLM_MOCK` forces the mock), otherwise builds a
+      real Anthropic client. All in-tree call sites pass `data_dir`.
+    """
+    from .llm_gateway import assert_client_allowed, gateway
+    from .llm_mock import MockLlmClient, mock_selected
+
+    # env override wins in every path - a $0, network-free test client.
+    if mock_selected(None):
+        return MockLlmClient()
+
+    if data_dir is not None:
+        provider = gateway(data_dir).resolve_provider()   # raises LlmUnavailable
+        if provider == "anthropic":
+            return _real_anthropic_client()
+        return MockLlmClient()               # provider == "mock"
+
+    # legacy no-data_dir path (tests / bare calls)
+    assert_client_allowed(None)               # autonomous-context hard block
+    return _real_anthropic_client()
 
 
 def _tool_input(response, tool_name: str = "record_scores") -> dict:

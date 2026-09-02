@@ -1090,7 +1090,7 @@ class FleetGridTests(unittest.TestCase):
         self.assertIn("operator decisions recorded", html)
         self.assertIn("tasks dispatched (task_log)", html)
         self.assertIn("agents with a recorded run", html)
-        self.assertIn("1 / 24", html)
+        self.assertIn("1 / 25", html)
         self.assertIn("No link is drawn to make", html)
 
 

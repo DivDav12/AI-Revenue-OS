@@ -68,6 +68,9 @@ class PayPalConfig:
     def from_env(cls, environ=None) -> "PayPalConfig":
         import os
 
+        from .action_class import guard_no_money_in_autonomy
+        guard_no_money_in_autonomy("PayPal API access")
+
         environ = environ if environ is not None else os.environ
         cid = environ.get("PAYPAL_CLIENT_ID", "").strip()
         secret = environ.get("PAYPAL_CLIENT_SECRET", "").strip()

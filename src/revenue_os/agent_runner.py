@@ -9,6 +9,10 @@ It refuses to auto-run a human-gated capability (same invariant as
 `OperatorAgent.act`): the agent still produces its draft/spec, but the
 result is tagged and never treated as an executed action.
 
+It also honours the control plane (`agent_control.json`): a globally
+paused system or a disabled agent returns an error Result without
+dispatching anything.
+
 No LLM, no network, no money.
 """
 
@@ -16,7 +20,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import roster
+from . import agent_control, roster
 from .agent_outputs import AgentOutputStore
 from .messages import Result, Task
 from .team import build_team
@@ -34,6 +38,11 @@ def run_agent(data_dir, capability: str, payload: dict | None = None, *,
         raise ValueError(f"unknown capability: {capability!r}")
     if spec.status != "live":
         raise ValueError(f"{spec.name} is not live yet (status={spec.status})")
+
+    ok, reason = agent_control.check_runnable(data_dir, capability)
+    if not ok:
+        return Result(task_id="", agent=spec.id, status="error",
+                      error=f"blocked by control plane: {reason}")
 
     team = build_team(sink=sink)
     task = Task(objective=objective or f"run {spec.name}",

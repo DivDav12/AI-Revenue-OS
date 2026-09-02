@@ -228,6 +228,9 @@ def send_delivery(data_dir, order_id: str, *, mailer=None, force: bool = False,
                   config: EmailConfig | None = None) -> dict:
     """Email the staged PDF to the buyer. Refuses a second send unless
     force=True. Auto-stages if the PDF is missing."""
+    from .action_class import guard_no_money_in_autonomy
+    guard_no_money_in_autonomy("send customer e-mail")
+
     data_dir = Path(data_dir)
     store = DeliveryStore.load(data_dir / "deliveries.json")
     record = store.get(order_id)

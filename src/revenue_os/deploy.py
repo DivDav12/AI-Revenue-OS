@@ -183,6 +183,9 @@ def deploy_checkout(data_dir, candidate_name: str, *,
                     config: GitHubPagesConfig | None = None) -> dict:
     """Publish deliverables/<candidate>/{checkout,intake}.html to GitHub
     Pages and persist the live checkout URL on the candidate."""
+    from .action_class import guard_no_money_in_autonomy
+    guard_no_money_in_autonomy("activate a paid checkout page")
+
     data_dir = Path(data_dir)
     store = CandidateStore.load(data_dir / "candidates.json")
     cand = store.get(candidate_name)
