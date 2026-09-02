@@ -23,6 +23,7 @@ import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from . import opportunity_state as ostate
 from .store import now_iso
 
 CATEGORIES = (
@@ -63,11 +64,13 @@ class Opportunity:
     scalability: int = 3              # 1 .. 5
     legal_platform_risk: str = "low"  # low | medium | high
     required_human_actions: list = field(default_factory=list)
-    status: str = "discovered"
+    status: str = "discovered"        # legacy 7-value field (kept working)
+    state: str = ostate.INITIAL       # canonical lifecycle state (opportunity_state)
     score: float = 0.0
     source: str = "engine"            # engine | llm | manual | adjacent
     parent_id: str = ""               # if spawned as an adjacent opportunity
     experiments: list = field(default_factory=list)   # [{ts, kind, note, result}]
+    transitions: list = field(default_factory=list)   # append-only state history
     results: dict = field(default_factory=dict)       # {revenue_eur, leads, signups, ...}
     notes: str = ""
     created_at: str = ""
@@ -114,8 +117,23 @@ class OpportunityStore:
             return s
         for r in raw if isinstance(raw, list) else []:
             if isinstance(r, dict) and r.get("id"):
+                s._migrate(r)
                 s._by_id[r["id"]] = r
         return s
+
+    @staticmethod
+    def _migrate(r: dict) -> None:
+        """Backfill the canonical state machine on a record written before
+        it existed. Derives the state from the legacy status and seeds one
+        bootstrap transition; never invents history."""
+        r.setdefault("transitions", [])
+        if not r.get("state"):
+            st = ostate.state_for_legacy_status(r.get("status", "discovered"))
+            r["state"] = st
+            r["transitions"].append(ostate.Transition(
+                ts=now_iso(), previous_state="", next_state=st,
+                reason=f"migrated from legacy status {r.get('status', 'discovered')!r}",
+                source="migration", actor="system").to_dict())
 
     def save(self) -> None:
         payload = json.dumps(sorted(self._by_id.values(),
@@ -138,10 +156,19 @@ class OpportunityStore:
         opp.updated_at = now_iso()
         existing = self._by_id.get(opp.id)
         if existing is None:
-            self._by_id[opp.id] = opp.to_dict()
+            rec = opp.to_dict()
+            if not rec.get("transitions"):
+                rec["state"] = rec.get("state") or ostate.INITIAL
+                rec["transitions"] = [ostate.Transition(
+                    ts=now_iso(), previous_state="", next_state=rec["state"],
+                    reason="opportunity discovered",
+                    source=f"discovery:{rec.get('source', 'engine')}",
+                    actor="system").to_dict()]
+            self._by_id[opp.id] = rec
             return self._by_id[opp.id]
         # preserve lifecycle + history; refresh the estimates
-        keep = {k: existing[k] for k in ("status", "experiments", "results",
+        keep = {k: existing[k] for k in ("status", "state", "experiments",
+                                         "transitions", "results",
                                          "created_at", "notes")
                 if k in existing}
         merged = {**opp.to_dict(), **keep}
@@ -151,7 +178,8 @@ class OpportunityStore:
     def get(self, oid: str) -> dict | None:
         return self._by_id.get(oid)
 
-    def set_status(self, oid: str, status: str, *, note: str = "") -> dict:
+    def set_status(self, oid: str, status: str, *, note: str = "",
+                   actor: str = "system") -> dict:
         if status not in STATUSES:
             raise ValueError(f"status must be one of {STATUSES}")
         r = self._by_id.get(oid)
@@ -162,7 +190,52 @@ class OpportunityStore:
         if note:
             r.setdefault("experiments", []).append(
                 {"ts": now_iso(), "kind": "status", "note": note, "result": status})
+        # mirror into the canonical state machine (permissive legacy bridge:
+        # it records history even where the legacy path skipped an
+        # intermediate state, tagged so it is distinguishable from a
+        # result-driven transition).
+        target = ostate.state_for_legacy_status(status)
+        cur = r.get("state") or ostate.INITIAL
+        if target and target != cur:
+            r.setdefault("transitions", []).append(ostate.Transition(
+                ts=now_iso(), previous_state=cur, next_state=target,
+                reason=note or f"legacy status -> {status}",
+                source="legacy_status_sync", actor=actor,
+                forced=not ostate.can_transition(cur, target)).to_dict())
+            r["state"] = target
         return r
+
+    def transition(self, oid: str, to: str, *, reason: str, source: str,
+                   actor: str = "system", task_id: str = "", error: str = "",
+                   force: bool = False) -> dict:
+        """Move an opportunity to state `to`, recording a full transition.
+
+        Refuses a move that is not in the legal table unless `force=True`
+        (an explicit human override), which is still recorded, flagged
+        `forced: true`. This is the entry point real task results use -
+        e.g. DEPLOYING -> LIVE only after a deploy adapter returns a URL.
+        """
+        r = self._by_id.get(oid)
+        if r is None:
+            raise ValueError(f"unknown opportunity {oid!r}")
+        if to not in ostate.STATES:
+            raise ValueError(f"unknown state {to!r}")
+        frm = r.get("state") or ostate.state_for_legacy_status(
+            r.get("status", "discovered"))
+        forced = False
+        if not ostate.can_transition(frm, to):
+            if not force:
+                raise ostate.IllegalTransition(
+                    f"{oid}: {frm} -> {to} is not a legal transition")
+            forced = True
+        rec = ostate.Transition(
+            ts=now_iso(), previous_state=frm, next_state=to, reason=reason,
+            source=source, actor=actor, task_id=task_id, error=error,
+            forced=forced).to_dict()
+        r["state"] = to
+        r.setdefault("transitions", []).append(rec)
+        r["updated_at"] = now_iso()
+        return rec
 
     def add_experiment(self, oid: str, kind: str, note: str,
                        result: str = "") -> dict:
@@ -203,6 +276,19 @@ class OpportunityStore:
         return sorted((r for r in self._by_id.values()
                        if r.get("status") in statuses),
                       key=lambda r: -float(r.get("score", 0)))
+
+    def by_state(self, *states: str) -> list[dict]:
+        """Records in any of the given canonical lifecycle states."""
+        return sorted((r for r in self._by_id.values()
+                       if (r.get("state") or ostate.INITIAL) in states),
+                      key=lambda r: -float(r.get("score", 0)))
+
+    def state_counts(self) -> dict:
+        c: dict = {}
+        for r in self._by_id.values():
+            s = r.get("state") or ostate.INITIAL
+            c[s] = c.get(s, 0) + 1
+        return c
 
     def board(self) -> dict:
         b = {s: [] for s in STATUSES}
