@@ -39,6 +39,7 @@ STATUSES = ("discovered", "evaluating", "building", "testing", "active",
             "successful", "abandoned")
 
 _MEASURE_SERIES_CAP = 200
+_OPT_CAP = 20
 
 _COMP = {"low": 1.0, "medium": 0.6, "high": 0.3, "unknown": 0.5}
 _RISK = {"low": 1.0, "medium": 0.7, "high": 0.35, "unknown": 0.6}
@@ -267,6 +268,17 @@ class OpportunityStore:
                        "metrics": clean})
         del series[:-_MEASURE_SERIES_CAP]
         ex.setdefault("metrics", {})[str(kind)] = clean
+        r["updated_at"] = now_iso()
+        return r
+
+    def record_optimization(self, oid: str, entry: dict) -> dict:
+        """Append one optimization variant DRAFT to
+        `execution.optimizations` (capped). The variant is not built,
+        deployed, or promoted - it is a recorded hypothesis."""
+        r = self._by_id[oid]
+        opts = r.setdefault("execution", {}).setdefault("optimizations", [])
+        opts.append(dict(entry))
+        del opts[:-_OPT_CAP]
         r["updated_at"] = now_iso()
         return r
 

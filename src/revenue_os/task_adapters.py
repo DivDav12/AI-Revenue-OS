@@ -32,6 +32,11 @@ from .measurement import (
     default_measurement_adapter,
 )
 from .measurement import _num
+from .optimization import (
+    OptimizationAdapter,
+    OptimizationRequest,
+    default_optimization_adapter,
+)
 from .payments import PaymentAdapter, default_payment_adapter, process_payment_event
 from .worker import AdapterContext, AdapterRegistry, AdapterResult, TaskAdapter
 
@@ -427,18 +432,41 @@ class DeliverTaskAdapter(TaskAdapter):
 
 
 class OptimizeAdapter(TaskAdapter):
+    """Runs one OPTIMIZE task: turn the measurement signal into a SAFE
+    INTERNAL variant DRAFT (copy / CTA / pricing hypothesis / variant idea)
+    via an OptimizationAdapter. The draft is recorded on the opportunity by
+    the worker - it is never built, deployed, or promoted here."""
+
     task_types = ("OPTIMIZE",)
     name = "optimize"
 
+    def __init__(self, adapter: OptimizationAdapter | None = None) -> None:
+        self._adapter = adapter
+
+    def _adapter_for(self) -> OptimizationAdapter:
+        return self._adapter if self._adapter is not None else default_optimization_adapter()
+
     def run(self, ctx: AdapterContext) -> AdapterResult:
-        r = dict(ctx.opportunity.get("results", {}) or {})
-        rev = float(r.get("revenue_eur", 0) or 0)
-        hyp = ("has revenue - test a price increase and add a second landing "
-               "variant" if rev > 0 else
-               "no revenue yet - rewrite the headline around the sharpest pain "
-               "point and re-measure")
-        return AdapterResult(ok=True, output={"hypothesis": hyp,
-                                              "based_on": r})
+        inp = ctx.task.input or {}
+        req = OptimizationRequest(
+            opportunity_id=ctx.task.opportunity_id,
+            focus=str(inp.get("focus") or "landing_copy"),
+            signal=dict(inp.get("signal") or {}),
+            opportunity=dict(ctx.opportunity),
+            variant_number=int(inp.get("variant_number", 1)))
+        result = self._adapter_for().optimize(req)
+        out = {**result.to_dict(),
+               "variant_number": req.variant_number,
+               "reason": str(inp.get("reason", ""))}
+        if not result.success:
+            return AdapterResult(
+                ok=False, output=out, retryable=not result.blocked,
+                error=(f"optimization BLOCKED: {result.error}" if result.blocked
+                       else f"optimization failed: {result.error}"))
+        if not result.variant_id:
+            return AdapterResult(ok=False, output=out, retryable=False,
+                                 error="optimization produced no variant_id")
+        return AdapterResult(ok=True, output=out)
 
 
 # ---------------------------------------------------------------------------

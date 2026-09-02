@@ -114,9 +114,10 @@ _START_STATE: dict[str, str] = {
     "VALIDATE_PRODUCT": "VALIDATING",
     "VALIDATE_PAGE": "VALIDATING",
     "DEPLOY": "DEPLOYING",
-    # DELIVER intentionally has NO start transition: DELIVERING is reached
-    # only from a confirmed successful delivery (see _on_success).
-    "OPTIMIZE": "OPTIMIZING",
+    # DELIVER / OPTIMIZE intentionally have NO start transition:
+    #  - DELIVERING is reached only from a confirmed successful delivery
+    #  - OPTIMIZE is a safe internal draft step and must not move / regress
+    #    the opportunity state (Phase 14)
 }
 
 _SUCCESS_STATE: dict[str, str] = {
@@ -169,7 +170,7 @@ def cancel_task(data_dir, task_id: str, *, reason: str = "") -> None:
 class Worker:
     def __init__(self, data_dir, *, registry: AdapterRegistry | None = None,
                  name: str = "worker-1", lease_seconds: int = 900,
-                 traction_policy=None) -> None:
+                 traction_policy=None, optimization_policy=None) -> None:
         self.data_dir = Path(data_dir)
         self._registry = registry
         self.name = name
@@ -178,6 +179,10 @@ class Worker:
             from .measurement import DEFAULT_TRACTION_POLICY
             traction_policy = DEFAULT_TRACTION_POLICY
         self.traction_policy = traction_policy
+        if optimization_policy is None:
+            from .optimization import DEFAULT_OPTIMIZATION_POLICY
+            optimization_policy = DEFAULT_OPTIMIZATION_POLICY
+        self.optimization_policy = optimization_policy
 
     @property
     def registry(self) -> AdapterRegistry:
@@ -422,9 +427,17 @@ class Worker:
                     except ostate.IllegalTransition:
                         pass
 
-        # --- Phase 10: recurring measurement -------------------------
+        # --- Phase 10: recurring measurement ------------------------
         if self._record_measurement(task, result, ev, store, now):
             dirty = True
+            # a fresh measurement is the only thing that can warrant a new
+            # OPTIMIZE task (Phase 14) - explicit, data-driven decision.
+            self._maybe_optimize(task, ev, q, store)
+
+        # --- Phase 14: an OPTIMIZE task recorded a variant draft ----
+        if task.task_type == "OPTIMIZE" and (result.output or {}).get("success"):
+            if self._record_optimization(task, result, ev, store):
+                dirty = True
 
         target = self._success_target(task, result)
         if target:
@@ -540,6 +553,65 @@ class Worker:
                     opportunity_id=task.opportunity_id, task_type=task.task_type,
                     actor=self.name, cycle=nxt, not_before=due, depends_on=[])
 
+    # --- Phase 14: optimization ----------------------------------
+    def _maybe_optimize(self, task: ExecutionTask, ev: EventLog, q: TaskQueue,
+                        store) -> None:
+        """Data-driven decision: does this opportunity warrant a safe
+        internal optimization now? Spawns AT MOST one OPTIMIZE task per
+        opportunity at a time; the decision's own variant-cap + cooldown
+        bound the total. Never touches money / identity / external actions."""
+        from .optimization import evaluate_optimization
+
+        oid = task.opportunity_id
+        rec = store.get(oid)
+        if rec is None:
+            return
+        if any(x.task_type == "OPTIMIZE" and not x.is_terminal
+               for x in q.by_opportunity(oid)):
+            return
+        decision = evaluate_optimization(rec, policy=self.optimization_policy)
+        if not decision.optimize:
+            return
+        n = len((rec.get("execution") or {}).get("optimizations", [])) + 1
+        before = {x.task_id for x in q.all()}
+        t = q.create(oid, "OPTIMIZE", priority=4,
+                     idempotency_key=f"optimize:{oid}:{n}",
+                     input={"focus": decision.focus, "signal": decision.signal,
+                            "variant_number": n, "reason": decision.reason})
+        if t.task_id not in before:
+            ev.emit("OPTIMIZATION_CREATED", task_id=t.task_id, opportunity_id=oid,
+                    task_type="OPTIMIZE", actor=self.name, focus=decision.focus,
+                    reason=decision.reason, variant_number=n)
+
+    def _record_optimization(self, task: ExecutionTask, result: AdapterResult,
+                             ev: EventLog, store) -> bool:
+        out = result.output or {}
+        vid = str(out.get("variant_id", ""))
+        if not vid:
+            return False
+        ex = (store.get(task.opportunity_id) or {}).get("execution") or {}
+        if vid in {o.get("variant_id") for o in ex.get("optimizations", [])}:
+            return False                 # idempotent: already recorded
+        from .store import now_iso
+        sig = (task.input or {}).get("signal") or {}
+        store.record_optimization(task.opportunity_id, {
+            "variant_id": vid,
+            "ts": now_iso(),
+            "focus": out.get("focus", ""),
+            "hypothesis": out.get("hypothesis", ""),
+            "variant": out.get("variant", {}),
+            "rationale": out.get("rationale", ""),
+            "requires_before_live": out.get("requires_before_live", []),
+            "reason": str((task.input or {}).get("reason", "")),
+            "rounds_at_creation": int(sig.get("traffic_rounds", 0)),
+            "task_id": task.task_id,
+        })
+        ev.emit("OPTIMIZATION_COMPLETED", task_id=task.task_id,
+                opportunity_id=task.opportunity_id, task_type="OPTIMIZE",
+                actor=self.name, variant_id=vid, focus=out.get("focus", ""),
+                hypothesis=out.get("hypothesis", ""))
+        return True
+
     def _spawn_deliver(self, check_task: ExecutionTask, payment: dict,
                        ev: EventLog, q: TaskQueue) -> None:
         oid = check_task.opportunity_id
@@ -597,7 +669,10 @@ class Worker:
 
 def run_worker(data_dir, *, max_ticks: int = 100, name: str = "worker-1",
                registry: AdapterRegistry | None = None,
-               traction_policy=None, now: str | None = None) -> dict:
+               traction_policy=None, optimization_policy=None,
+               now: str | None = None) -> dict:
     """Drain the ready queue once. Returns a summary of what ran."""
     return Worker(data_dir, registry=registry, name=name,
-                  traction_policy=traction_policy).run(max_ticks=max_ticks, now=now)
+                  traction_policy=traction_policy,
+                  optimization_policy=optimization_policy).run(
+        max_ticks=max_ticks, now=now)
