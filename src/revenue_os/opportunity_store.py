@@ -40,6 +40,7 @@ STATUSES = ("discovered", "evaluating", "building", "testing", "active",
 
 _MEASURE_SERIES_CAP = 200
 _OPT_CAP = 20
+_DIST_CAP = 20
 
 _COMP = {"low": 1.0, "medium": 0.6, "high": 0.3, "unknown": 0.5}
 _RISK = {"low": 1.0, "medium": 0.7, "high": 0.35, "unknown": 0.6}
@@ -268,6 +269,17 @@ class OpportunityStore:
                        "metrics": clean})
         del series[:-_MEASURE_SERIES_CAP]
         ex.setdefault("metrics", {})[str(kind)] = clean
+        r["updated_at"] = now_iso()
+        return r
+
+    def record_distribution(self, oid: str, entry: dict) -> dict:
+        """Persist one CONFIRMED distribution under `execution.distributions`
+        (capped). Keyed for idempotency by (channel, content_hash); a
+        re-run finds it and no-ops."""
+        r = self._by_id[oid]
+        d = r.setdefault("execution", {}).setdefault("distributions", [])
+        d.append(dict(entry))
+        del d[:-_DIST_CAP]
         r["updated_at"] = now_iso()
         return r
 

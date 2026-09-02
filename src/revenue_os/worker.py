@@ -427,6 +427,12 @@ class Worker:
                     except ostate.IllegalTransition:
                         pass
 
+        # --- Phase 9: a DISTRIBUTE task published to a channel ------
+        if task.task_type == "DISTRIBUTE" and (result.output or {}).get("success") is True:
+            if self._record_distribution(task, result, ev, store):
+                dirty = True
+            self._fan_out_distribution(task, ev, q)
+
         # --- Phase 10: recurring measurement ------------------------
         if self._record_measurement(task, result, ev, store, now):
             dirty = True
@@ -552,6 +558,78 @@ class Worker:
             ev.emit("TASK_CREATED", task_id=t.task_id,
                     opportunity_id=task.opportunity_id, task_type=task.task_type,
                     actor=self.name, cycle=nxt, not_before=due, depends_on=[])
+
+    # --- Phase 9: distribution ----------------------------------
+    def _record_distribution(self, task: ExecutionTask, result: AdapterResult,
+                             ev: EventLog, store) -> bool:
+        out = result.output or {}
+        did = str(out.get("distribution_id", ""))
+        if not did:
+            return False
+        ex = (store.get(task.opportunity_id) or {}).get("execution") or {}
+        if did in {d.get("distribution_id") for d in ex.get("distributions", [])}:
+            return False                 # idempotent: already recorded
+        from .store import now_iso
+        channel = out.get("channel", "")
+        url = out.get("published_url", "")
+        store.record_distribution(task.opportunity_id, {
+            "distribution_id": did,
+            "channel": channel,
+            "ts": now_iso(),
+            "destination": out.get("destination", ""),
+            "resulting_url": url,
+            "content_hash": out.get("content_hash", ""),
+            "draft_only": bool(out.get("draft_only")),
+            "draft": out.get("draft", {}) if out.get("draft_only") else {},
+            "status": "success",
+            "task_id": task.task_id,
+        })
+        ev.emit("DISTRIBUTION_COMPLETED", task_id=task.task_id,
+                opportunity_id=task.opportunity_id, task_type="DISTRIBUTE",
+                actor=self.name, channel=channel, resulting_url=url,
+                distribution_id=did, draft_only=bool(out.get("draft_only")),
+                idempotent=bool(out.get("idempotent")))
+
+        # a REAL owned-channel publish (not a draft, valid URL) lets the
+        # opportunity start acquiring traffic - ONLY from LIVE, never a
+        # regression, never on a draft, never on a failure.
+        from .deployment import valid_live_url as _valid_pub_url
+        if not out.get("draft_only") and _valid_pub_url(url):
+            cur = (store.get(task.opportunity_id) or {}).get("state") \
+                or ostate.INITIAL
+            if cur == "LIVE" and ostate.can_transition(cur, "ACQUIRING_TRAFFIC"):
+                try:
+                    tr = store.transition(
+                        task.opportunity_id, "ACQUIRING_TRAFFIC",
+                        reason=f"DISTRIBUTE ({channel}) published to an owned "
+                               "channel", source="task", actor=self.name,
+                        task_id=task.task_id)
+                    ev.emit("OPPORTUNITY_TRANSITIONED", task_id=task.task_id,
+                            opportunity_id=task.opportunity_id,
+                            task_type="DISTRIBUTE", actor=self.name,
+                            **{"from": tr["previous_state"],
+                               "to": tr["next_state"], "reason": tr["reason"]})
+                except ostate.IllegalTransition:
+                    pass
+        return True
+
+    def _fan_out_distribution(self, task: ExecutionTask, ev: EventLog,
+                              q: TaskQueue) -> None:
+        """After the primary (owned_web) DISTRIBUTE succeeds, enqueue exactly
+        one task per remaining allowed channel - a bounded, idempotency-keyed
+        set. Never a per-tick re-creation, never an explosion."""
+        if str((task.input or {}).get("channel") or "owned_web") != "owned_web":
+            return
+        oid = task.opportunity_id
+        for ch in ("owned_content", "community_draft", "social_draft"):
+            before = {x.task_id for x in q.all()}
+            t = q.create(oid, "DISTRIBUTE", priority=3,
+                         idempotency_key=f"distribute:{oid}:{ch}",
+                         input={"channel": ch})
+            if t.task_id not in before:
+                ev.emit("DISTRIBUTION_CREATED", task_id=t.task_id,
+                        opportunity_id=oid, task_type="DISTRIBUTE",
+                        actor=self.name, channel=ch)
 
     # --- Phase 14: optimization ----------------------------------
     def _maybe_optimize(self, task: ExecutionTask, ev: EventLog, q: TaskQueue,

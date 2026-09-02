@@ -144,10 +144,12 @@ class Phase14E2ETests(unittest.TestCase):
         self.assertLessEqual(
             len(load_opportunities(self.d).get(OID)["execution"]["optimizations"]),
             3)
-        # no deploy re-run, no distribution, no payment, no delivery, no spend
+        # no deploy re-run, no payment, no delivery, no spend; no Phase-15 tasks
         for t in load_tasks(self.d).all():
-            if t.task_type in ("DISTRIBUTE", "SPAWN_VARIANT", "SCALE"):
+            if t.task_type in ("SPAWN_VARIANT", "SCALE"):
                 self.assertNotEqual(t.status, "SUCCEEDED")
+            if t.task_type == "DISTRIBUTE":
+                self.assertFalse(t.output.get("success"))   # no owned channel here
         for artefact in ("revenue.json", "deliveries.json", "spend.json",
                          "llm_spend.json", "messages.json"):
             self.assertFalse((self.d / artefact).exists(), artefact)

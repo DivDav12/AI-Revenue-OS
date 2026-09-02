@@ -45,9 +45,14 @@ CHAIN: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("VALIDATE_PAGE",    ("BUILD_PAGE",),                 ""),
     ("DEPLOY",           ("BUILD_PAGE", "VALIDATE_PAGE"), "money"),
     ("DISTRIBUTE",       ("DEPLOY",),                     ""),
-    ("CHECK_TRAFFIC",    ("DEPLOY",),                     ""),
-    ("CHECK_LEADS",      ("DEPLOY",),                     ""),
-    ("CHECK_REVENUE",    ("DEPLOY",),                     ""),
+    # the measurement checks depend on DISTRIBUTE (not DEPLOY) so DISTRIBUTE
+    # is guaranteed to run first: DEPLOY -> LIVE -> DISTRIBUTE ->
+    # ACQUIRING_TRAFFIC -> CHECK_*. Ordering is a real dependency, not a
+    # priority hint. With no owned channel configured DISTRIBUTE is a no-op
+    # (SUCCEEDED, nothing published) so the checks still proceed.
+    ("CHECK_TRAFFIC",    ("DISTRIBUTE",),                 ""),
+    ("CHECK_LEADS",      ("DISTRIBUTE",),                 ""),
+    ("CHECK_REVENUE",    ("DISTRIBUTE",),                 ""),
 )
 
 _PRE_SELECT = ("DISCOVERED", "RESEARCHING", "SCORED")
@@ -110,7 +115,8 @@ def accept_opportunity(data_dir, opportunity_id: str, *, actor: str = "human",
             opportunity_id, ttype, depends_on=dep_ids, priority=priority,
             idempotency_key=f"accept:{opportunity_id}:{ttype}",
             requires_approval=bool(approval), approval_type=approval,
-            input={"title": rec.get("title", ""), "accepted_by": actor})
+            input=({"channel": "owned_web"} if ttype == "DISTRIBUTE" else {})
+            | {"title": rec.get("title", ""), "accepted_by": actor})
         ids[ttype] = t.task_id
         if t.task_id in existing_ids:
             reused.append(ttype)
@@ -119,6 +125,10 @@ def accept_opportunity(data_dir, opportunity_id: str, *, actor: str = "human",
             ev.emit("TASK_CREATED", task_id=t.task_id,
                     opportunity_id=opportunity_id, task_type=ttype, actor=actor,
                     depends_on=list(dep_ids), priority=priority)
+            if ttype == "DISTRIBUTE":
+                ev.emit("DISTRIBUTION_CREATED", task_id=t.task_id,
+                        opportunity_id=opportunity_id, task_type="DISTRIBUTE",
+                        actor=actor, channel="owned_web")
 
     res = q.resolve_dependencies()
     q.save()

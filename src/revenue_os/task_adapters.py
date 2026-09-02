@@ -27,6 +27,12 @@ from .delivery_adapters import (
     DeliveryRecipient,
     default_delivery_adapter,
 )
+from .distribution_adapters import (
+    DRAFT_CHANNELS,
+    DistributionAdapter,
+    DistributionRequest,
+    default_distribution_adapter,
+)
 from .measurement import (
     MeasurementAdapter,
     default_measurement_adapter,
@@ -183,6 +189,121 @@ class AnalyzeAdapter(TaskAdapter):
                     "/ lead / conversion metrics arrive with the measurement "
                     "loop (Phase 10)",
         })
+
+
+def _announce_html(opp: dict, channel: str, live_url: str) -> str:
+    title = str(opp.get("title") or "our new offer")
+    audience = str(opp.get("target_customer") or "you")
+    return (
+        "<!doctype html><meta charset=utf-8>"
+        f"<title>{title}</title>"
+        f"<h1>{title}</h1>"
+        f"<p>A new resource for {audience}.</p>"
+        + (f'<p><a href="{live_url}">See it here</a></p>' if live_url else "")
+        + "<p><small>Published on an owned channel. No tracking beyond the "
+          "site's own analytics.</small></p>")
+
+
+def _social_draft(opp: dict, channel: str, live_url: str) -> dict:
+    title = str(opp.get("title") or "our new offer")
+    platform = "reddit" if channel == "community_draft" else "x/linkedin"
+    return {
+        "channel": channel,
+        "platform": platform,
+        "title": f"Built {title} - would love feedback",
+        "body": (f"I put together {title} for "
+                 f"{opp.get('target_customer') or 'a specific niche'}. "
+                 "Not selling hard - genuinely want to know if the framing "
+                 "lands. Details / demo: (link)"),
+        "url": live_url,
+        "cta": "honest feedback welcome",
+        "reason": "owned + community drafts are the free, rule-respecting way "
+                  "to get the first eyes on a launch",
+        "auto_post": False,
+        "note": "DRAFT ONLY - a human reads the community's self-promotion "
+                "rules and posts this (or not). Nothing is posted "
+                "automatically.",
+    }
+
+
+class DistributeTaskAdapter(TaskAdapter):
+    """Runs one DISTRIBUTE task for ONE channel.
+
+      owned_web / owned_content -> publish an announcement page on the
+        operator's own channel via a DistributionAdapter. A real
+        published_url lets the worker move LIVE -> ACQUIRING_TRAFFIC.
+      community_draft / social_draft -> build a ready-to-review DRAFT. It
+        is handled entirely in-process (no adapter, no network) and NEVER
+        auto-posted; it drives no state change.
+
+    Idempotent: a confirmed distribution for the same (channel,
+    content_hash) recorded on the opportunity short-circuits.
+    """
+
+    task_types = ("DISTRIBUTE",)
+    name = "distribute"
+
+    def __init__(self, adapter: DistributionAdapter | None = None) -> None:
+        self._adapter = adapter
+
+    def _adapter_for(self) -> DistributionAdapter:
+        return self._adapter if self._adapter is not None else default_distribution_adapter()
+
+    def run(self, ctx: AdapterContext) -> AdapterResult:
+        inp = ctx.task.input or {}
+        channel = str(inp.get("channel") or "owned_web")
+        opp = ctx.opportunity
+        oid = ctx.task.opportunity_id
+        live_url = (opp.get("execution") or {}).get("live_url", "")
+
+        if channel in DRAFT_CHANNELS:
+            import hashlib as _hl
+            draft = _social_draft(opp, channel, live_url)
+            digest = _hl.sha256(
+                repr(sorted(draft.items())).encode("utf-8")).hexdigest()[:16]
+            return AdapterResult(ok=True, output={
+                "success": True, "channel": channel, "draft_only": True,
+                "published_url": "", "destination": f"draft:{channel}",
+                "distribution_id": f"draft-{oid[:12]}-{channel}",
+                "content_hash": digest, "draft": draft})
+
+        content = {"html": _announce_html(opp, channel, live_url)}
+        req = DistributionRequest(opportunity_id=oid, channel=channel,
+                                  content=content, live_url=live_url,
+                                  metadata={"title": opp.get("title", "")})
+        chash = req.content_hash()
+
+        prior = next(
+            (d for d in (opp.get("execution") or {}).get("distributions", [])
+             if d.get("channel") == channel and d.get("content_hash") == chash
+             and d.get("status") == "success"), None)
+        if prior:
+            return AdapterResult(ok=True, output={**prior, "success": True,
+                                                  "channel": channel,
+                                                  "content_hash": chash,
+                                                  "idempotent": True})
+
+        result = self._adapter_for().distribute(req)
+        out = {**result.to_dict(), "content_hash": chash}
+        if not result.success:
+            if result.blocked:
+                # no owned channel configured: distribution is a NO-OP, not
+                # an error. The DISTRIBUTE task completes (nothing published,
+                # no state change) so the dependent CHECK_* tasks still run;
+                # the operator wires a channel to actually promote the offer.
+                return AdapterResult(ok=True, output={
+                    **out, "distributed": False,
+                    "note": "no owned distribution channel configured - "
+                            "distribution skipped, nothing published"})
+            return AdapterResult(
+                ok=False, output=out, retryable=True,
+                error=f"distribution failed: {result.error}")
+        if not result.draft_only and not valid_live_url(result.published_url):
+            return AdapterResult(
+                ok=False, output=out, retryable=False,
+                error="distribution reported success but returned no "
+                      "published_url")
+        return AdapterResult(ok=True, output=out)
 
 
 class DeployTaskAdapter(TaskAdapter):
@@ -487,6 +608,7 @@ def default_registry() -> AdapterRegistry:
         ("VALIDATE_PRODUCT", "VALIDATE_PAGE"),
         "quality_check", _p_qc, objective="validate"))
     reg.register(DeployTaskAdapter())
+    reg.register(DistributeTaskAdapter())
     reg.register(CheckTrafficAdapter())
     reg.register(CheckLeadsAdapter())
     reg.register(CheckRevenueAdapter())

@@ -123,13 +123,18 @@ class Phase10E2ETests(unittest.TestCase):
             now=_iso(BASE + timedelta(hours=14)), max_ticks=60)
         self.assertEqual(self._state(OID), "FIRST_LEAD")
 
-        # ---- Phase 10 does NOT auto-start Phase 14 / Phase 9 -------
+        # ---- Phase 10 does NOT auto-start Phase 14 -----------------
         all_types = {t.task_type for t in load_tasks(self.d).all()}
         self.assertNotIn("OPTIMIZE", all_types)
         self.assertNotIn("SPAWN_VARIANT", all_types)
+        # the DISTRIBUTE task from acceptance runs, but with no owned channel
+        # configured here it is a no-op: nothing published, no ACQUIRING_TRAFFIC
         for t in load_tasks(self.d).all():
             if t.task_type == "DISTRIBUTE":
-                self.assertNotEqual(t.status, "SUCCEEDED")
+                self.assertFalse(t.output.get("success"))
+        self.assertNotIn("ACQUIRING_TRAFFIC",
+                         {tr["next_state"]
+                          for tr in load_opportunities(self.d).get(OID)["transitions"]})
 
         # no external side effects
         for artefact in ("llm_spend.json", "spend.json", "messages.json"):
