@@ -35,6 +35,12 @@ from . import opportunity_state as ostate
 from .events import load_events
 from .execution import TASK_STATUSES, load_tasks
 from .opportunity_store import load_opportunities
+from .task_class import classify_task
+
+# The DEPLOY approval bucket is NOT hard-coded here - it is derived from the
+# central Phase-6 classifier (publishing the commercial landing page on the
+# owner's own hosting -> EXTERNAL_AUTHORIZED, gated on a "money" approval).
+_DEPLOY_APPROVAL = classify_task("DEPLOY").approval_type
 
 # (task_type, dependency task_types, approval_type or "")
 CHAIN: tuple[tuple[str, tuple[str, ...], str], ...] = (
@@ -43,7 +49,7 @@ CHAIN: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("BUILD_PAGE",       ("PLAN",),                       ""),
     ("VALIDATE_PRODUCT", ("BUILD_PRODUCT",),              ""),
     ("VALIDATE_PAGE",    ("BUILD_PAGE",),                 ""),
-    ("DEPLOY",           ("BUILD_PAGE", "VALIDATE_PAGE"), "money"),
+    ("DEPLOY",           ("BUILD_PAGE", "VALIDATE_PAGE"), _DEPLOY_APPROVAL),
     ("DISTRIBUTE",       ("DEPLOY",),                     ""),
     # the measurement checks depend on DISTRIBUTE (not DEPLOY) so DISTRIBUTE
     # is guaranteed to run first: DEPLOY -> LIVE -> DISTRIBUTE ->
@@ -212,7 +218,7 @@ def release_task(data_dir, task_id: str, *, actor: str = "human") -> dict:
         raise AcceptanceError(f"unknown task {task_id!r}")
     if t.status != "BLOCKED_APPROVAL":
         raise AcceptanceError(f"task {task_id} is {t.status}, not BLOCKED_APPROVAL")
-    q.unblock(task_id)
+    q.unblock(task_id, by=actor)
     res = q.resolve_dependencies()
     q.save()
     ev = load_events(data_dir)

@@ -243,12 +243,20 @@ class DistributeTaskAdapter(TaskAdapter):
 
     task_types = ("DISTRIBUTE",)
     name = "distribute"
+    #: Phase 6 - an owned-channel DISTRIBUTE whose channel is NOT authorized
+    #: is a documented safe no-op (nothing is published, no state change), so
+    #: the Worker lets it run rather than blocking the dependent CHECK_* chain.
+    safe_when_unauthorized = True
 
     def __init__(self, adapter: DistributionAdapter | None = None) -> None:
         self._adapter = adapter
 
     def _adapter_for(self) -> DistributionAdapter:
         return self._adapter if self._adapter is not None else default_distribution_adapter()
+
+    @property
+    def authorized(self) -> bool:
+        return bool(getattr(self._adapter_for(), "authorized", False))
 
     def run(self, ctx: AdapterContext) -> AdapterResult:
         inp = ctx.task.input or {}
@@ -329,6 +337,10 @@ class DeployTaskAdapter(TaskAdapter):
 
     def _adapter_for(self) -> DeploymentAdapter:
         return self._adapter if self._adapter is not None else default_deployment_adapter()
+
+    @property
+    def authorized(self) -> bool:
+        return bool(getattr(self._adapter_for(), "authorized", False))
 
     def run(self, ctx: AdapterContext) -> AdapterResult:
         page = (ctx.dep_outputs.get("BUILD_PAGE")

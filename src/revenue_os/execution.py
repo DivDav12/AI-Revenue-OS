@@ -131,6 +131,8 @@ class ExecutionTask:
     idempotency_key: str = ""
     lease_until: str = ""
     not_before: str = ""           # scheduled: not eligible to run before this ISO time
+    approval_granted: bool = False  # a human released this task's approval gate
+    approval_granted_by: str = ""   # who released it (audit; survives restart/retry)
 
     def __post_init__(self):
         if self.task_type not in TASK_TYPES:
@@ -369,12 +371,19 @@ class TaskQueue:
         self._set(t, "BLOCKED_APPROVAL")
         return t
 
-    def unblock(self, task_id: str) -> ExecutionTask:
-        """Approval granted - send the task back to dependency resolution."""
+    def unblock(self, task_id: str, *, by: str = "") -> ExecutionTask:
+        """Approval granted by a human - send the task back to dependency
+        resolution and record that the gate was satisfied. The
+        `approval_granted` flag is persisted, so a restart or a retry can
+        never turn an approved task back into an un-approved one, and the
+        Worker's Phase-6 classifier lets it run instead of re-blocking it."""
         t = self._require(task_id)
         if t.status != "BLOCKED_APPROVAL":
             raise TaskError(f"{task_id} is {t.status}, not BLOCKED_APPROVAL")
         t.requires_approval = False
+        t.approval_granted = True
+        if by:
+            t.approval_granted_by = str(by)
         self._set(t, "PENDING")
         return t
 

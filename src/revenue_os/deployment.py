@@ -89,6 +89,12 @@ class DeploymentResult:
 class DeploymentAdapter:
     provider = "base"
 
+    #: Phase 6 - is this a deploy channel the owner explicitly authorized for
+    #: automation? The Worker's classifier only lets an EXTERNAL_AUTHORIZED
+    #: DEPLOY run unattended against an authorized adapter (or after a human
+    #: release). Fail closed: default False.
+    authorized = False
+
     def deploy(self, artifact: DeploymentArtifact) -> DeploymentResult:  # pragma: no cover
         raise NotImplementedError
 
@@ -99,6 +105,7 @@ class DeploymentAdapter:
 
 class FakeDeploymentAdapter(DeploymentAdapter):
     provider = "fake"
+    authorized = True   # an explicitly injected fake channel is authorized
 
     def __init__(self, *, base_url: str = "https://fake.pages.test",
                  fail: bool = False, blocked: bool = False,
@@ -150,6 +157,20 @@ class GitHubPagesDeploymentAdapter(DeploymentAdapter):
         self._config = config
         self._client = client
         self._environ = environ
+
+    @property
+    def authorized(self) -> bool:
+        """Authorized iff a valid GitHub Pages config resolves (an owner who
+        set GITHUB_TOKEN + GITHUB_PAGES_REPO has explicitly authorized this
+        channel). No network call - a pure env / config check."""
+        from . import deploy as _deploy
+        if self._config is not None:
+            return True
+        try:
+            _deploy.GitHubPagesConfig.from_env(self._environ)
+            return True
+        except Exception:
+            return False
 
     def deploy(self, artifact: DeploymentArtifact) -> DeploymentResult:
         from . import deploy as _deploy

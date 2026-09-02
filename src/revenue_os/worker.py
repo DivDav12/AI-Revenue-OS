@@ -40,10 +40,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import opportunity_state as ostate
-from .action_class import ActionBlocked
+from .action_class import ActionBlocked, autonomous_context
 from .events import EventLog, load_events
 from .execution import ExecutionTask, TaskQueue, load_tasks
 from .opportunity_store import load_opportunities
+from .task_class import classify_task
 
 
 def _metric_num(v) -> float:
@@ -219,6 +220,23 @@ class Worker:
             return None
 
         task = ready[0]
+
+        # ---- PHASE 6: mandatory classification BEFORE any execution ------
+        # Single choke point. No execution path skips this. A task that
+        # needs a human approval is blocked (never executed); a TOS /
+        # unknown task is failed finally; an EXTERNAL_AUTHORIZED task runs
+        # only against an authorized adapter or after a human release.
+        adapter = self.registry.get(task.task_type)
+        verdict = classify_task(task.task_type, self._class_context(task))
+        gate = self._gate(task, verdict, adapter, q, ev, now)
+        if gate != "run":
+            self._resolve(q, ev, now=now)
+            q.save()
+            ev.save()
+            return {"task_id": task.task_id, "task_type": task.task_type,
+                    "status": q.get(task.task_id).status, "ok": False,
+                    "gated": verdict.task_class}
+
         q.claim(task.task_id, self.name, lease_seconds=self.lease_seconds, now=now)
         t = q.get(task.task_id)
         q.save()                       # a crash now leaves a reclaimable RUNNING task
@@ -238,14 +256,13 @@ class Worker:
                     actor=self.name, actual_cost=result.actual_cost)
             self._on_success(t, result, ev, q, now)
         elif (result.output or {}).get("requires_approval"):
-            # a scaling action that would need a money/identity/legal
-            # approval is NOT executed - the task is blocked on that approval
-            # (Phase 15 money firewall). No approval-gated action runs here.
-            approval = str(result.output["requires_approval"])
-            q.block_for_approval(t.task_id, approval)
-            ev.emit("TASK_BLOCKED", task_id=t.task_id,
-                    opportunity_id=t.opportunity_id, task_type=t.task_type,
-                    actor=self.name, approval_type=approval, reason=result.error)
+            # the adapter discovered AT RUN TIME that the real action would
+            # need a money / identity / legal approval - route it through the
+            # SAME blocking path as the pre-execution classifier (Phase 6).
+            # No approval-gated action runs here.
+            self._block(t, str(result.output["requires_approval"]),
+                        result.error or "adapter requires a human approval",
+                        q, ev)
         else:
             q.mark_failed(t.task_id, result.error, retryable=result.retryable,
                           now=now)
@@ -295,7 +312,12 @@ class Worker:
                       f"(implemented in a later phase)")
         ctx = self._context(task, q)
         try:
-            result = adapter.run(ctx)
+            # Phase 6: run the task INSIDE autonomous_context() so the money
+            # / PayPal / e-mail / paid-LLM leak-path guards
+            # (action_class.guard_no_money_in_autonomy) actually fire if any
+            # adapter ever reaches one.
+            with autonomous_context():
+                result = adapter.run(ctx)
         except ActionBlocked as exc:
             return AdapterResult(ok=False, retryable=False,
                                  error=f"firewall blocked the adapter: {exc}")
@@ -322,6 +344,72 @@ class Worker:
             if d is not None and d.status == "SUCCEEDED":
                 dep_outputs[d.task_type] = dict(d.output)
         return AdapterContext(self.data_dir, task, dict(opp), dep_outputs)
+
+    # --- Phase 6: the classification gate -------------------------
+    def _class_context(self, task: ExecutionTask) -> dict:
+        """The context classify_task() needs for this task."""
+        ctx: dict = {}
+        if task.task_type == "DISTRIBUTE":
+            ctx["channel"] = (task.input or {}).get("channel") or "owned_web"
+        if task.task_type == "DEPLOY":
+            page = (task.input or {})
+            if page.get("has_checkout") or page.get("collects_payment"):
+                ctx["has_checkout"] = True
+        return ctx
+
+    def _gate(self, task: ExecutionTask, verdict, adapter,
+              q: TaskQueue, ev: EventLog, now: str | None) -> str:
+        """Decide what happens to `task` BEFORE it is executed. Returns
+        'run' | 'blocked' | 'failed'. The only path to 'run' for a
+        MONEY/IDENTITY/LEGAL task is a prior human approval
+        (`task.approval_granted`, set by acceptance.release_task)."""
+        if verdict.blocked_forever:
+            # TOS_BLOCKED / SAFETY_BLOCKED - never run, never retry.
+            q.claim(task.task_id, self.name,
+                    lease_seconds=self.lease_seconds, now=now)
+            q.mark_failed(
+                task.task_id,
+                f"classifier: {verdict.task_class} - {verdict.reason}",
+                retryable=False, now=now)
+            ev.emit("TASK_FAILED", task_id=task.task_id,
+                    opportunity_id=task.opportunity_id, task_type=task.task_type,
+                    actor=self.name,
+                    error=f"{verdict.task_class}: {verdict.reason}")
+            return "failed"
+
+        if verdict.needs_approval:
+            if task.approval_granted:
+                return "run"
+            self._block(task, verdict.approval_type, verdict.reason, q, ev)
+            return "blocked"
+
+        if verdict.needs_authorization:
+            if (task.approval_granted
+                    or verdict.safe_when_unauthorized
+                    or bool(getattr(adapter, "authorized", False))
+                    or bool(getattr(adapter, "safe_when_unauthorized", False))):
+                return "run"
+            self._block(task, verdict.approval_type or "money",
+                        verdict.reason, q, ev)
+            return "blocked"
+
+        return "run"                    # SAFE_AUTONOMOUS
+
+    def _block(self, task: ExecutionTask, approval_type: str, reason: str,
+               q: TaskQueue, ev: EventLog) -> None:
+        """The single blocking mechanism - used by the pre-execution
+        classifier AND the adapter's run-time `requires_approval` signal.
+        The task is NOT executed. A human satisfies the gate via
+        acceptance.release_task, which records `approval_granted` so a later
+        restart / retry cannot silently turn it back into an un-approved
+        MONEY / IDENTITY / LEGAL task."""
+        if approval_type not in ("money", "identity", "legal"):
+            approval_type = "money"
+        if q.get(task.task_id).status != "BLOCKED_APPROVAL":
+            q.block_for_approval(task.task_id, approval_type)
+        ev.emit("TASK_BLOCKED", task_id=task.task_id,
+                opportunity_id=task.opportunity_id, task_type=task.task_type,
+                actor=self.name, approval_type=approval_type, reason=reason)
 
     def _transition(self, task: ExecutionTask, target: str | None,
                     ev: EventLog, *, when: str) -> None:

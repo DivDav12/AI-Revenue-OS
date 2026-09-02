@@ -87,6 +87,12 @@ class DistributionResult:
 class DistributionAdapter:
     provider = "base"
 
+    #: Phase 6 - is this an owned channel the operator explicitly authorized
+    #: for automation? Fail closed: default False. (Owned-channel DISTRIBUTE
+    #: is a safe no-op when unauthorized, so the Worker does not block it -
+    #: this flag only decides whether a real publish is attempted.)
+    authorized = False
+
     def distribute(self, request: DistributionRequest) -> DistributionResult:  # pragma: no cover
         raise NotImplementedError
 
@@ -107,6 +113,7 @@ class FakeDistributionAdapter(DistributionAdapter):
     (opportunity, channel, content_hash)."""
 
     provider = "fake"
+    authorized = True   # an explicitly injected fake channel is authorized
 
     def __init__(self, *, base_url: str = "https://fake.dist.test",
                  fail: bool = False, blocked: bool = False, error: str = "",
@@ -163,6 +170,19 @@ class GitHubPagesDistributionAdapter(DistributionAdapter):
         self._config = config
         self._client = client
         self._environ = environ
+
+    @property
+    def authorized(self) -> bool:
+        """Authorized iff a valid GitHub Pages config resolves. Pure env /
+        config check, no network."""
+        from . import deploy as _deploy
+        if self._config is not None:
+            return True
+        try:
+            _deploy.GitHubPagesConfig.from_env(self._environ)
+            return True
+        except Exception:
+            return False
 
     def distribute(self, request: DistributionRequest) -> DistributionResult:
         from . import deploy as _deploy

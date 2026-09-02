@@ -219,7 +219,10 @@ class ExecutionTests(WorkerBase):
 
     def test_no_adapter_fails_cleanly(self):
         oid = self._opp("READY_TO_DEPLOY")
-        t = enqueue(self.d, oid, "DEPLOY")       # no DEPLOY adapter in _reg()
+        # SPAWN_VARIANT classifies SAFE_AUTONOMOUS (Phase 6), so the classifier
+        # gate passes it through; with no adapter registered it must still
+        # fail cleanly and finally.
+        t = enqueue(self.d, oid, "SPAWN_VARIANT")   # no SPAWN_VARIANT adapter in _reg()
         Worker(self.d, registry=_reg(_Ok(("BUILD_PAGE",)))).run()
         q = load_tasks(self.d)
         self.assertEqual(q.get(t.task_id).status, "FAILED_FINAL")
