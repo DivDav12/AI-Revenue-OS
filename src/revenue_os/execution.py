@@ -130,6 +130,7 @@ class ExecutionTask:
     approval_type: str = ""
     idempotency_key: str = ""
     lease_until: str = ""
+    not_before: str = ""           # scheduled: not eligible to run before this ISO time
 
     def __post_init__(self):
         if self.task_type not in TASK_TYPES:
@@ -248,10 +249,12 @@ class TaskQueue:
                       key=lambda t: (-int(t.priority), t.created_at))
 
     # --- dependency resolution ----------------------------------
-    def resolve_dependencies(self) -> dict:
-        """Promote PENDING tasks whose deps all SUCCEEDED to READY; fail
-        PENDING tasks whose deps ended in FAILED_FINAL / CANCELLED.
-        Idempotent - safe to call every tick."""
+    def resolve_dependencies(self, *, now: str | None = None) -> dict:
+        """Promote PENDING tasks whose deps all SUCCEEDED (and whose
+        `not_before` schedule time has passed) to READY; fail PENDING tasks
+        whose deps ended in FAILED_FINAL / CANCELLED. Idempotent - safe to
+        call every tick."""
+        cutoff = _now_dt(now)
         promoted, failed, blocked = [], [], []
         for t in self._by_id.values():
             if t.status != "PENDING":
@@ -272,6 +275,9 @@ class TaskQueue:
                 self._set(t, "FAILED_FINAL")
                 failed.append(t.task_id)
             elif all(s == "SUCCEEDED" for s in dep_states):
+                due = _parse(t.not_before)
+                if due is not None and due > cutoff:
+                    continue                     # scheduled for later - stays PENDING
                 self._set(t, "READY")
                 promoted.append(t.task_id)
         return {"promoted": promoted, "failed": failed, "blocked": blocked}

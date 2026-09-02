@@ -27,6 +27,11 @@ from .delivery_adapters import (
     DeliveryRecipient,
     default_delivery_adapter,
 )
+from .measurement import (
+    MeasurementAdapter,
+    default_measurement_adapter,
+)
+from .measurement import _num
 from .payments import PaymentAdapter, default_payment_adapter, process_payment_event
 from .worker import AdapterContext, AdapterRegistry, AdapterResult, TaskAdapter
 
@@ -292,6 +297,7 @@ class CheckRevenueAdapter(TaskAdapter):
 
         total_after = RevenueLedger.load(ledger_path).total_for(oid)
         first_sale = total_before <= 0.0 and total_after > 0.0
+        cycle = int((ctx.task.input or {}).get("cycle", 0))
 
         return AdapterResult(ok=True, output={
             "provider": poll.provider,
@@ -301,7 +307,60 @@ class CheckRevenueAdapter(TaskAdapter):
             "newly_booked_eur": round(sum(r["amount"] for r in newly_booked), 2),
             "opportunity_total_eur": round(total_after, 2),
             "first_sale": bool(first_sale),
+            # Phase 10: CHECK_REVENUE is also a recurring measurement
+            "kind": "revenue", "cycle": cycle,
+            "metrics": {"revenue_eur": round(total_after, 2),
+                        "payments": len(payments),
+                        "newly_booked_eur": round(
+                            sum(r["amount"] for r in newly_booked), 2)},
         })
+
+
+class _MeasurementCheckAdapter(TaskAdapter):
+    """Shared body for CHECK_TRAFFIC / CHECK_LEADS: poll an analytics
+    provider, coerce the metrics, hand them to the worker. The worker
+    persists the time series, emits MEASUREMENT_RECORDED, and drives the
+    LIVE -> MEASURING -> FIRST_VISITOR / FIRST_LEAD transitions."""
+
+    _kind = ""
+    _keys: tuple[str, ...] = ()
+
+    def __init__(self, adapter: MeasurementAdapter | None = None) -> None:
+        self._adapter = adapter
+
+    def _adapter_for(self) -> MeasurementAdapter:
+        return self._adapter if self._adapter is not None else default_measurement_adapter()
+
+    def run(self, ctx: AdapterContext) -> AdapterResult:
+        live_url = (ctx.opportunity.get("execution") or {}).get("live_url", "")
+        snap = self._adapter_for().measure(
+            kind=self._kind, opportunity_id=ctx.task.opportunity_id,
+            live_url=live_url)
+        if not snap.ok:
+            return AdapterResult(
+                ok=False, retryable=not snap.blocked,
+                error=(f"{self._kind} check BLOCKED: {snap.error}" if snap.blocked
+                       else f"{self._kind} provider error: {snap.error}"),
+                output={"provider": snap.provider, "blocked": snap.blocked})
+        raw = snap.metrics if isinstance(snap.metrics, dict) else {}
+        metrics = {k: _num(raw.get(k)) for k in self._keys}
+        return AdapterResult(ok=True, output={
+            "kind": self._kind, "provider": snap.provider, "metrics": metrics,
+            "cycle": int((ctx.task.input or {}).get("cycle", 0))})
+
+
+class CheckTrafficAdapter(_MeasurementCheckAdapter):
+    task_types = ("CHECK_TRAFFIC",)
+    name = "check-traffic"
+    _kind = "traffic"
+    _keys = ("visitors", "clicks", "impressions")
+
+
+class CheckLeadsAdapter(_MeasurementCheckAdapter):
+    task_types = ("CHECK_LEADS",)
+    name = "check-leads"
+    _kind = "leads"
+    _keys = ("leads", "signups")
 
 
 class DeliverTaskAdapter(TaskAdapter):
@@ -400,6 +459,8 @@ def default_registry() -> AdapterRegistry:
         ("VALIDATE_PRODUCT", "VALIDATE_PAGE"),
         "quality_check", _p_qc, objective="validate"))
     reg.register(DeployTaskAdapter())
+    reg.register(CheckTrafficAdapter())
+    reg.register(CheckLeadsAdapter())
     reg.register(CheckRevenueAdapter())
     reg.register(DeliverTaskAdapter())
     reg.register(AnalyzeAdapter())

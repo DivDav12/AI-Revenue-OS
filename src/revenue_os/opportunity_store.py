@@ -38,6 +38,8 @@ CATEGORIES = (
 STATUSES = ("discovered", "evaluating", "building", "testing", "active",
             "successful", "abandoned")
 
+_MEASURE_SERIES_CAP = 200
+
 _COMP = {"low": 1.0, "medium": 0.6, "high": 0.3, "unknown": 0.5}
 _RISK = {"low": 1.0, "medium": 0.7, "high": 0.35, "unknown": 0.6}
 
@@ -250,6 +252,23 @@ class OpportunityStore:
 
     def is_accepted(self, oid: str) -> bool:
         return bool((self._by_id.get(oid) or {}).get("execution", {}).get("accepted"))
+
+    def record_measurement(self, oid: str, kind: str, metrics: dict, *,
+                           cycle: int = 0) -> dict:
+        """Append one measurement to the opportunity's persistent time series
+        (`execution.measurement_series`, capped) and refresh the rolling
+        `execution.metrics[<kind>]` snapshot."""
+        r = self._by_id[oid]
+        ex = r.setdefault("execution", {})
+        series = ex.setdefault("measurement_series", [])
+        clean = {k: v for k, v in (metrics or {}).items()
+                 if isinstance(v, (int, float, str, bool)) or v is None}
+        series.append({"ts": now_iso(), "kind": str(kind), "cycle": int(cycle),
+                       "metrics": clean})
+        del series[:-_MEASURE_SERIES_CAP]
+        ex.setdefault("metrics", {})[str(kind)] = clean
+        r["updated_at"] = now_iso()
+        return r
 
     def record_delivery(self, oid: str, payment_ref: str, delivery: dict) -> dict:
         """Persist a CONFIRMED delivery keyed by the payment reference under

@@ -45,6 +45,13 @@ from .events import EventLog, load_events
 from .execution import ExecutionTask, TaskQueue, load_tasks
 from .opportunity_store import load_opportunities
 
+
+def _metric_num(v) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
 # ---------------------------------------------------------------------------
 # adapter interface
 # ---------------------------------------------------------------------------
@@ -161,11 +168,16 @@ def cancel_task(data_dir, task_id: str, *, reason: str = "") -> None:
 
 class Worker:
     def __init__(self, data_dir, *, registry: AdapterRegistry | None = None,
-                 name: str = "worker-1", lease_seconds: int = 900) -> None:
+                 name: str = "worker-1", lease_seconds: int = 900,
+                 traction_policy=None) -> None:
         self.data_dir = Path(data_dir)
         self._registry = registry
         self.name = name
         self.lease_seconds = lease_seconds
+        if traction_policy is None:
+            from .measurement import DEFAULT_TRACTION_POLICY
+            traction_policy = DEFAULT_TRACTION_POLICY
+        self.traction_policy = traction_policy
 
     @property
     def registry(self) -> AdapterRegistry:
@@ -188,7 +200,7 @@ class Worker:
                     note="requeued: worker lease expired")
         q.requeue_due(now=now)
 
-        res = self._resolve(q, ev)
+        res = self._resolve(q, ev, now=now)
 
         ready = q.ready()
         if not ready:
@@ -214,7 +226,7 @@ class Worker:
             ev.emit("TASK_SUCCEEDED", task_id=t.task_id,
                     opportunity_id=t.opportunity_id, task_type=t.task_type,
                     actor=self.name, actual_cost=result.actual_cost)
-            self._on_success(t, result, ev, q)
+            self._on_success(t, result, ev, q, now)
         else:
             q.mark_failed(t.task_id, result.error, retryable=result.retryable,
                           now=now)
@@ -230,7 +242,15 @@ class Worker:
                         actor=self.name, error=result.error)
             # a failed task NEVER advances the opportunity
 
-        self._resolve(q, ev)
+        # recurring measurement: re-enqueue the next occurrence of a CHECK_*
+        # task once it reaches a terminal outcome (one live occurrence per
+        # type per opportunity - see _reschedule_measurement).
+        from .measurement import MEASUREMENT_TASK_TYPES
+        if (t.task_type in MEASUREMENT_TASK_TYPES
+                and q.get(t.task_id).status in ("SUCCEEDED", "FAILED_FINAL")):
+            self._reschedule_measurement(q, ev, t, now)
+
+        self._resolve(q, ev, now=now)
         q.save()
         ev.save()
         return {"task_id": t.task_id, "task_type": t.task_type,
@@ -324,7 +344,7 @@ class Worker:
         return _SUCCESS_STATE.get(task.task_type)
 
     def _on_success(self, task: ExecutionTask, result: AdapterResult,
-                    ev: EventLog, q: TaskQueue) -> None:
+                    ev: EventLog, q: TaskQueue, now: str | None = None) -> None:
         store = load_opportunities(self.data_dir)
         rec = store.get(task.opportunity_id)
         if rec is None:
@@ -402,6 +422,10 @@ class Worker:
                     except ostate.IllegalTransition:
                         pass
 
+        # --- Phase 10: recurring measurement -------------------------
+        if self._record_measurement(task, result, ev, store, now):
+            dirty = True
+
         target = self._success_target(task, result)
         if target:
             frm = (store.get(task.opportunity_id) or {}).get("state") or ostate.INITIAL
@@ -423,6 +447,99 @@ class Worker:
         if dirty:
             store.save()
 
+    # --- Phase 10 measurement -------------------------------------
+    def _record_measurement(self, task: ExecutionTask, result: AdapterResult,
+                            ev: EventLog, store, now: str | None) -> bool:
+        """Persist one measurement, emit MEASUREMENT_RECORDED, and drive the
+        measurement-only opportunity transitions. Returns True if the store
+        was mutated. Never regresses a milestone already reached."""
+        from .measurement import (
+            FIRST_LEAD_FROM, FIRST_VISITOR_FROM, MEASURING_FROM,
+            NO_TRACTION_FROM, evaluate_traction)
+
+        out = result.output or {}
+        kind = out.get("kind", "")
+        if kind not in ("traffic", "leads", "revenue"):
+            return False                 # not a real measurement result
+        metrics = out.get("metrics") if isinstance(out.get("metrics"), dict) else {}
+        cycle = int(out.get("cycle", 0))
+        oid = task.opportunity_id
+
+        store.record_measurement(oid, kind, metrics, cycle=cycle)
+        ev.emit("MEASUREMENT_RECORDED", task_id=task.task_id, opportunity_id=oid,
+                task_type=task.task_type, actor=self.name, kind=kind, cycle=cycle,
+                **{k: metrics.get(k) for k in metrics})
+
+        # CHECK_REVENUE contributes the revenue figure to the time series but
+        # drives NO measurement state transition - a sale routes straight to
+        # FIRST_SALE (Phase 11); no sale leaves the state untouched.
+        if kind == "revenue":
+            return True
+
+        def _move(target: str, allowed_from, reason: str) -> None:
+            cur = (store.get(oid) or {}).get("state") or ostate.INITIAL
+            if cur not in allowed_from or not ostate.can_transition(cur, target):
+                return
+            try:
+                tr = store.transition(oid, target, reason=f"{task.task_type}: {reason}",
+                                      source="task", actor=self.name,
+                                      task_id=task.task_id)
+                ev.emit("OPPORTUNITY_TRANSITIONED", task_id=task.task_id,
+                        opportunity_id=oid, task_type=task.task_type,
+                        actor=self.name, **{"from": tr["previous_state"],
+                                            "to": tr["next_state"],
+                                            "reason": tr["reason"]})
+            except ostate.IllegalTransition:
+                pass
+
+        _move("MEASURING", MEASURING_FROM, "measurement started")
+        if kind == "traffic" and _metric_num(metrics.get("visitors")) > 0:
+            _move("FIRST_VISITOR", FIRST_VISITOR_FROM, "first visitor measured")
+        if kind == "leads" and _metric_num(metrics.get("leads")) > 0:
+            _move("FIRST_LEAD", FIRST_LEAD_FROM, "first lead measured")
+
+        verdict = evaluate_traction(store.get(oid) or {}, now=now,
+                                    policy=self.traction_policy)
+        if verdict.no_traction:
+            _move("NO_TRACTION", NO_TRACTION_FROM, verdict.reason)
+        return True
+
+    def _reschedule_measurement(self, q: TaskQueue, ev: EventLog,
+                                task: ExecutionTask, now: str | None) -> None:
+        from datetime import timedelta
+
+        from .execution import _now_dt
+        from .measurement import (
+            KEEP_MEASURING_STATES, MAX_MEASUREMENT_CYCLES,
+            MEASUREMENT_INTERVAL_SECONDS)
+
+        store = load_opportunities(self.data_dir)
+        rec = store.get(task.opportunity_id)
+        if rec is None:
+            return
+        if (rec.get("state") or ostate.INITIAL) not in KEEP_MEASURING_STATES:
+            return                       # NO_TRACTION / ABANDONED / advanced - stop
+        cycle = int((task.input or {}).get("cycle", 0))
+        if cycle >= MAX_MEASUREMENT_CYCLES:
+            return
+        # exactly one live occurrence of this type per opportunity
+        if any(x.task_type == task.task_type and x.task_id != task.task_id
+               and not x.is_terminal
+               for x in q.by_opportunity(task.opportunity_id)):
+            return
+        nxt = cycle + 1
+        due = (_now_dt(now) + timedelta(
+            seconds=MEASUREMENT_INTERVAL_SECONDS)).isoformat()
+        before = {x.task_id for x in q.all()}
+        t = q.create(task.opportunity_id, task.task_type, priority=3,
+                     idempotency_key=(f"measure:{task.opportunity_id}:"
+                                      f"{task.task_type}:{nxt}"),
+                     not_before=due, input={"cycle": nxt})
+        if t.task_id not in before:
+            ev.emit("TASK_CREATED", task_id=t.task_id,
+                    opportunity_id=task.opportunity_id, task_type=task.task_type,
+                    actor=self.name, cycle=nxt, not_before=due, depends_on=[])
+
     def _spawn_deliver(self, check_task: ExecutionTask, payment: dict,
                        ev: EventLog, q: TaskQueue) -> None:
         oid = check_task.opportunity_id
@@ -443,8 +560,8 @@ class Worker:
                     task_type="DELIVER", actor=self.name, depends_on=[],
                     priority=7, payment_ref=pref)
 
-    def _resolve(self, q: TaskQueue, ev: EventLog) -> dict:
-        res = q.resolve_dependencies()
+    def _resolve(self, q: TaskQueue, ev: EventLog, *, now: str | None = None) -> dict:
+        res = q.resolve_dependencies(now=now)
         for tid in res.get("promoted", []):
             t = q.get(tid)
             ev.emit("TASK_READY", task_id=tid, opportunity_id=t.opportunity_id,
@@ -479,6 +596,8 @@ class Worker:
 
 
 def run_worker(data_dir, *, max_ticks: int = 100, name: str = "worker-1",
-               registry: AdapterRegistry | None = None) -> dict:
+               registry: AdapterRegistry | None = None,
+               traction_policy=None, now: str | None = None) -> dict:
     """Drain the ready queue once. Returns a summary of what ran."""
-    return Worker(data_dir, registry=registry, name=name).run(max_ticks=max_ticks)
+    return Worker(data_dir, registry=registry, name=name,
+                  traction_policy=traction_policy).run(max_ticks=max_ticks, now=now)
