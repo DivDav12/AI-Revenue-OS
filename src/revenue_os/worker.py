@@ -170,7 +170,8 @@ def cancel_task(data_dir, task_id: str, *, reason: str = "") -> None:
 class Worker:
     def __init__(self, data_dir, *, registry: AdapterRegistry | None = None,
                  name: str = "worker-1", lease_seconds: int = 900,
-                 traction_policy=None, optimization_policy=None) -> None:
+                 traction_policy=None, optimization_policy=None,
+                 promotion_policy=None) -> None:
         self.data_dir = Path(data_dir)
         self._registry = registry
         self.name = name
@@ -183,6 +184,10 @@ class Worker:
             from .optimization import DEFAULT_OPTIMIZATION_POLICY
             optimization_policy = DEFAULT_OPTIMIZATION_POLICY
         self.optimization_policy = optimization_policy
+        if promotion_policy is None:
+            from .scaling import DEFAULT_PROMOTION_POLICY
+            promotion_policy = DEFAULT_PROMOTION_POLICY
+        self.promotion_policy = promotion_policy
 
     @property
     def registry(self) -> AdapterRegistry:
@@ -232,6 +237,15 @@ class Worker:
                     opportunity_id=t.opportunity_id, task_type=t.task_type,
                     actor=self.name, actual_cost=result.actual_cost)
             self._on_success(t, result, ev, q, now)
+        elif (result.output or {}).get("requires_approval"):
+            # a scaling action that would need a money/identity/legal
+            # approval is NOT executed - the task is blocked on that approval
+            # (Phase 15 money firewall). No approval-gated action runs here.
+            approval = str(result.output["requires_approval"])
+            q.block_for_approval(t.task_id, approval)
+            ev.emit("TASK_BLOCKED", task_id=t.task_id,
+                    opportunity_id=t.opportunity_id, task_type=t.task_type,
+                    actor=self.name, approval_type=approval, reason=result.error)
         else:
             q.mark_failed(t.task_id, result.error, retryable=result.retryable,
                           now=now)
@@ -433,12 +447,19 @@ class Worker:
                 dirty = True
             self._fan_out_distribution(task, ev, q)
 
+        # --- Phase 15: an SCALE task recorded a scaling decision ----
+        if task.task_type == "SCALE" and (result.output or {}).get("success") is True:
+            if self._record_scaling(task, result, ev, store):
+                dirty = True
+
         # --- Phase 10: recurring measurement ------------------------
         if self._record_measurement(task, result, ev, store, now):
             dirty = True
             # a fresh measurement is the only thing that can warrant a new
-            # OPTIMIZE task (Phase 14) - explicit, data-driven decision.
+            # OPTIMIZE task (Phase 14) / SCALE task (Phase 15) - explicit,
+            # data-driven decisions on persisted evidence.
             self._maybe_optimize(task, ev, q, store)
+            self._maybe_promote(task, ev, q, store)
 
         # --- Phase 14: an OPTIMIZE task recorded a variant draft ----
         if task.task_type == "OPTIMIZE" and (result.output or {}).get("success"):
@@ -690,6 +711,68 @@ class Worker:
                 hypothesis=out.get("hypothesis", ""))
         return True
 
+    # --- Phase 15: promotion / scaling -------------------------
+    def _maybe_promote(self, task: ExecutionTask, ev: EventLog, q: TaskQueue,
+                       store) -> None:
+        """Data-driven decision on PERSISTED evidence: does a Phase-14
+        optimization variant have enough traction to be promoted / scaled
+        now? Spawns AT MOST one SCALE task per opportunity at a time; the
+        policy's own scaling-cap + one-per-variant rule bound the total.
+        No money, no external action - see scaling.py."""
+        from .scaling import evaluate_promotion
+
+        oid = task.opportunity_id
+        rec = store.get(oid)
+        if rec is None:
+            return
+        if any(x.task_type == "SCALE" and not x.is_terminal
+               for x in q.by_opportunity(oid)):
+            return
+        decision = evaluate_promotion(rec, policy=self.promotion_policy)
+        if not decision.promote:
+            return
+        vid = decision.variant_id
+        before = {x.task_id for x in q.all()}
+        t = q.create(oid, "SCALE", priority=4,
+                     idempotency_key=f"scale:{oid}:{vid}",
+                     input={"variant_id": vid, "evidence": decision.evidence,
+                            "reason": decision.reason})
+        if t.task_id not in before:
+            ev.emit("PROMOTION_CREATED", task_id=t.task_id, opportunity_id=oid,
+                    task_type="SCALE", actor=self.name, variant_id=vid,
+                    reason=decision.reason, evidence=decision.evidence)
+
+    def _record_scaling(self, task: ExecutionTask, result: AdapterResult,
+                        ev: EventLog, store) -> bool:
+        out = result.output or {}
+        sid = str(out.get("scale_id", ""))
+        if not sid:
+            return False
+        ex = (store.get(task.opportunity_id) or {}).get("execution") or {}
+        if sid in {s.get("scale_id") for s in ex.get("scalings", [])}:
+            return False                 # idempotent: already recorded
+        from .store import now_iso
+        vid = str((task.input or {}).get("variant_id", "")
+                  or out.get("variant_id", ""))
+        actions = out.get("actions", []) if isinstance(out.get("actions"), list) else []
+        store.record_scaling(task.opportunity_id, {
+            "scale_id": sid,
+            "variant_id": vid,
+            "ts": now_iso(),
+            "status": "success",
+            "reason": str((task.input or {}).get("reason", "")),
+            "evidence": dict((task.input or {}).get("evidence") or {}),
+            "provider": out.get("provider", ""),
+            "actions": list(actions),
+            "task_id": task.task_id,
+        })
+        ev.emit("SCALE_COMPLETED", task_id=task.task_id,
+                opportunity_id=task.opportunity_id, task_type="SCALE",
+                actor=self.name, scale_id=sid, variant_id=vid,
+                provider=out.get("provider", ""), actions_count=len(actions),
+                idempotent=bool(out.get("idempotent")))
+        return True
+
     def _spawn_deliver(self, check_task: ExecutionTask, payment: dict,
                        ev: EventLog, q: TaskQueue) -> None:
         oid = check_task.opportunity_id
@@ -748,9 +831,10 @@ class Worker:
 def run_worker(data_dir, *, max_ticks: int = 100, name: str = "worker-1",
                registry: AdapterRegistry | None = None,
                traction_policy=None, optimization_policy=None,
-               now: str | None = None) -> dict:
+               promotion_policy=None, now: str | None = None) -> dict:
     """Drain the ready queue once. Returns a summary of what ran."""
     return Worker(data_dir, registry=registry, name=name,
                   traction_policy=traction_policy,
-                  optimization_policy=optimization_policy).run(
+                  optimization_policy=optimization_policy,
+                  promotion_policy=promotion_policy).run(
         max_ticks=max_ticks, now=now)

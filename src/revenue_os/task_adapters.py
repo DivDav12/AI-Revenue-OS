@@ -44,6 +44,7 @@ from .optimization import (
     default_optimization_adapter,
 )
 from .payments import PaymentAdapter, default_payment_adapter, process_payment_event
+from .scaling import ScalingAdapter, ScalingRequest, default_scaling_adapter
 from .worker import AdapterContext, AdapterRegistry, AdapterResult, TaskAdapter
 
 # ---------------------------------------------------------------------------
@@ -552,6 +553,71 @@ class DeliverTaskAdapter(TaskAdapter):
         return AdapterResult(ok=True, output=out)
 
 
+class ScaleTaskAdapter(TaskAdapter):
+    """Runs one SCALE task: take a Phase-14 optimization variant that the
+    promotion policy judged to have enough evidence, and execute SAFE
+    INTERNAL scaling steps via a ScalingAdapter.
+
+      * short-circuit (idempotent) if this variant already has a confirmed
+        scaling recorded on the opportunity
+      * blocked (no provider) -> non-retryable failure
+      * requires_approval -> non-retryable failure carrying the approval
+        type; the worker blocks the task on that approval, it is NOT executed
+      * success -> ok; the worker records the scaling + SCALE_COMPLETED
+    """
+
+    task_types = ("SCALE",)
+    name = "scale"
+
+    def __init__(self, adapter: ScalingAdapter | None = None) -> None:
+        self._adapter = adapter
+
+    def _adapter_for(self) -> ScalingAdapter:
+        return self._adapter if self._adapter is not None else default_scaling_adapter()
+
+    def run(self, ctx: AdapterContext) -> AdapterResult:
+        inp = ctx.task.input or {}
+        vid = str(inp.get("variant_id", ""))
+        if not vid:
+            return AdapterResult(ok=False, retryable=False,
+                                 error="SCALE task has no variant_id")
+
+        ex = ctx.opportunity.get("execution") or {}
+        prior = next((s for s in ex.get("scalings", [])
+                      if s.get("variant_id") == vid
+                      and s.get("status") == "success"), None)
+        if prior:
+            return AdapterResult(ok=True, output={**prior, "success": True,
+                                                  "idempotent": True})
+
+        variant = next((o for o in ex.get("optimizations", [])
+                        if o.get("variant_id") == vid), None)
+        if variant is None:
+            return AdapterResult(ok=False, retryable=False,
+                                 error=f"optimization variant {vid!r} not found")
+
+        req = ScalingRequest(opportunity_id=ctx.task.opportunity_id,
+                             variant_id=vid, variant=dict(variant),
+                             evidence=dict(inp.get("evidence") or {}),
+                             focus=str(variant.get("focus", "")))
+        result = self._adapter_for().scale(req)
+        out = {**result.to_dict(), "variant_id": vid}
+        if result.requires_approval:
+            return AdapterResult(
+                ok=False, retryable=False, output=out,
+                error=f"scaling requires a {result.requires_approval} approval "
+                      "- not executed")
+        if not result.success:
+            return AdapterResult(
+                ok=False, output=out, retryable=not result.blocked,
+                error=(f"scaling BLOCKED: {result.error}" if result.blocked
+                       else f"scaling failed: {result.error}"))
+        if not result.scale_id:
+            return AdapterResult(ok=False, retryable=False, output=out,
+                                 error="scaling produced no scale_id")
+        return AdapterResult(ok=True, output=out)
+
+
 class OptimizeAdapter(TaskAdapter):
     """Runs one OPTIMIZE task: turn the measurement signal into a SAFE
     INTERNAL variant DRAFT (copy / CTA / pricing hypothesis / variant idea)
@@ -615,4 +681,5 @@ def default_registry() -> AdapterRegistry:
     reg.register(DeliverTaskAdapter())
     reg.register(AnalyzeAdapter())
     reg.register(OptimizeAdapter())
+    reg.register(ScaleTaskAdapter())
     return reg

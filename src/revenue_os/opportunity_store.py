@@ -41,6 +41,7 @@ STATUSES = ("discovered", "evaluating", "building", "testing", "active",
 _MEASURE_SERIES_CAP = 200
 _OPT_CAP = 20
 _DIST_CAP = 20
+_SCALE_CAP = 20
 
 _COMP = {"low": 1.0, "medium": 0.6, "high": 0.3, "unknown": 0.5}
 _RISK = {"low": 1.0, "medium": 0.7, "high": 0.35, "unknown": 0.6}
@@ -269,6 +270,17 @@ class OpportunityStore:
                        "metrics": clean})
         del series[:-_MEASURE_SERIES_CAP]
         ex.setdefault("metrics", {})[str(kind)] = clean
+        r["updated_at"] = now_iso()
+        return r
+
+    def record_scaling(self, oid: str, entry: dict) -> dict:
+        """Persist one CONFIRMED scaling under `execution.scalings` (capped).
+        Keyed for idempotency by scale_id / (variant_id); a re-run finds it
+        and no-ops. Records a decision + safe internal actions only."""
+        r = self._by_id[oid]
+        s = r.setdefault("execution", {}).setdefault("scalings", [])
+        s.append(dict(entry))
+        del s[:-_SCALE_CAP]
         r["updated_at"] = now_iso()
         return r
 
