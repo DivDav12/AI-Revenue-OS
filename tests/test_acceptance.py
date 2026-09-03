@@ -10,9 +10,11 @@ from revenue_os.acceptance import (
     AcceptanceError,
     abandon_opportunity,
     accept_opportunity,
+    deliver_now,
     execution_view,
 )
 from revenue_os.approvals import load_approvals
+from revenue_os.delivery_adapters import FakeDeliveryAdapter
 from revenue_os.events import load_events
 from revenue_os.execution import load_tasks
 from revenue_os.opportunity_store import Opportunity, OpportunityStore, load_opportunities
@@ -187,6 +189,156 @@ class ViewTests(AcceptanceBase):
     def test_execution_view_ignores_untouched_opportunities(self):
         self._opp("SCORED")
         self.assertEqual(execution_view(self.d), [])
+
+
+# ---------------------------------------------------------------------------
+# Phase 11-real P1-7: deliver_now() - human-triggered real delivery
+# ---------------------------------------------------------------------------
+
+class DeliverNowTests(AcceptanceBase):
+    def _live_opp_with_deliver_task(self, *, customer_ref="buyer@example.test",
+                                    payment_ref="paypal:CAP-1", with_product=True,
+                                    include_customer_ref=True, include_payment_ref=True):
+        s = OpportunityStore(self.d / "opportunities.json")
+        oid = s.upsert(Opportunity(title="Cold-email pack", category="saas"))["id"]
+        for st in ("SCORED", "SELECTED", "PLANNING", "BUILDING", "VALIDATING",
+                   "READY_TO_DEPLOY", "DEPLOYING", "LIVE", "MEASURING", "FIRST_SALE"):
+            s.transition(oid, st, reason="setup", source="test")
+        s.record_deployment(oid, {"live_url": "https://x.pages.test/o/index.html",
+                                  "provider": "fake"})
+        s.save()
+
+        if with_product:
+            product_dir = self.d / "deliverables" / oid
+            product_dir.mkdir(parents=True, exist_ok=True)
+            (product_dir / "product.md").write_text(
+                "# Cold-email pack\n\nreal product content", encoding="utf-8")
+
+        inp = {}
+        if include_payment_ref:
+            inp["payment_ref"] = payment_ref
+        if include_customer_ref:
+            inp["customer_ref"] = customer_ref
+        q = load_tasks(self.d)
+        t = q.create(oid, "DELIVER", priority=7,
+                     idempotency_key=f"deliver:{oid}:{payment_ref}", input=inp)
+        q.mark_failed(t.task_id, "no delivery provider is configured", retryable=False)
+        q.save()
+        return oid, t.task_id, payment_ref
+
+    def test_A_successful_delivery_sends_and_reaches_active(self):
+        oid, task_id, pref = self._live_opp_with_deliver_task()
+        fake = FakeDeliveryAdapter()
+        result = deliver_now(self.d, oid, adapter=fake, actor="founder")
+
+        self.assertEqual(result["outcome"], "delivered")
+        self.assertEqual(result["state"], "ACTIVE")
+        self.assertEqual(fake.calls, 1)
+
+        rec = load_opportunities(self.d).get(oid)
+        self.assertEqual(rec["state"], "ACTIVE")
+        self.assertTrue(rec["execution"]["deliveries"][pref]["success"])
+        # the original DELIVER task's own status is deliberately untouched
+        # (terminal statuses cannot be rewritten - execution.py's _LEGAL
+        # table) - it remains an accurate record that the AUTONOMOUS
+        # attempt failed; record_delivery + the state transition are the
+        # authoritative facts that the product really was delivered.
+        self.assertEqual(load_tasks(self.d).get(task_id).status, "FAILED_FINAL")
+        types = [e["type"] for e in load_events(self.d).all()]
+        self.assertIn("DELIVERY_COMPLETE", types)
+        self.assertEqual(
+            len([e for e in load_events(self.d).all()
+                 if e["type"] == "OPPORTUNITY_TRANSITIONED"
+                 and e["data"].get("to") == "ACTIVE"]), 1)
+
+    def test_C_idempotent_second_call_is_a_noop(self):
+        oid, task_id, pref = self._live_opp_with_deliver_task()
+        fake = FakeDeliveryAdapter()
+        deliver_now(self.d, oid, adapter=fake, actor="founder")
+        result2 = deliver_now(self.d, oid, adapter=fake, actor="founder")
+
+        self.assertEqual(result2["outcome"], "already_delivered")
+        self.assertEqual(fake.calls, 1)          # never sent twice
+        self.assertEqual(
+            len([e for e in load_events(self.d).all()
+                 if e["type"] == "DELIVERY_COMPLETE"]), 1)
+
+    def test_unknown_opportunity_fails_closed(self):
+        with self.assertRaises(AcceptanceError):
+            deliver_now(self.d, "opp_" + "a" * 12, adapter=FakeDeliveryAdapter())
+
+    def test_no_deliver_task_fails_closed(self):
+        s = OpportunityStore(self.d / "opportunities.json")
+        oid = s.upsert(Opportunity(title="no-deliver", category="saas"))["id"]
+        s.save()
+        with self.assertRaises(AcceptanceError):
+            deliver_now(self.d, oid, adapter=FakeDeliveryAdapter())
+
+    def test_ambiguous_deliver_tasks_require_payment_ref(self):
+        oid, _, _ = self._live_opp_with_deliver_task(payment_ref="paypal:CAP-1")
+        q = load_tasks(self.d)
+        q.create(oid, "DELIVER", priority=7,
+                 idempotency_key=f"deliver:{oid}:paypal:CAP-2",
+                 input={"payment_ref": "paypal:CAP-2", "customer_ref": "b@example.test"})
+        q.save()
+        with self.assertRaises(AcceptanceError):
+            deliver_now(self.d, oid, adapter=FakeDeliveryAdapter())
+        # disambiguated by payment_ref -> works
+        result = deliver_now(self.d, oid, payment_ref="paypal:CAP-1",
+                             adapter=FakeDeliveryAdapter())
+        self.assertEqual(result["outcome"], "delivered")
+
+    def test_missing_payment_ref_on_the_task_fails_closed(self):
+        oid, _, _ = self._live_opp_with_deliver_task(include_payment_ref=False)
+        with self.assertRaises(AcceptanceError):
+            deliver_now(self.d, oid, adapter=FakeDeliveryAdapter())
+
+    def test_F_missing_customer_ref_fails_closed_no_send(self):
+        oid, task_id, _ = self._live_opp_with_deliver_task(include_customer_ref=False)
+        fake = FakeDeliveryAdapter()
+        with self.assertRaises(AcceptanceError):
+            deliver_now(self.d, oid, adapter=fake)
+        self.assertEqual(fake.calls, 0)
+        self.assertEqual(load_opportunities(self.d).get(oid)["state"], "FIRST_SALE")
+        self.assertEqual(load_tasks(self.d).get(task_id).status, "FAILED_FINAL")
+
+    def test_F_missing_product_file_fails_closed_no_send(self):
+        oid, task_id, _ = self._live_opp_with_deliver_task(with_product=False)
+        fake = FakeDeliveryAdapter()
+        with self.assertRaises(AcceptanceError):
+            deliver_now(self.d, oid, adapter=fake)
+        self.assertEqual(fake.calls, 0)
+        self.assertEqual(load_opportunities(self.d).get(oid)["state"], "FIRST_SALE")
+
+    def test_blocked_adapter_fails_closed_no_state_change(self):
+        oid, task_id, _ = self._live_opp_with_deliver_task()
+        with self.assertRaises(AcceptanceError):
+            deliver_now(self.d, oid, adapter=FakeDeliveryAdapter(blocked=True))
+        self.assertEqual(load_opportunities(self.d).get(oid)["state"], "FIRST_SALE")
+        self.assertEqual(load_tasks(self.d).get(task_id).status, "FAILED_FINAL")
+        self.assertFalse((self.d / "deliverables" / oid / "product.md").read_text(
+            encoding="utf-8") == "")   # the file itself is untouched
+
+    def test_failed_adapter_fails_closed_no_state_change(self):
+        oid, task_id, _ = self._live_opp_with_deliver_task()
+        with self.assertRaises(AcceptanceError):
+            deliver_now(self.d, oid, adapter=FakeDeliveryAdapter(fail=True, error="smtp 550"))
+        self.assertEqual(load_opportunities(self.d).get(oid)["state"], "FIRST_SALE")
+
+    def test_exact_product_bytes_are_what_gets_delivered(self):
+        oid, task_id, _ = self._live_opp_with_deliver_task()
+        captured = {}
+
+        class _Capturing(FakeDeliveryAdapter):
+            def deliver(self, artifact, recipient):
+                captured["files"] = dict(artifact.files)
+                captured["recipient"] = recipient.reference
+                return super().deliver(artifact, recipient)
+
+        deliver_now(self.d, oid, adapter=_Capturing())
+        self.assertEqual(captured["recipient"], "buyer@example.test")
+        self.assertIn("product.md", captured["files"])
+        self.assertIn(b"real product content", captured["files"]["product.md"])
 
 
 class JarvisWiringTests(AcceptanceBase):

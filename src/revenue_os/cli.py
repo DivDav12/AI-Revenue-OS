@@ -46,6 +46,9 @@ Human decision commands (operate on the persistent --data-dir store):
                           (for PayPalPaymentAdapter attribution - Phase 11-real P1-1)
   deploy-opportunity-checkout OPP_ID   publish that checkout.html to GitHub Pages,
                           next to the opportunity's landing page (Phase 11-real P1-4)
+  deliver-product OPP_ID [--payment-ref REF]   email an opportunity's confirmed-sale
+                          product.md to the buyer via real SMTP (needs SMTP_* in .env);
+                          human-triggered only, outside autonomy (Phase 11-real P1-7)
   deploy-checkout NAME    publish checkout.html/intake.html to GitHub Pages (needs
                           GITHUB_TOKEN + GITHUB_PAGES_REPO in .env); stores public_url
   deploy-status NAME      is the checkout page built / deployed?
@@ -1681,6 +1684,21 @@ def _cmd_deploy_opportunity_checkout(args) -> int:
     return 0
 
 
+def _cmd_deliver_product(args) -> int:
+    """Phase 11-real P1-7: email an opportunity's real, already-built
+    product.md to the confirmed buyer via real SMTP. Human-triggered only
+    - a plain function call, never a task, never runs through the worker
+    or inside autonomous_context() (see acceptance.deliver_now)."""
+    from .acceptance import deliver_now
+
+    data_dir = _data_dir(args)
+    result = deliver_now(data_dir, args.opportunity_id,
+                         payment_ref=args.payment_ref or "", actor="operator")
+    print(f"delivery: {result['outcome']} for {args.opportunity_id} "
+          f"(payment {result['payment_ref']!r}) -> opportunity state {result['state']}")
+    return 0
+
+
 def _cmd_deploy_checkout(args) -> int:
     from .deploy import DeployError, deploy_checkout
 
@@ -2579,6 +2597,16 @@ def build_parser() -> argparse.ArgumentParser:
     doc.add_argument("opportunity_id", metavar="OPPORTUNITY_ID",
                      help="the opportunity's canonical id (opp_...)")
     doc.set_defaults(func=_cmd_deploy_opportunity_checkout)
+
+    dlp = sub.add_parser(
+        "deliver-product", parents=[common],
+        help="email an opportunity's confirmed-sale product.md to the buyer "
+             "via real SMTP - human-triggered only, outside autonomy",
+    )
+    dlp.add_argument("opportunity_id", metavar="OPPORTUNITY_ID")
+    dlp.add_argument("--payment-ref", default=None, metavar="REF",
+                     help="disambiguate if more than one DELIVER task exists")
+    dlp.set_defaults(func=_cmd_deliver_product)
 
     dc = sub.add_parser(
         "deploy-checkout", parents=[common],
