@@ -44,6 +44,8 @@ Human decision commands (operate on the persistent --data-dir store):
   build-opportunity-checkout OPP_ID   write a real PayPal checkout page for an
                           Opportunity's frozen PLAN offer; custom_id = the opportunity id
                           (for PayPalPaymentAdapter attribution - Phase 11-real P1-1)
+  deploy-opportunity-checkout OPP_ID   publish that checkout.html to GitHub Pages,
+                          next to the opportunity's landing page (Phase 11-real P1-4)
   deploy-checkout NAME    publish checkout.html/intake.html to GitHub Pages (needs
                           GITHUB_TOKEN + GITHUB_PAGES_REPO in .env); stores public_url
   deploy-status NAME      is the checkout page built / deployed?
@@ -1639,6 +1641,46 @@ def _cmd_build_opportunity_checkout(args) -> int:
     return 0
 
 
+def _cmd_deploy_opportunity_checkout(args) -> int:
+    """Publish an Opportunity's already-built checkout.html to GitHub Pages
+    through the SAME real GitHubPagesDeploymentAdapter the DEPLOY task uses
+    for the landing page - it lands at <slug>/checkout.html, right next to
+    the existing <slug>/index.html. No new deploy logic: same adapter,
+    same DeploymentArtifact/slug model, same fail-closed rules (missing
+    credentials -> blocked, no usable URL -> failure, never a fabricated
+    URL).
+
+    Human-triggered only: this is a plain function call, never a task,
+    never runs through the worker or inside autonomous_context(). Guarded
+    exactly like the candidate path's deploy_checkout() ("activate a paid
+    checkout page") so it refuses outright if anything ever routes it
+    through the autonomous loop. Deploys ONLY checkout.html - never
+    intake.html (Phase 12 delivery is a separate, later phase)."""
+    from .action_class import guard_no_money_in_autonomy
+    from .deployment import DeploymentArtifact, GitHubPagesDeploymentAdapter, slugify
+
+    guard_no_money_in_autonomy("activate a paid opportunity checkout page")
+
+    data_dir = _data_dir(args)
+    oid = str(args.opportunity_id).strip()
+
+    checkout_path = data_dir / "deliverables" / oid / "checkout.html"
+    if not checkout_path.is_file():
+        raise ValueError(
+            f"{checkout_path} not found - run `revenue_os "
+            f"build-opportunity-checkout {oid}` first")
+
+    artifact = DeploymentArtifact(
+        opportunity_id=oid, slug=slugify(oid),
+        files={"checkout.html": checkout_path.read_bytes()})
+    result = GitHubPagesDeploymentAdapter().deploy(artifact)
+    if not result.success:
+        raise ValueError(
+            f"deploy {'blocked' if result.blocked else 'failed'}: {result.error}")
+    print(f"deployed checkout for {oid} -> {result.live_url}")
+    return 0
+
+
 def _cmd_deploy_checkout(args) -> int:
     from .deploy import DeployError, deploy_checkout
 
@@ -2527,6 +2569,16 @@ def build_parser() -> argparse.ArgumentParser:
     boc.add_argument("--out", default=None,
                      help="output path (default: <data-dir>/deliverables/<opp_id>/checkout.html)")
     boc.set_defaults(func=_cmd_build_opportunity_checkout)
+
+    doc = sub.add_parser(
+        "deploy-opportunity-checkout", parents=[common],
+        help="publish an Opportunity's already-built checkout.html to "
+             "GitHub Pages (next to its landing page); intake.html is "
+             "never deployed by this command",
+    )
+    doc.add_argument("opportunity_id", metavar="OPPORTUNITY_ID",
+                     help="the opportunity's canonical id (opp_...)")
+    doc.set_defaults(func=_cmd_deploy_opportunity_checkout)
 
     dc = sub.add_parser(
         "deploy-checkout", parents=[common],
