@@ -8,14 +8,21 @@ Same shape as deployment.py / payments.py. Three implementations:
   * FakeDeliveryAdapter  - deterministic, offline, for tests
   * SmtpDeliveryAdapter  - real: a plain digital-delivery e-mail via the
                            existing delivery.py SMTP transport; fail-closed
-                           when SMTP_* is not configured. Never used in tests.
+                           when SMTP_* is not configured, and refuses to run
+                           inside autonomous_context() (Phase 11-real P1-3).
 
 The existing order-based delivery.py (PDF render + gated send for the
 Customer-Launch-Plan product) is left untouched - SmtpDeliveryAdapter only
 reuses its EmailConfig + _smtp_send transport.
 
 Nothing here moves money, captures a payment, or spends. Delivering a
-digital good the customer already paid for is not an outgoing-money action.
+digital good the customer already paid for is not an outgoing-money action -
+but SENDING it is still e-mail, one of the four leak paths the autonomous
+loop's money/identity firewall refuses (see guard_no_money_in_autonomy on
+SmtpDeliveryAdapter.deliver()). `default_delivery_adapter()` still returns
+NullDeliveryAdapter; SmtpDeliveryAdapter is not wired anywhere by this
+phase - only guarded, so a future explicit wiring cannot accidentally send
+autonomously.
 """
 
 from __future__ import annotations
@@ -147,7 +154,18 @@ class FakeDeliveryAdapter(DeliveryAdapter):
 
 class SmtpDeliveryAdapter(DeliveryAdapter):
     """Real: send a plain digital-delivery e-mail through delivery.py's SMTP
-    transport. Fail-closed when SMTP is not configured. Not used in tests."""
+    transport. Fail-closed when SMTP is not configured.
+
+    Phase 11-real P1-3: `deliver()` is also one of the four documented
+    autonomous "leak paths" (see `action_class.guard_no_money_in_autonomy`,
+    alongside budget.py / paypal.py / delivery.py's own send_delivery /
+    llm_normalize.py) and refuses to run inside `autonomous_context()` -
+    the same guard `delivery.py`'s candidate-flow `send_delivery()` already
+    uses. This is checked BEFORE any SMTP config is resolved or transport
+    touched, so a fully-configured adapter still sends nothing when the
+    worker runs it (as it always does, inside `autonomous_context()`).
+    Outside that context (a human running this directly) it is a no-op and
+    behaviour is unchanged."""
 
     provider = "smtp"
 
@@ -160,7 +178,10 @@ class SmtpDeliveryAdapter(DeliveryAdapter):
         from email.message import EmailMessage
         from email.utils import formatdate, make_msgid
 
+        from .action_class import guard_no_money_in_autonomy
         from .delivery import DeliveryError, EmailConfig, _smtp_send
+
+        guard_no_money_in_autonomy("send customer e-mail")
 
         try:
             cfg = self._config or EmailConfig.from_env(self._environ)

@@ -1,10 +1,11 @@
-"""Delivery adapters + DELIVER task (Phase 12)."""
+"""Delivery adapters + DELIVER task (Phase 12; autonomy guard: P1-3)."""
 
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from revenue_os import action_class as ac
 from revenue_os.delivery_adapters import (
     DeliveryArtifact,
     DeliveryRecipient,
@@ -90,6 +91,57 @@ class AdapterUnitTests(unittest.TestCase):
         self.assertTrue(r.success)
         self.assertEqual(r.reference, "<fake-message-id@test>")
         self.assertEqual(sent["to"], "buyer@example.test")
+
+
+class SmtpAutonomyGuardTests(unittest.TestCase):
+    """Phase 11-real P1-3: SmtpDeliveryAdapter.deliver() is one of the four
+    documented autonomous leak paths and must refuse to run inside
+    autonomous_context() - even when fully configured and otherwise ready
+    to send - and must be a complete no-op outside it."""
+
+    def setUp(self):
+        from revenue_os.delivery import EmailConfig
+
+        self._mailer_calls = []
+
+        def _mailer(cfg, msg):
+            self._mailer_calls.append((cfg, msg))
+            return "<should-never-be-reached@test>"
+
+        self._mailer = _mailer
+        self._cfg = EmailConfig(host="h", user="u", password="p", sender="from@test")
+
+    def tearDown(self):
+        # never leak a stuck autonomy flag between tests
+        ac._local.__dict__.pop("depth", None)
+
+    def _adapter(self) -> SmtpDeliveryAdapter:
+        return SmtpDeliveryAdapter(config=self._cfg, mailer=self._mailer)
+
+    def test_blocked_inside_autonomous_context_before_touching_transport(self):
+        with ac.autonomous_context():
+            with self.assertRaises(ac.ActionBlocked):
+                self._adapter().deliver(_art(), _rcpt())
+        self.assertEqual(self._mailer_calls, [])   # never reached the transport
+
+    def test_unaffected_outside_autonomous_context(self):
+        r = self._adapter().deliver(_art(), _rcpt())
+        self.assertTrue(r.success)
+        self.assertEqual(len(self._mailer_calls), 1)
+
+    def test_missing_config_still_blocks_first_inside_autonomy(self):
+        # the guard fires before EmailConfig.from_env() is even attempted,
+        # so a real ActionBlocked is raised, not a "blocked, no SMTP" result
+        with ac.autonomous_context():
+            with self.assertRaises(ac.ActionBlocked):
+                SmtpDeliveryAdapter(environ={}).deliver(_art(), _rcpt())
+
+    def test_guard_does_not_widen_or_alter_the_firewall(self):
+        # the same firewall check other leak paths use, unmodified
+        with ac.autonomous_context():
+            with self.assertRaises(ac.ActionBlocked):
+                ac.guard_no_money_in_autonomy("send customer e-mail")
+        self.assertIsNone(ac.guard_no_money_in_autonomy("send customer e-mail"))
 
 
 class DeliverTaskThroughWorkerTests(unittest.TestCase):
@@ -276,6 +328,37 @@ class DeliverTaskThroughWorkerTests(unittest.TestCase):
         self.assertEqual(s["state"], "FIRST_SALE")
         self.assertEqual(self._deliver_task().status, "FAILED_FINAL")
         self.assertIn("BLOCKED", self._deliver_task().error)
+
+    def test_fully_configured_smtp_still_sends_nothing_through_the_real_worker(self):
+        """Phase 11-real P1-3: even a fully-configured SmtpDeliveryAdapter
+        that WOULD succeed if called directly (see
+        SmtpAutonomyGuardTests.test_unaffected_outside_autonomous_context)
+        sends nothing when driven by the real Worker, because the worker
+        always executes adapters inside autonomous_context() (worker.py
+        _execute()) and the guard fires before any SMTP transport is
+        touched. This is the concrete proof that wiring this adapter in
+        later cannot accidentally enable an autonomous real send."""
+        from revenue_os.delivery import EmailConfig
+
+        mailer_calls = []
+
+        def _mailer(cfg, msg):
+            mailer_calls.append((cfg, msg))
+            return "<should-never-be-reached@test>"
+
+        cfg = EmailConfig(host="h", user="u", password="p", sender="from@test")
+        real_adapter = SmtpDeliveryAdapter(config=cfg, mailer=_mailer)
+
+        self._pay_and_deliver(real_adapter)
+
+        self.assertEqual(mailer_calls, [])   # the transport was never reached
+        s = load_opportunities(self.d).get(self.oid)
+        self.assertEqual(s["state"], "FIRST_SALE")          # never reaches ACTIVE
+        deliver = self._deliver_task()
+        self.assertEqual(deliver.status, "FAILED_FINAL")
+        self.assertIn("BLOCKED", deliver.error)
+        self.assertNotIn("DELIVERY_COMPLETE",
+                         [e["type"] for e in load_events(self.d).all()])
 
 
 class NoPaymentNoDeliverTests(unittest.TestCase):
