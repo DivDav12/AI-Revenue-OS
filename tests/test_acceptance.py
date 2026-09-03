@@ -342,6 +342,63 @@ class DeliverNowTests(AcceptanceBase):
         self.assertIn("product.md", captured["files"])
         self.assertIn(b"real product content", captured["files"]["product.md"])
 
+    # -- P1-12: explicit --email / customer_ref override -------------------
+    def test_P1_12_override_used_when_task_has_no_customer_ref(self):
+        oid, task_id, _ = self._live_opp_with_deliver_task(include_customer_ref=False)
+        captured = {}
+
+        class _Capturing(FakeDeliveryAdapter):
+            def deliver(self, artifact, recipient):
+                captured["recipient"] = recipient.reference
+                return super().deliver(artifact, recipient)
+
+        result = deliver_now(self.d, oid, adapter=_Capturing(),
+                             customer_ref="manual@example.test", actor="founder")
+        self.assertEqual(result["outcome"], "delivered")
+        self.assertEqual(result["customer_ref_source"], "override")
+        self.assertEqual(result["customer_ref"], "manual@example.test")
+        self.assertEqual(captured["recipient"], "manual@example.test")
+        self.assertEqual(load_opportunities(self.d).get(oid)["state"], "ACTIVE")
+
+    def test_P1_12_captured_payment_ref_wins_over_override(self):
+        oid, _, _ = self._live_opp_with_deliver_task(customer_ref="paid@example.test")
+        captured = {}
+
+        class _Capturing(FakeDeliveryAdapter):
+            def deliver(self, artifact, recipient):
+                captured["recipient"] = recipient.reference
+                return super().deliver(artifact, recipient)
+
+        result = deliver_now(self.d, oid, adapter=_Capturing(),
+                             customer_ref="other@example.test", actor="founder")
+        self.assertEqual(captured["recipient"], "paid@example.test")
+        self.assertEqual(result["customer_ref_source"], "payment")
+
+    def test_P1_12_invalid_override_fails_closed_no_send(self):
+        oid, _, _ = self._live_opp_with_deliver_task(include_customer_ref=False)
+        fake = FakeDeliveryAdapter()
+        with self.assertRaises(AcceptanceError):
+            deliver_now(self.d, oid, adapter=fake, customer_ref="not-an-email")
+        self.assertEqual(fake.calls, 0)
+        self.assertEqual(load_opportunities(self.d).get(oid)["state"], "FIRST_SALE")
+
+    def test_P1_12_override_idempotent_second_call_is_a_noop(self):
+        oid, _, _ = self._live_opp_with_deliver_task(include_customer_ref=False)
+        fake = FakeDeliveryAdapter()
+        deliver_now(self.d, oid, adapter=fake, customer_ref="manual@example.test")
+        result2 = deliver_now(self.d, oid, adapter=fake, customer_ref="manual@example.test")
+        self.assertEqual(result2["outcome"], "already_delivered")
+        self.assertEqual(fake.calls, 1)
+
+    def test_P1_12_cli_rejects_invalid_email_and_delivers_nothing(self):
+        oid, _, _ = self._live_opp_with_deliver_task(include_customer_ref=False)
+        rc = _cli_main(["deliver-product", oid, "--email", "not-an-email",
+                        "--data-dir", str(self.d)])
+        self.assertEqual(rc, 1)
+        rec = load_opportunities(self.d).get(oid)
+        self.assertEqual(rec["state"], "FIRST_SALE")
+        self.assertFalse((rec.get("execution") or {}).get("deliveries"))
+
 
 # ---------------------------------------------------------------------------
 # Phase 11-real P1-9: pending_actions() - read-only visibility

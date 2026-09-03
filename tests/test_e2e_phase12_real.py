@@ -21,7 +21,12 @@ import unittest
 from pathlib import Path
 
 from revenue_os import opportunity_engine
-from revenue_os.acceptance import accept_opportunity, deliver_now, release_task
+from revenue_os.acceptance import (
+    AcceptanceError,
+    accept_opportunity,
+    deliver_now,
+    release_task,
+)
 from revenue_os.delivery import EmailConfig
 from revenue_os.delivery_adapters import SmtpDeliveryAdapter
 from revenue_os.deployment import FakeDeploymentAdapter
@@ -207,6 +212,74 @@ class Phase12RealE2ETests(unittest.TestCase):
         self.assertEqual(deliver_task.status, "FAILED_FINAL")
         self.assertIn("BLOCKED", deliver_task.error)
         ac._local.__dict__.pop("depth", None)   # never leak a stuck context
+
+    def _first_sale_without_buyer_email(self):
+        """DISCOVER -> ... -> FIRST_SALE where the PayPal transaction carried
+        NO payer email, so the auto-spawned DELIVER task has customer_ref=''."""
+        OID = self._discover_accept()
+        Worker(self.d, registry=self._registry(
+            PayPalPaymentAdapter(self.d, client=_StubPayPalClient([]))
+        ), name="e2e-p112").run(max_ticks=100)
+
+        price, currency = self._frozen_offer(OID)
+        stub = _StubPayPalClient([_txn(OID, price, currency)])   # no payer_email
+        reg = self._registry(PayPalPaymentAdapter(self.d, client=stub))
+        self._release_deploy(OID)
+        Worker(self.d, registry=reg, name="e2e-p112").run(max_ticks=100)
+
+        self.assertEqual(load_opportunities(self.d).get(OID)["state"], "FIRST_SALE")
+        deliver_task = next(t for t in load_tasks(self.d).all()
+                            if t.task_type == "DELIVER")
+        self.assertEqual(deliver_task.input.get("customer_ref", ""), "")
+        return OID, price
+
+    def _mailer_capture(self, sent: dict):
+        def _mailer(cfg, msg):
+            sent["to"] = msg["To"]
+            sent["attachments"] = [p.get_filename() for p in msg.iter_attachments()]
+            return "<p112-e2e@test>"
+        return _mailer
+
+    def test_D_no_paypal_email_delivers_with_explicit_override_reaches_active(self):
+        OID, price = self._first_sale_without_buyer_email()
+        sent: dict = {}
+        cfg = EmailConfig(host="h", user="u", password="p", sender="shop@example.test")
+        real_adapter = SmtpDeliveryAdapter(config=cfg, mailer=self._mailer_capture(sent))
+
+        result = deliver_now(self.d, OID, adapter=real_adapter,
+                             customer_ref="manual-buyer@example.test", actor="founder")
+
+        self.assertEqual(result["outcome"], "delivered")
+        self.assertEqual(result["customer_ref_source"], "override")
+        self.assertEqual(sent["to"], "manual-buyer@example.test")
+        self.assertIn("product.md", sent["attachments"])
+        self.assertEqual(load_opportunities(self.d).get(OID)["state"], "ACTIVE")
+
+        # idempotent: a second call does not re-send
+        result2 = deliver_now(self.d, OID, adapter=real_adapter,
+                              customer_ref="manual-buyer@example.test", actor="founder")
+        self.assertEqual(result2["outcome"], "already_delivered")
+        self.assertEqual(
+            len([e for e in load_events(self.d).all()
+                 if e["type"] == "DELIVERY_COMPLETE"]), 1)
+
+    def test_E_no_paypal_email_and_no_override_fails_closed_stays_first_sale(self):
+        OID, _ = self._first_sale_without_buyer_email()
+        calls = []
+
+        def _mailer(cfg, msg):
+            calls.append(msg)
+            return "<never@test>"
+
+        cfg = EmailConfig(host="h", user="u", password="p", sender="shop@example.test")
+        real_adapter = SmtpDeliveryAdapter(config=cfg, mailer=_mailer)
+
+        with self.assertRaises(AcceptanceError):
+            deliver_now(self.d, OID, adapter=real_adapter, actor="founder")
+        self.assertEqual(calls, [])
+        self.assertEqual(load_opportunities(self.d).get(OID)["state"], "FIRST_SALE")
+        rec = load_opportunities(self.d).get(OID)
+        self.assertFalse((rec.get("execution") or {}).get("deliveries"))
 
     def test_this_file_takes_no_shortcuts(self):
         src = Path(__file__).read_text(encoding="utf-8")

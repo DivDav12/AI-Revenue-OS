@@ -154,7 +154,12 @@ class PayPalClient:
             body = self._get("/v1/reporting/transactions", {
                 "start_date": start.strftime("%Y-%m-%dT%H:%M:%S-0000"),
                 "end_date": end.strftime("%Y-%m-%dT%H:%M:%S-0000"),
-                "fields": "transaction_info",
+                # transaction_info drives attribution/amount/currency/status;
+                # payer_info carries the buyer's email address (used by
+                # paypal_payments.PayPalPaymentAdapter to populate
+                # PaymentEvent.customer_ref for a real product delivery).
+                # Both are read-only fields of this same authenticated GET.
+                "fields": "transaction_info,payer_info",
                 "page_size": 100, "page": page,
             })
             out.extend(body.get("transaction_details", []) or [])

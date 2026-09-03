@@ -46,9 +46,11 @@ Human decision commands (operate on the persistent --data-dir store):
                           (for PayPalPaymentAdapter attribution - Phase 11-real P1-1)
   deploy-opportunity-checkout OPP_ID   publish that checkout.html to GitHub Pages,
                           next to the opportunity's landing page (Phase 11-real P1-4)
-  deliver-product OPP_ID [--payment-ref REF]   email an opportunity's confirmed-sale
-                          product.md to the buyer via real SMTP (needs SMTP_* in .env);
-                          human-triggered only, outside autonomy (Phase 11-real P1-7)
+  deliver-product OPP_ID [--payment-ref REF] [--email ADDR]   email an opportunity's
+                          confirmed-sale product.md to the buyer via real SMTP (needs
+                          SMTP_* in .env); --email supplies the buyer address only when
+                          PayPal provided none; human-triggered only, outside autonomy
+                          (Phase 11-real P1-7 / P1-12)
   check-payments [--max-ticks N]   drain CHECK_REVENUE with a REAL PayPalPaymentAdapter
                           (needs PAYPAL_CLIENT_ID + PAYPAL_ENV=live); the autonomous
                           `worker` command is unaffected (Phase 11-real P1-8)
@@ -1795,17 +1797,30 @@ def _cmd_deploy_opportunity_checkout(args) -> int:
 
 
 def _cmd_deliver_product(args) -> int:
-    """Phase 11-real P1-7: email an opportunity's real, already-built
+    """Phase 11-real P1-7 / P1-12: email an opportunity's real, already-built
     product.md to the confirmed buyer via real SMTP. Human-triggered only
     - a plain function call, never a task, never runs through the worker
-    or inside autonomous_context() (see acceptance.deliver_now)."""
+    or inside autonomous_context() (see acceptance.deliver_now).
+
+    `--email` (P1-12): an explicit buyer address for the case where PayPal
+    returned no payer email. It is used ONLY when the DELIVER task itself
+    has no customer reference (a reference captured from the payment always
+    wins). Format-validated here and again in deliver_now()."""
     from .acceptance import deliver_now
+    from .deliverable import _clean_email
 
     data_dir = _data_dir(args)
+    email = (args.email or "").strip()
+    if email and not _clean_email(email):
+        raise ValueError(f"--email {email!r} is not a valid email address")
     result = deliver_now(data_dir, args.opportunity_id,
-                         payment_ref=args.payment_ref or "", actor="operator")
+                         payment_ref=args.payment_ref or "",
+                         customer_ref=email, actor="operator")
+    src = result.get("customer_ref_source", "")
     print(f"delivery: {result['outcome']} for {args.opportunity_id} "
-          f"(payment {result['payment_ref']!r}) -> opportunity state {result['state']}")
+          f"(payment {result['payment_ref']!r}"
+          + (f", buyer from {src}" if src else "")
+          + f") -> opportunity state {result['state']}")
     return 0
 
 
@@ -2759,6 +2774,9 @@ def build_parser() -> argparse.ArgumentParser:
     dlp.add_argument("opportunity_id", metavar="OPPORTUNITY_ID")
     dlp.add_argument("--payment-ref", default=None, metavar="REF",
                      help="disambiguate if more than one DELIVER task exists")
+    dlp.add_argument("--email", default=None, metavar="ADDR",
+                     help="explicit buyer email, used only when PayPal provided "
+                          "none (the DELIVER task has no captured customer_ref)")
     dlp.set_defaults(func=_cmd_deliver_product)
 
     dc = sub.add_parser(

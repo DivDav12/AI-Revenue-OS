@@ -29,6 +29,7 @@ Nothing here fakes their completion.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from . import opportunity_state as ostate
@@ -62,6 +63,17 @@ CHAIN: tuple[tuple[str, tuple[str, ...], str], ...] = (
 )
 
 _PRE_SELECT = ("DISCOVERED", "RESEARCHING", "SCORED")
+
+#: a plausible email shape - the same check used elsewhere in the repo
+#: (deliverable._clean_email / paypal_payments._EMAIL_RE) for a value that
+#: will be persisted and used as a delivery recipient.
+_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+
+
+def _valid_email(value: str) -> str:
+    """`value` if it is a plausible email address, else ""."""
+    v = str(value or "").strip()
+    return v if _EMAIL_RE.match(v) else ""
 
 
 class AcceptanceError(ValueError):
@@ -235,9 +247,19 @@ def release_task(data_dir, task_id: str, *, actor: str = "human") -> dict:
 
 
 def deliver_now(data_dir, opportunity_id: str, *, payment_ref: str = "",
-                adapter=None, actor: str = "human") -> dict:
+                customer_ref: str = "", adapter=None, actor: str = "human") -> dict:
     """Human action: complete a real product delivery for a confirmed sale,
     OUTSIDE the autonomous worker loop (Phase 11-real P1-7).
+
+    `customer_ref` (Phase 11-real P1-12): an OPTIONAL explicit buyer email
+    the human supplies (`deliver-product --email`) for the real-world case
+    where PayPal's Transaction Search returned no `payer_info.email_address`
+    (the buyer's privacy settings), so the auto-spawned DELIVER task has an
+    empty `customer_ref`. It is used ONLY when the DELIVER task itself
+    carries no customer reference - a reference already captured from the
+    payment always wins and is never overridden. The value is validated as
+    a plausible email and the delivery still fails closed if neither source
+    yields one.
 
     The worker's own DELIVER task is `SAFE_AUTONOMOUS` (task_class.py) on
     the assumption that the delivery-adapter layer is fail-closed - true
@@ -300,11 +322,22 @@ def deliver_now(data_dir, opportunity_id: str, *, payment_ref: str = "",
                 "outcome": "already_delivered", "delivery": prior,
                 "state": rec.get("state")}
 
-    customer_ref = str((task.input or {}).get("customer_ref", ""))
-    if not customer_ref:
+    # An override that is present but not a plausible email is a hard error
+    # (a human typo must not silently fall through to "no reference").
+    override_ref = ""
+    if customer_ref:
+        override_ref = _valid_email(customer_ref)
+        if not override_ref:
+            raise AcceptanceError(
+                f"customer_ref {customer_ref!r} is not a valid email address")
+
+    task_customer_ref = str((task.input or {}).get("customer_ref", ""))
+    recipient_ref = task_customer_ref or override_ref
+    if not recipient_ref:
         raise AcceptanceError(
-            f"DELIVER task {task.task_id} has no customer reference - "
-            "cannot deliver")
+            f"DELIVER task {task.task_id} has no customer reference "
+            "(the PayPal payment carried no buyer email) - pass an explicit "
+            "--email / customer_ref to deliver")
 
     product_path = data_dir / "deliverables" / opportunity_id / "product.md"
     if not product_path.is_file():
@@ -317,7 +350,7 @@ def deliver_now(data_dir, opportunity_id: str, *, payment_ref: str = "",
         body=(f"Thank you for your purchase of \"{rec.get('title', '')}\".\n\n"
               "Your product is attached (product.md).\n"),
         files={"product.md": product_path.read_bytes()})
-    recipient = DeliveryRecipient(reference=customer_ref, opportunity_id=opportunity_id)
+    recipient = DeliveryRecipient(reference=recipient_ref, opportunity_id=opportunity_id)
 
     delivery_adapter = adapter if adapter is not None else SmtpDeliveryAdapter()
     result = delivery_adapter.deliver(artifact, recipient)
@@ -360,6 +393,8 @@ def deliver_now(data_dir, opportunity_id: str, *, payment_ref: str = "",
 
     return {"opportunity_id": opportunity_id, "payment_ref": pref,
             "outcome": "delivered", "delivery": out,
+            "customer_ref": recipient_ref,
+            "customer_ref_source": "payment" if task_customer_ref else "override",
             "state": store.get(opportunity_id).get("state")}
 
 

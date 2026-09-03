@@ -500,6 +500,21 @@ class AutonomousContextTests(_Base):
             with self.assertRaises(ac.ActionBlocked):
                 ac.guard_no_money_in_autonomy("spend money")
 
+    # -- P1-12: the Transaction Search request must ask for payer_info -----
+    def test_B_request_asks_for_transaction_info_and_payer_info(self):
+        oid = self._opportunity()
+        adapter, http = self._real_adapter(
+            [_txn(custom_id=oid, payer_email="buyer@example.test")])
+        r = adapter.poll(opportunity_id=oid)
+        self.assertEqual(len(r.events), 1)
+        self.assertEqual(r.events[0].customer_ref, "buyer@example.test")
+        search_urls = [u for _, u in http.calls if "reporting/transactions" in u]
+        self.assertTrue(search_urls)
+        for u in search_urls:
+            # urlencoded "transaction_info,payer_info"
+            self.assertIn("payer_info", u)
+            self.assertIn("transaction_info", u)
+
 
 # ---------------------------------------------------------------------------
 # T. write prohibition

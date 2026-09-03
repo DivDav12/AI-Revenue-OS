@@ -78,15 +78,21 @@ _EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
 def _payer_email(detail: dict) -> str:
     """The buyer's email address, if PayPal's Transaction Search response
-    for this transaction carries one (`payer_info.email_address` - a
-    field already returned by the same authorized, read-only
-    `search_transactions()` call; this makes no additional PayPal call).
+    for this transaction carries one.
 
-    Never trusted verbatim: a missing or not-plausibly-an-email value
-    becomes "" rather than being passed through. A missing/invalid email
-    never rejects the payment - it only means a later DELIVER task will
-    have no reference to deliver against (it already fails closed on
-    that, unchanged)."""
+    Real Transaction Search shape: each element of `transaction_details`
+    carries `transaction_info` AND (because `paypal.search_transactions`
+    now requests `fields=transaction_info,payer_info`) a sibling
+    `payer_info` object whose `email_address` is the payer's PayPal
+    address. This is a read-only field of the same authorized GET - it
+    makes no additional PayPal call and needs no new allow-listed
+    operation.
+
+    Never trusted verbatim: a missing, non-dict, or not-plausibly-an-email
+    value becomes "" rather than being passed through. A missing/invalid
+    email never rejects the payment - the transaction is still attributed
+    and booked; it only means a later DELIVER has no buyer reference and a
+    human must supply one (`deliver-product --email`, P1-12)."""
     payer = detail.get("payer_info")
     if not isinstance(payer, dict):
         return ""
