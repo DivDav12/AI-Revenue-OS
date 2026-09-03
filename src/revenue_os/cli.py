@@ -49,6 +49,9 @@ Human decision commands (operate on the persistent --data-dir store):
   deliver-product OPP_ID [--payment-ref REF]   email an opportunity's confirmed-sale
                           product.md to the buyer via real SMTP (needs SMTP_* in .env);
                           human-triggered only, outside autonomy (Phase 11-real P1-7)
+  check-payments [--max-ticks N]   drain CHECK_REVENUE with a REAL PayPalPaymentAdapter
+                          (needs PAYPAL_CLIENT_ID + PAYPAL_ENV=live); the autonomous
+                          `worker` command is unaffected (Phase 11-real P1-8)
   deploy-checkout NAME    publish checkout.html/intake.html to GitHub Pages (needs
                           GITHUB_TOKEN + GITHUB_PAGES_REPO in .env); stores public_url
   deploy-status NAME      is the checkout page built / deployed?
@@ -1359,6 +1362,42 @@ def _cmd_worker(args) -> int:
     return 0
 
 
+def _cmd_check_payments(args) -> int:
+    """Phase 11-real P1-8: drain the ready ExecutionTask queue once with a
+    REAL `paypal_payments.PayPalPaymentAdapter` wired into CHECK_REVENUE -
+    explicit, human-triggered, requires real PAYPAL_CLIENT_ID and
+    PAYPAL_ENV=live (fail-closed otherwise, no silent fallback).
+
+    Does NOT change `default_payment_adapter()` or `default_registry()` -
+    `revenue_os worker` (the autonomous path) keeps using
+    `NullPaymentAdapter` exactly as before. This command builds its own
+    registry, overriding only the CHECK_REVENUE entry, and reuses the
+    real Worker/TaskQueue unchanged: same dependency resolution, same
+    P0-2 read-only PayPal guard (the adapter opens its own
+    `paypal_read_context()`), same custom_id/amount/currency attribution,
+    same idempotency, same state/event transitions as every other task
+    type. No PayPal write operation is ever possible here."""
+    from . import worker as _worker
+    from .paypal_payments import PayPalPaymentAdapter
+    from .task_adapters import CheckRevenueAdapter, default_registry
+
+    data_dir = _data_dir(args)
+    client_id = os.environ.get("PAYPAL_CLIENT_ID", "").strip()
+    paypal_env = os.environ.get("PAYPAL_ENV", "sandbox").strip().lower()
+    if not client_id or paypal_env != "live":
+        raise ValueError(
+            "PayPal is not live-configured (need PAYPAL_CLIENT_ID and "
+            "PAYPAL_ENV=live) - refusing to check payments without a real, "
+            "live configuration")
+
+    reg = default_registry()
+    reg.register(CheckRevenueAdapter(PayPalPaymentAdapter(data_dir)))
+    out = _worker.run_worker(data_dir, max_ticks=max(1, int(args.max_ticks)),
+                             registry=reg)
+    print(json.dumps(out, indent=2))
+    return 0
+
+
 def _cmd_autonomy(args) -> int:
     """The autonomous revenue loop. €0, no LLM, no money, no external send."""
     from . import autonomy
@@ -2445,6 +2484,16 @@ def build_parser() -> argparse.ArgumentParser:
     wk.add_argument("--max-ticks", type=int, default=100,
                     help="upper bound on tasks processed in this drain")
     wk.set_defaults(func=_cmd_worker)
+
+    cp = sub.add_parser(
+        "check-payments", parents=[common],
+        help="drain CHECK_REVENUE with a REAL PayPalPaymentAdapter (needs "
+             "PAYPAL_CLIENT_ID + PAYPAL_ENV=live); does not change the "
+             "autonomous worker's default (still NullPaymentAdapter)",
+    )
+    cp.add_argument("--max-ticks", type=int, default=100,
+                    help="upper bound on tasks processed in this drain")
+    cp.set_defaults(func=_cmd_check_payments)
 
     cand = sub.add_parser("candidate", parents=[common], help="show one candidate")
     cand.add_argument("name")
