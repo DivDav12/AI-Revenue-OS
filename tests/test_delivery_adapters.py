@@ -360,6 +360,61 @@ class DeliverTaskThroughWorkerTests(unittest.TestCase):
         self.assertNotIn("DELIVERY_COMPLETE",
                          [e["type"] for e in load_events(self.d).all()])
 
+    # --- Phase 11-real P1-6: product.md attachment ----------------------
+
+    def test_E_existing_product_file_is_attached_and_found_by_opportunity_id(self):
+        product_dir = self.d / "deliverables" / self.oid
+        product_dir.mkdir(parents=True, exist_ok=True)
+        (product_dir / "product.md").write_text(
+            "# 5-email SaaS onboarding sequence\n\nreal content", encoding="utf-8")
+
+        captured: dict = {}
+
+        class _Capturing(FakeDeliveryAdapter):
+            def deliver(self, artifact, recipient):
+                captured["files"] = dict(artifact.files)
+                captured["body"] = artifact.body
+                return super().deliver(artifact, recipient)
+
+        self._pay_and_deliver(_Capturing())
+
+        self.assertIn("product.md", captured["files"])
+        self.assertIn(b"5-email SaaS onboarding sequence", captured["files"]["product.md"])
+        self.assertIn("attached", captured["body"])
+        self.assertEqual(load_opportunities(self.d).get(self.oid)["state"], "ACTIVE")
+
+    def test_no_product_file_still_delivers_exactly_as_before(self):
+        """No regression: an opportunity with no product.md (e.g. accepted
+        before P1-6, or a hand-built test fixture) still delivers - files
+        stays empty, nothing fails closed because of its absence."""
+        captured: dict = {}
+
+        class _Capturing(FakeDeliveryAdapter):
+            def deliver(self, artifact, recipient):
+                captured["files"] = dict(artifact.files)
+                return super().deliver(artifact, recipient)
+
+        self._pay_and_deliver(_Capturing())
+
+        self.assertEqual(captured["files"], {})
+        self.assertEqual(load_opportunities(self.d).get(self.oid)["state"], "ACTIVE")
+
+    def test_product_file_from_a_different_opportunity_never_leaks_in(self):
+        other_dir = self.d / "deliverables" / "opp_ffffffffffff"
+        other_dir.mkdir(parents=True, exist_ok=True)
+        (other_dir / "product.md").write_text("someone else's product", encoding="utf-8")
+
+        captured: dict = {}
+
+        class _Capturing(FakeDeliveryAdapter):
+            def deliver(self, artifact, recipient):
+                captured["files"] = dict(artifact.files)
+                return super().deliver(artifact, recipient)
+
+        self._pay_and_deliver(_Capturing())
+
+        self.assertEqual(captured["files"], {})   # this opp has no product.md of its own
+
 
 class NoPaymentNoDeliverTests(unittest.TestCase):
     def setUp(self):

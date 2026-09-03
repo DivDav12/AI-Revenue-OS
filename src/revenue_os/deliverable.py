@@ -553,6 +553,64 @@ def render_readme(candidate: dict, plan: dict, files: list[str]) -> str:
     )
 
 
+def render_product_deliverable_md(opportunity: dict, offer: dict) -> str:
+    """Phase 11-real P1-6: the actual digital product an Opportunity sells -
+    a deterministic, post-purchase reference document, NOT marketing copy
+    and NOT the checkout page (those are `render_landing_html` /
+    `render_checkout_html`).
+
+    Built ONLY from the opportunity's own frozen PLAN offer (`what_is_sold`
+    / `positioning` / `includes` / `disclaimer` / `delivery`) plus the
+    opportunity's own fields - no LLM, no web search, no fabricated facts.
+    `includes` (the "what you get" promise) is turned into an actual
+    numbered how-to-use guide instead of being left as a sales-page bullet
+    list, so the buyer receives real structural guidance, not a restated
+    pitch.
+
+    Raises ValueError if the offer has no `what_is_sold` - fails closed
+    rather than emit a placeholder product with nothing to show for it.
+    """
+    what = str(offer.get("what_is_sold") or "").strip()
+    if not what:
+        raise ValueError("offer has no what_is_sold - nothing to build a product from")
+
+    oid = str(opportunity.get("id") or "").strip()
+    audience = str(opportunity.get("target_customer") or "you").strip()
+    required_work = str(opportunity.get("required_work") or what).strip()
+    positioning = str(offer.get("positioning") or "").strip()
+    disclaimer = str(offer.get("disclaimer") or "").strip()
+    delivery = str(offer.get("delivery") or "digital").strip()
+    includes = [str(i).strip() for i in (offer.get("includes") or []) if str(i).strip()]
+    if not includes:
+        includes = [required_work]
+
+    lines: list[str] = [f"# {what}", ""]
+    lines.append(f"Prepared for: {audience}")
+    lines.append(f"Delivered as: {delivery}")
+    if oid:
+        lines.append(f"Order reference: {oid}")
+    lines += ["", "---", "", "## What's included", ""]
+    for i, item in enumerate(includes, 1):
+        lines.append(f"{i}. **{item}**")
+        lines.append(f"   Work through this on your own {required_work.lower()} "
+                     "before moving to the next item - it is a structured "
+                     "starting point, not a finished result.")
+    lines += ["", "## How to use this deliverable", "",
+             "1. Read every included item above once, in order, before changing anything.",
+             f"2. Adapt each item to your own situation as {audience.lower()} - "
+             "nothing here is pre-filled with your specific details.",
+             "3. Revisit \"Getting the most value\" below if you get stuck on where to start."]
+    if positioning:
+        lines += ["", "## Getting the most value", "", positioning]
+    if disclaimer:
+        lines += ["", "## What this is not", "", disclaimer]
+    lines += ["", "---",
+             f"Generated deterministically from the purchased offer"
+             + (f" (opportunity {oid})" if oid else "") + ".",
+             "No AI-generated claims, no fabricated data, no guaranteed results."]
+    return "\n".join(lines) + "\n"
+
+
 class DeliverablePackagerAgent(Agent):
     role = "content_creator"
     objective = "Assemble a publishable landing page from the offer and copy."

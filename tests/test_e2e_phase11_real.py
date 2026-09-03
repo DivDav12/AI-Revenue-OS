@@ -22,13 +22,19 @@ from pathlib import Path
 
 from revenue_os import opportunity_engine
 from revenue_os.acceptance import accept_opportunity, release_task
+from revenue_os.delivery_adapters import FakeDeliveryAdapter
 from revenue_os.deployment import FakeDeploymentAdapter
 from revenue_os.events import load_events
 from revenue_os.execution import load_tasks
 from revenue_os.opportunity_store import load_opportunities
 from revenue_os.paypal_payments import PayPalPaymentAdapter
 from revenue_os.revenue import RevenueLedger
-from revenue_os.task_adapters import CheckRevenueAdapter, DeployTaskAdapter, default_registry
+from revenue_os.task_adapters import (
+    CheckRevenueAdapter,
+    DeliverTaskAdapter,
+    DeployTaskAdapter,
+    default_registry,
+)
 from revenue_os.worker import Worker
 
 
@@ -341,6 +347,47 @@ class Phase11RealE2ETests(unittest.TestCase):
         led = RevenueLedger.load(self.d / "revenue.json")
         self.assertEqual(led.total_for(OID), round(float(page_amount), 2))
         self.assertEqual(len(led.entries()), 1)
+
+    def test_first_sale_delivers_the_real_product_generated_by_build_product(self):
+        """Phase 11-real P1-6: closes the full loop through the real
+        architecture - DISCOVER -> ACCEPT -> PLAN -> BUILD_PRODUCT (writes
+        a real product.md) -> ... -> DEPLOY -> a real PayPal-attributed
+        FIRST_SALE (via the real, unmodified PayPalPaymentAdapter) ->
+        DELIVER attaches the SAME product.md BUILD_PRODUCT wrote, found
+        purely by opportunity id - no manual step, no task-output replay."""
+        OID = self._discover_accept()
+        Worker(self.d, registry=self._registry(
+            PayPalPaymentAdapter(self.d, client=_StubPayPalClient([]))
+        ), name="e2e-real").run(max_ticks=100)   # PLAN -> BUILD_PRODUCT -> ... -> VALIDATE
+
+        product_path = self.d / "deliverables" / OID / "product.md"
+        self.assertTrue(product_path.is_file(),
+                        "BUILD_PRODUCT should have written a real product file")
+        # read as bytes, matching exactly how DeliverTaskAdapter reads this
+        # file (read_bytes) - avoids a spurious mismatch from read_text()'s
+        # universal-newline translation on Windows.
+        product_content = product_path.read_bytes().decode("utf-8")
+        self.assertIn(OID, product_content)
+
+        price, currency = self._frozen_offer(OID)
+        stub = _StubPayPalClient([_txn(OID, price, currency,
+                                       payer_email="buyer@example.test")])
+        reg = self._registry(PayPalPaymentAdapter(self.d, client=stub))
+        captured: dict = {}
+
+        class _Capturing(FakeDeliveryAdapter):
+            def deliver(self, artifact, recipient):
+                captured["files"] = dict(artifact.files)
+                return super().deliver(artifact, recipient)
+
+        reg.register(DeliverTaskAdapter(_Capturing()))
+        self._release_deploy(OID)
+        Worker(self.d, registry=reg, name="e2e-real").run(max_ticks=100)
+
+        self.assertEqual(load_opportunities(self.d).get(OID)["state"], "ACTIVE")
+        self.assertIn("product.md", captured["files"])
+        self.assertEqual(captured["files"]["product.md"].decode("utf-8"),
+                         product_content)
 
     def test_this_file_takes_no_shortcuts(self):
         src = Path(__file__).read_text(encoding="utf-8")

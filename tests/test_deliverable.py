@@ -6,6 +6,7 @@ from pathlib import Path
 from revenue_os.deliverable import (
     DeliverablePackagerAgent,
     render_landing_html,
+    render_product_deliverable_md,
     render_readme,
 )
 from revenue_os.messages import Task
@@ -76,6 +77,67 @@ class RenderTests(unittest.TestCase):
         self.assertIn("25 waitlist signups within 2 weeks", r)
         self.assertIn("Do NOT record before you have a number", r)
         self.assertIn("captures nothing", r)
+
+
+# ---------------------------------------------------------------------------
+# Phase 11-real P1-6: the real, sellable product deliverable
+# ---------------------------------------------------------------------------
+
+_OPP = {"id": "opp_0123456789ab", "title": "Onboarding email pack",
+       "target_customer": "SaaS founders",
+       "required_work": "a 5-email onboarding sequence"}
+_PRODUCT_OFFER = {
+    "what_is_sold": "5-email SaaS onboarding sequence",
+    "price": 29.9, "currency": "EUR", "delivery": "digital",
+    "positioning": "Written for founders who onboard users with no team.",
+    "includes": ["The 5-email sequence, ready to adapt",
+                 "A short how-to-use guide"],
+    "disclaimer": "A specific deliverable - not guaranteed signups or revenue.",
+}
+
+
+class ProductDeliverableTests(unittest.TestCase):
+    def test_real_content_derived_from_offer(self):
+        md = render_product_deliverable_md(_OPP, _PRODUCT_OFFER)
+        self.assertIn("5-email SaaS onboarding sequence", md)
+        self.assertIn("SaaS founders", md)
+        self.assertIn("opp_0123456789ab", md)
+        self.assertIn("The 5-email sequence, ready to adapt", md)
+        self.assertIn("A short how-to-use guide", md)
+        self.assertIn("How to use this deliverable", md)
+        self.assertIn("not guaranteed signups", md)
+        self.assertIn("No AI-generated claims, no fabricated data", md)
+
+    def test_includes_become_a_numbered_how_to_guide_not_a_bullet_pitch(self):
+        md = render_product_deliverable_md(_OPP, _PRODUCT_OFFER)
+        self.assertIn("1. **The 5-email sequence, ready to adapt**", md)
+        self.assertIn("2. **A short how-to-use guide**", md)
+        # meaningfully different in purpose from the sales-page/checkout copy
+        self.assertNotIn("Join the waitlist", md)
+        self.assertNotIn("paypal", md.lower())
+        self.assertNotIn("<html", md.lower())   # a document, not a web page
+
+    def test_missing_what_is_sold_fails_closed(self):
+        with self.assertRaises(ValueError):
+            render_product_deliverable_md(_OPP, {**_PRODUCT_OFFER, "what_is_sold": ""})
+        with self.assertRaises(ValueError):
+            render_product_deliverable_md(_OPP, {})
+
+    def test_missing_includes_falls_back_to_required_work_not_empty(self):
+        offer = {**_PRODUCT_OFFER, "includes": []}
+        md = render_product_deliverable_md(_OPP, offer)
+        self.assertIn("a 5-email onboarding sequence", md)
+
+    def test_deterministic_reproducible(self):
+        a = render_product_deliverable_md(_OPP, _PRODUCT_OFFER)
+        b = render_product_deliverable_md(_OPP, _PRODUCT_OFFER)
+        self.assertEqual(a, b)
+
+    def test_no_secret_or_credential_shaped_content(self):
+        md = render_product_deliverable_md(_OPP, _PRODUCT_OFFER)
+        for marker in ("CLIENT_SECRET", "PAYPAL_CLIENT_SECRET", "GITHUB_TOKEN",
+                      "SMTP_PASSWORD", "api_key", "Bearer "):
+            self.assertNotIn(marker, md)
 
 
 class AgentTests(unittest.TestCase):

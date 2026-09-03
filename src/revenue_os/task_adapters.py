@@ -179,6 +179,67 @@ class PlanAdapter(TaskAdapter):
         })
 
 
+class BuildProductTaskAdapter(TaskAdapter):
+    """Phase 11-real P1-6: generates and persists the actual digital
+    product this opportunity sells.
+
+    BUILD_PRODUCT depends only on PLAN (acceptance.CHAIN), so the frozen
+    offer is available directly as a dependency output - no independent
+    PLAN-task lookup needed, unlike DEPLOY (which does not depend on PLAN
+    directly). Deterministic, EUR 0, no LLM, no external data: reuses
+    `deliverable.render_product_deliverable_md()`.
+
+    Writes deliverables/<opportunity_id>/product.md so DeliverTaskAdapter
+    can later find it by opportunity id alone. Fails closed (non-
+    retryable) when the frozen offer is missing required fields - never
+    emits a placeholder product.
+    """
+
+    task_types = ("BUILD_PRODUCT",)
+    name = "build-product"
+
+    def run(self, ctx: AdapterContext) -> AdapterResult:
+        import hashlib
+
+        from .deliverable import render_product_deliverable_md
+
+        offer = (ctx.dep_outputs.get("PLAN") or {}).get("offer")
+        if not isinstance(offer, dict):
+            return AdapterResult(
+                ok=False, retryable=False,
+                error="no frozen PLAN offer - nothing to build a product from")
+
+        try:
+            price = float(offer.get("price"))
+        except (TypeError, ValueError):
+            price = 0.0
+        currency = str(offer.get("currency") or "").strip()
+        what = str(offer.get("what_is_sold") or "").strip()
+        if not what or price <= 0 or not currency:
+            return AdapterResult(
+                ok=False, retryable=False,
+                error="frozen offer is missing what_is_sold/price/currency - "
+                      "refusing to build a placeholder product")
+
+        oid = ctx.opportunity.get("id") or ctx.task.opportunity_id
+        try:
+            content = render_product_deliverable_md(ctx.opportunity, offer)
+        except ValueError as exc:
+            return AdapterResult(ok=False, retryable=False,
+                                 error=f"could not build the product: {exc}")
+
+        out_dir = ctx.data_dir / "deliverables" / oid
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / "product.md"
+        out_path.write_text(content, encoding="utf-8")
+
+        return AdapterResult(ok=True, output={
+            "deliverable_path": f"deliverables/{oid}/product.md",
+            "product_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            "what_is_sold": what,
+        })
+
+
 class AnalyzeAdapter(TaskAdapter):
     task_types = ("ANALYZE",)
     name = "analyze"
@@ -571,6 +632,15 @@ class DeliverTaskAdapter(TaskAdapter):
       * short-circuit (idempotent) if this payment_ref already has a
         confirmed delivery recorded on the opportunity (survives restart)
       * call the DeliveryAdapter and translate the DeliveryResult
+
+    Phase 11-real P1-6: if BUILD_PRODUCT wrote a real product file
+    (deliverables/<opportunity_id>/product.md), it is attached here as
+    `DeliveryArtifact.files["product.md"]` - found purely by opportunity
+    id, no task-output lookup needed. This is strictly additive: its
+    absence is NOT a failure (an opportunity accepted before this phase,
+    or a hand-built test fixture, still delivers exactly as before - just
+    without an attachment). The default delivery adapter and automatic
+    sending are unchanged by this phase.
     """
 
     task_types = ("DELIVER",)
@@ -604,12 +674,17 @@ class DeliverTaskAdapter(TaskAdapter):
 
         opp = ctx.opportunity
         live_url = (opp.get("execution") or {}).get("live_url", "")
+        product_path = ctx.data_dir / "deliverables" / ctx.task.opportunity_id / "product.md"
+        files = {}
+        if product_path.is_file():
+            files["product.md"] = product_path.read_bytes()
+        body = f"Thank you for your purchase of \"{opp.get('title', '')}\".\n\n"
+        body += ("Your product is attached (product.md).\n" if files
+                 else (f"Access it here: {live_url}\n" if live_url else ""))
         artifact = DeliveryArtifact(
             opportunity_id=ctx.task.opportunity_id,
             product_name=opp.get("title", "your purchase"),
-            live_url=live_url,
-            body=(f"Thank you for your purchase of \"{opp.get('title', '')}\".\n\n"
-                  + (f"Access it here: {live_url}\n" if live_url else "")))
+            live_url=live_url, body=body, files=files)
         recipient = DeliveryRecipient(reference=customer_ref,
                                       opportunity_id=ctx.task.opportunity_id)
 
@@ -738,8 +813,9 @@ def default_registry() -> AdapterRegistry:
     reg.register(AgentTaskAdapter(("RESEARCH",), "research_distribution",
                                   _p_distribution, objective="research"))
     reg.register(PlanAdapter())
+    reg.register(BuildProductTaskAdapter())
     reg.register(AgentTaskAdapter(
-        ("BUILD_PRODUCT", "BUILD_PAGE", "CREATE_CONTENT"),
+        ("BUILD_PAGE", "CREATE_CONTENT"),
         "package_deliverable", _p_package, objective="build"))
     reg.register(AgentTaskAdapter(
         ("VALIDATE_PRODUCT", "VALIDATE_PAGE"),
