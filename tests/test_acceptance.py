@@ -12,8 +12,10 @@ from revenue_os.acceptance import (
     accept_opportunity,
     deliver_now,
     execution_view,
+    pending_actions,
 )
 from revenue_os.approvals import load_approvals
+from revenue_os.cli import main as _cli_main
 from revenue_os.delivery_adapters import FakeDeliveryAdapter
 from revenue_os.events import load_events
 from revenue_os.execution import load_tasks
@@ -339,6 +341,157 @@ class DeliverNowTests(AcceptanceBase):
         self.assertEqual(captured["recipient"], "buyer@example.test")
         self.assertIn("product.md", captured["files"])
         self.assertIn(b"real product content", captured["files"]["product.md"])
+
+
+# ---------------------------------------------------------------------------
+# Phase 11-real P1-9: pending_actions() - read-only visibility
+# ---------------------------------------------------------------------------
+
+class PendingActionsTests(AcceptanceBase):
+    def _bare_opp(self, *, title="pack"):
+        s = OpportunityStore.load(self.d / "opportunities.json")
+        oid = s.upsert(Opportunity(title=title, category="saas"))["id"]
+        s.save()
+        return oid
+
+    def test_no_pending_actions_on_an_untouched_store(self):
+        self._bare_opp()
+        self.assertEqual(pending_actions(self.d), [])
+
+    def test_blocked_approval_is_reported_with_the_blocker_and_no_cli_command(self):
+        oid = self._bare_opp()
+        q = load_tasks(self.d)
+        t = q.create(oid, "DEPLOY", requires_approval=True, approval_type="money")
+        q.resolve_dependencies()
+        q.save()
+        self.assertEqual(load_tasks(self.d).get(t.task_id).status, "BLOCKED_APPROVAL")
+
+        rows = pending_actions(self.d)
+        release = [r for r in rows if r["action"] == "RELEASE_TASK"]
+        self.assertEqual(len(release), 1)
+        self.assertEqual(release[0]["opportunity_id"], oid)
+        self.assertIn("money", release[0]["detail"])
+        self.assertIn(t.task_id, release[0]["command"])
+        self.assertIn("JARVIS", release[0]["command"])
+
+    def test_check_payments_reported_when_latest_check_revenue_was_blocked(self):
+        oid = self._bare_opp()
+        q = load_tasks(self.d)
+        t = q.create(oid, "CHECK_REVENUE")
+        q.resolve_dependencies()
+        q.claim(t.task_id, "test")
+        q.mark_failed(
+            t.task_id,
+            "payment check BLOCKED: no opportunity payment provider is "
+            "configured - the payment path is ready, a real provider "
+            "adapter must be wired", retryable=False)
+        q.save()
+        self.assertEqual(load_tasks(self.d).get(t.task_id).status, "FAILED_FINAL")
+
+        rows = pending_actions(self.d)
+        cp = [r for r in rows if r["action"] == "CHECK_PAYMENTS"]
+        self.assertEqual(len(cp), 1)
+        self.assertEqual(cp[0]["opportunity_id"], oid)
+        self.assertEqual(cp[0]["command"], "revenue_os check-payments")
+        self.assertIn(t.task_id, cp[0]["detail"])
+
+    def test_check_payments_not_reported_once_the_latest_run_succeeded(self):
+        # a later, real check-payments run that found nothing (SUCCEEDED,
+        # first_sale False) must stop the recommendation - not time-based,
+        # purely the latest recorded task outcome
+        oid = self._bare_opp()
+        q = load_tasks(self.d)
+        t1 = q.create(oid, "CHECK_REVENUE", idempotency_key="cr1")
+        q.resolve_dependencies()
+        q.claim(t1.task_id, "test")
+        q.mark_failed(t1.task_id, "payment check BLOCKED: no provider", retryable=False)
+        t2 = q.create(oid, "CHECK_REVENUE", idempotency_key="cr2")
+        q.resolve_dependencies()
+        q.claim(t2.task_id, "test")
+        q.mark_succeeded(t2.task_id, {"first_sale": False, "payments": []})
+        q.save()
+
+        rows = pending_actions(self.d)
+        self.assertEqual([r for r in rows if r["action"] == "CHECK_PAYMENTS"], [])
+
+    def test_deliver_product_reported_when_no_successful_delivery_is_recorded(self):
+        oid = self._bare_opp()
+        q = load_tasks(self.d)
+        t = q.create(oid, "DELIVER", input={"payment_ref": "paypal:CAP-1",
+                                            "customer_ref": "buyer@example.test"})
+        q.resolve_dependencies()
+        q.claim(t.task_id, "test")
+        q.mark_failed(t.task_id, "delivery BLOCKED: no delivery provider is "
+                                 "configured", retryable=False)
+        q.save()
+
+        rows = pending_actions(self.d)
+        dp = [r for r in rows if r["action"] == "DELIVER_PRODUCT"]
+        self.assertEqual(len(dp), 1)
+        self.assertEqual(dp[0]["opportunity_id"], oid)
+        self.assertEqual(dp[0]["command"],
+                         f"revenue_os deliver-product {oid} --payment-ref paypal:CAP-1")
+
+    def test_deliver_product_not_reported_once_delivery_is_recorded_successful(self):
+        oid = self._bare_opp()
+        q = load_tasks(self.d)
+        t = q.create(oid, "DELIVER", input={"payment_ref": "paypal:CAP-1",
+                                            "customer_ref": "buyer@example.test"})
+        q.resolve_dependencies()
+        q.claim(t.task_id, "test")
+        q.mark_succeeded(t.task_id, {"success": True})
+        q.save()
+
+        s = OpportunityStore.load(self.d / "opportunities.json")
+        s.record_delivery(oid, "paypal:CAP-1", {"success": True})
+        s.save()
+
+        rows = pending_actions(self.d)
+        self.assertEqual([r for r in rows if r["action"] == "DELIVER_PRODUCT"], [])
+
+    def test_deliver_product_without_a_payment_ref_is_never_reported(self):
+        oid = self._bare_opp()
+        q = load_tasks(self.d)
+        q.create(oid, "DELIVER", input={"customer_ref": "buyer@example.test"})
+        q.resolve_dependencies()
+        q.save()
+        rows = pending_actions(self.d)
+        self.assertEqual([r for r in rows if r["action"] == "DELIVER_PRODUCT"], [])
+
+    def test_multiple_actions_across_multiple_opportunities_all_reported(self):
+        oid_a = self._bare_opp(title="pack-a")
+        oid_b = self._bare_opp(title="pack-b")
+        q = load_tasks(self.d)
+        q.create(oid_a, "DEPLOY", requires_approval=True, approval_type="money")
+        q.create(oid_b, "DELIVER", input={"payment_ref": "paypal:CAP-9",
+                                          "customer_ref": "x@example.test"})
+        q.resolve_dependencies()
+        t2 = next(t for t in q.by_opportunity(oid_b) if t.task_type == "DELIVER")
+        q.claim(t2.task_id, "test")
+        q.mark_failed(t2.task_id, "delivery BLOCKED: no delivery provider is "
+                                  "configured", retryable=False)
+        q.save()
+
+        rows = pending_actions(self.d)
+        actions_by_opp = {(r["opportunity_id"], r["action"]) for r in rows}
+        self.assertIn((oid_a, "RELEASE_TASK"), actions_by_opp)
+        self.assertIn((oid_b, "DELIVER_PRODUCT"), actions_by_opp)
+        self.assertNotIn((oid_a, "DELIVER_PRODUCT"), actions_by_opp)
+        self.assertNotIn((oid_b, "RELEASE_TASK"), actions_by_opp)
+
+    def test_cli_pending_actions_prints_no_pending_actions_when_empty(self):
+        self._bare_opp()
+        rc = _cli_main(["pending-actions", "--data-dir", str(self.d)])
+        self.assertEqual(rc, 0)
+
+    def test_cli_pending_actions_prints_the_command_line(self):
+        oid = self._bare_opp()
+        q = load_tasks(self.d)
+        q.create(oid, "DEPLOY", requires_approval=True, approval_type="money")
+        q.resolve_dependencies()
+        q.save()
+        rc = _cli_main(["pending-actions", "--data-dir", str(self.d)])
+        self.assertEqual(rc, 0)
 
 
 class JarvisWiringTests(AcceptanceBase):

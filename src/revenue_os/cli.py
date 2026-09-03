@@ -52,6 +52,9 @@ Human decision commands (operate on the persistent --data-dir store):
   check-payments [--max-ticks N]   drain CHECK_REVENUE with a REAL PayPalPaymentAdapter
                           (needs PAYPAL_CLIENT_ID + PAYPAL_ENV=live); the autonomous
                           `worker` command is unaffected (Phase 11-real P1-8)
+  pending-actions         read-only: list concrete pending human actions (release-task /
+                          check-payments / deliver-product) with the exact next command
+                          (Phase 11-real P1-9)
   deploy-checkout NAME    publish checkout.html/intake.html to GitHub Pages (needs
                           GITHUB_TOKEN + GITHUB_PAGES_REPO in .env); stores public_url
   deploy-status NAME      is the checkout page built / deployed?
@@ -1398,6 +1401,27 @@ def _cmd_check_payments(args) -> int:
     return 0
 
 
+def _cmd_pending_actions(args) -> int:
+    """Phase 11-real P1-9: read-only visibility - every concrete,
+    already-recorded pending human action for accepted opportunities
+    (RELEASE_TASK / CHECK_PAYMENTS / DELIVER_PRODUCT), each with the
+    exact existing CLI command to act on it. Never executes, schedules,
+    or recommends anything speculative/time-based; never calls an
+    adapter (see acceptance.pending_actions)."""
+    from .acceptance import pending_actions
+
+    data_dir = _data_dir(args)
+    rows = pending_actions(data_dir)
+    if not rows:
+        print("no pending actions")
+        return 0
+    for r in rows:
+        print(f"[{r['action']}] {r['opportunity_id']}  {r['title'][:60]!r}")
+        print(f"    {r['detail']}")
+        print(f"    -> {r['command']}")
+    return 0
+
+
 def _cmd_autonomy(args) -> int:
     """The autonomous revenue loop. €0, no LLM, no money, no external send."""
     from . import autonomy
@@ -2494,6 +2518,14 @@ def build_parser() -> argparse.ArgumentParser:
     cp.add_argument("--max-ticks", type=int, default=100,
                     help="upper bound on tasks processed in this drain")
     cp.set_defaults(func=_cmd_check_payments)
+
+    pa = sub.add_parser(
+        "pending-actions", parents=[common],
+        help="read-only: list concrete pending human actions for accepted "
+             "opportunities (release-task / check-payments / deliver-product) "
+             "with the exact command to run next",
+    )
+    pa.set_defaults(func=_cmd_pending_actions)
 
     cand = sub.add_parser("candidate", parents=[common], help="show one candidate")
     cand.add_argument("name")

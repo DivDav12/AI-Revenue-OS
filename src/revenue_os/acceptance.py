@@ -409,3 +409,99 @@ def execution_view(data_dir, opportunity_id: str | None = None) -> list[dict]:
                        "error": t.error} for t in tasks],
         })
     return rows
+
+
+#: the exact, unmodified error prefix CheckRevenueAdapter emits when its
+#: configured PaymentAdapter reports blocked=True (NullPaymentAdapter's
+#: permanent state - task_adapters.py). Matching on this is the only
+#: signal used for the CHECK_PAYMENTS recommendation below: an already-
+#: recorded fact (a real task genuinely failed this way), never a guess
+#: about elapsed time.
+_CHECK_REVENUE_BLOCKED_MARKER = "payment check BLOCKED"
+
+
+def pending_actions(data_dir) -> list[dict]:
+    """Phase 11-real P1-9: read-only visibility over concrete, already-
+    recorded Execution/Opportunity state that names an existing CLI
+    action a human could take next. Never executes, schedules, or
+    guesses anything - every row is derived from a fact already
+    persisted by the real architecture:
+
+      RELEASE_TASK    - `execution_view()`'s own `blocked_task_id`
+                        (a task is literally sitting BLOCKED_APPROVAL)
+      CHECK_PAYMENTS  - this opportunity's MOST RECENT CHECK_REVENUE
+                        task is FAILED_FINAL with the exact error
+                        CheckRevenueAdapter emits when its (Null, by
+                        default) PaymentAdapter reports blocked - never
+                        "it has been a while since the last check"
+      DELIVER_PRODUCT - a DELIVER task exists whose payment_ref has no
+                        recorded successful delivery in
+                        `execution.deliveries` (the SAME field
+                        `deliver_now()`'s own idempotency check reads -
+                        no new delivery logic)
+
+    Reuses `execution_view()` as the primary per-opportunity source;
+    reads the TaskQueue/OpportunityStore directly only for the per-task
+    `input` / `execution.deliveries` fields `execution_view()` does not
+    expose. Performs no mutation and calls no adapter.
+    """
+    data_dir = Path(data_dir)
+    rows = execution_view(data_dir)
+    q = load_tasks(data_dir)
+    store = load_opportunities(data_dir)
+
+    out: list[dict] = []
+    for row in rows:
+        oid = row["opportunity_id"]
+        title = row.get("title", "")
+
+        if row.get("blocked_task_id"):
+            out.append({
+                "action": "RELEASE_TASK",
+                "opportunity_id": oid,
+                "title": title,
+                "detail": row.get("blocker", "a task needs approval"),
+                "command": ("no CLI release command exists yet - release task "
+                           f"{row['blocked_task_id']!r} via the JARVIS "
+                           "dashboard's approval button"),
+            })
+
+        opp_tasks = q.by_opportunity(oid)
+
+        check_revenue_tasks = sorted(
+            (t for t in opp_tasks if t.task_type == "CHECK_REVENUE"),
+            key=lambda t: t.created_at)
+        if check_revenue_tasks:
+            latest = check_revenue_tasks[-1]
+            if (latest.status == "FAILED_FINAL"
+                    and _CHECK_REVENUE_BLOCKED_MARKER in (latest.error or "")):
+                out.append({
+                    "action": "CHECK_PAYMENTS",
+                    "opportunity_id": oid,
+                    "title": title,
+                    "detail": f"CHECK_REVENUE task {latest.task_id} is "
+                              f"FAILED_FINAL: {latest.error}",
+                    "command": "revenue_os check-payments",
+                })
+
+        rec = store.get(oid) or {}
+        deliveries = (rec.get("execution") or {}).get("deliveries") or {}
+        for t in opp_tasks:
+            if t.task_type != "DELIVER":
+                continue
+            pref = str((t.input or {}).get("payment_ref", ""))
+            if not pref:
+                continue
+            prior = deliveries.get(pref)
+            if prior and prior.get("success"):
+                continue        # already delivered - nothing pending
+            out.append({
+                "action": "DELIVER_PRODUCT",
+                "opportunity_id": oid,
+                "title": title,
+                "detail": f"DELIVER task {t.task_id} ({t.status}) for payment "
+                          f"{pref!r} has no recorded successful delivery",
+                "command": f"revenue_os deliver-product {oid} --payment-ref {pref}",
+            })
+
+    return out
