@@ -14,6 +14,7 @@ The test never sets a status, never calls the state machine / ledger
 directly, never bypasses the worker / queue / approval gate.
 """
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -40,8 +41,19 @@ class Phase12E2ETests(unittest.TestCase):
     def setUp(self):
         self._d = tempfile.TemporaryDirectory()
         self.d = Path(self._d.name)
+        # Phase 11-real P1-5: DEPLOY now builds a real checkout and requires
+        # a real, live PayPal configuration - a fake-but-valid one here.
+        self._old_env = {k: os.environ.get(k) for k in
+                         ("PAYPAL_CLIENT_ID", "PAYPAL_ENV")}
+        os.environ["PAYPAL_CLIENT_ID"] = "test-client-id"
+        os.environ["PAYPAL_ENV"] = "live"
 
     def tearDown(self):
+        for k, v in self._old_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
         self._d.cleanup()
 
     def _registry(self, payment_adapter, delivery):

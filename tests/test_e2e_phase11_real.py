@@ -14,6 +14,8 @@ Phase 11-real still ends at FIRST_SALE (Phase 12 delivery is unaffected
 and untouched by this phase).
 """
 
+import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -28,6 +30,21 @@ from revenue_os.paypal_payments import PayPalPaymentAdapter
 from revenue_os.revenue import RevenueLedger
 from revenue_os.task_adapters import CheckRevenueAdapter, DeployTaskAdapter, default_registry
 from revenue_os.worker import Worker
+
+
+class _CapturingDeploy(FakeDeploymentAdapter):
+    """Same fake external boundary as everywhere else in this file - just
+    also remembers the exact files it was asked to publish, so a test can
+    inspect the ACTUAL generated page rather than recomputing an expected
+    value independently."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.last_files: dict = {}
+
+    def deploy(self, artifact):
+        self.last_files = dict(artifact.files)
+        return super().deploy(artifact)
 
 
 class _StubPayPalClient:
@@ -63,8 +80,19 @@ class Phase11RealE2ETests(unittest.TestCase):
     def setUp(self):
         self._d = tempfile.TemporaryDirectory()
         self.d = Path(self._d.name)
+        # Phase 11-real P1-5: DEPLOY now builds a real checkout and requires
+        # a real, live PayPal configuration - a fake-but-valid one here.
+        self._old_env = {k: os.environ.get(k) for k in
+                         ("PAYPAL_CLIENT_ID", "PAYPAL_ENV")}
+        os.environ["PAYPAL_CLIENT_ID"] = "test-client-id"
+        os.environ["PAYPAL_ENV"] = "live"
 
     def tearDown(self):
+        for k, v in self._old_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
         self._d.cleanup()
 
     def _registry(self, payment_adapter, *, deploy=None):
@@ -254,6 +282,65 @@ class Phase11RealE2ETests(unittest.TestCase):
         self.assertIn(deliver.status, ("FAILED_RETRYABLE", "FAILED_FINAL"))
         self.assertNotIn("no customer reference", deliver.error)
         self.assertIn("delivery BLOCKED", deliver.error)
+
+    def test_deploy_produces_a_payable_page_attributable_without_any_manual_checkout_step(self):
+        """Phase 11-real P1-5: DISCOVER -> ACCEPT -> PLAN -> BUILD -> VALIDATE
+        -> DEPLOY, through the real architecture, with NO
+        build-opportunity-checkout / deploy-opportunity-checkout CLI step
+        anywhere. DEPLOY itself must publish a real, payable checkout page
+        (Option A - it IS index.html), and a synthetic PayPal transaction
+        matching EXACTLY what that real page contains must be attributable
+        by the real, unmodified PayPalPaymentAdapter, reaching FIRST_SALE."""
+        OID = self._discover_accept()
+        capturing_deploy = _CapturingDeploy(base_url="https://e2e-real.pages.test")
+        reg = self._registry(PayPalPaymentAdapter(self.d, client=_StubPayPalClient([])),
+                             deploy=capturing_deploy)
+
+        Worker(self.d, registry=reg, name="e2e-real").run(max_ticks=100)   # -> VALIDATE
+        self.assertNotEqual(load_opportunities(self.d).get(OID)["state"], "LIVE")
+
+        self._release_deploy(OID)
+        Worker(self.d, registry=reg, name="e2e-real").run(max_ticks=100)   # DEPLOY -> LIVE
+
+        s = load_opportunities(self.d).get(OID)
+        self.assertEqual(s["state"], "LIVE")
+        live_url = s["execution"]["live_url"]
+        self.assertTrue(live_url.startswith("https://e2e-real.pages.test/"))
+
+        # the ACTUAL published page - not independently recomputed
+        self.assertEqual(set(capturing_deploy.last_files), {"index.html"})
+        published_html = capturing_deploy.last_files["index.html"]
+        self.assertIn("paypal.com/sdk/js", published_html)   # a real checkout, not the old placeholder
+        self.assertNotIn("disabled>", published_html)         # no inert waitlist button
+
+        m = re.search(
+            r"actions\.order\.create\(\{.*?amount:\s*\{\s*value:\s*\"([\d.]+)\","
+            r"\s*currency_code:\s*\"([A-Z]{3})\"\s*\},\s*custom_id:\s*\"([^\"]+)\"",
+            published_html, re.S)
+        self.assertIsNotNone(m, "no PayPal order.create payload found on the deployed page")
+        page_amount, page_currency, page_custom_id = m.groups()
+        self.assertEqual(page_custom_id, OID)
+        self.assertRegex(page_custom_id, r"^opp_[0-9a-f]{12}$")
+
+        frozen_price, frozen_currency = self._frozen_offer(OID)
+        self.assertEqual(round(float(page_amount), 2), round(float(frozen_price), 2))
+        self.assertEqual(page_currency, frozen_currency)
+
+        # now attribute a synthetic PayPal transaction matching EXACTLY the
+        # deployed page's own payload - through the real, unmodified adapter
+        stub = _StubPayPalClient([_txn(page_custom_id, float(page_amount), page_currency)])
+        reg2 = self._registry(PayPalPaymentAdapter(self.d, client=stub),
+                              deploy=capturing_deploy)
+        q = load_tasks(self.d)
+        q.create(OID, "CHECK_REVENUE", priority=9)
+        q.resolve_dependencies()
+        q.save()
+        Worker(self.d, registry=reg2, name="e2e-real").run(max_ticks=50)
+
+        self.assertEqual(load_opportunities(self.d).get(OID)["state"], "FIRST_SALE")
+        led = RevenueLedger.load(self.d / "revenue.json")
+        self.assertEqual(led.total_for(OID), round(float(page_amount), 2))
+        self.assertEqual(len(led.entries()), 1)
 
     def test_this_file_takes_no_shortcuts(self):
         src = Path(__file__).read_text(encoding="utf-8")

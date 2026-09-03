@@ -3,8 +3,11 @@
 Each adapter maps one or more `task_type`s to real work done by an
 EXISTING deterministic roster agent (via `agent_runner.run_agent`, EUR 0,
 no network) or a small pure synthesis step. Nothing here spends money,
-calls a paid API, touches PayPal, takes an identity/legal action, or posts
-anywhere.
+calls a paid PayPal API, takes an identity/legal action, or posts
+anywhere. DeployTaskAdapter (Phase 11-real P1-5) embeds the public,
+non-secret PayPal client-id into the published page's own PayPal JS SDK
+script tag - the same, already-established pattern as the P1-1/P1-4
+checkout CLI commands - it never calls PayPal itself.
 
 task_types WITHOUT an adapter here (DEPLOY, DISTRIBUTE, CHECK_TRAFFIC/
 LEADS/REVENUE, DELIVER, SPAWN_VARIANT, SCALE) are handled in later phases;
@@ -316,11 +319,25 @@ class DistributeTaskAdapter(TaskAdapter):
 
 
 class DeployTaskAdapter(TaskAdapter):
-    """Publishes the built landing page through a DeploymentAdapter.
+    """Publishes the opportunity's real, payable checkout page through a
+    DeploymentAdapter.
+
+    Phase 11-real P1-5 (Option A): the page this task publishes as
+    `index.html` IS the real PayPal checkout - the same, already-tested
+    `deliverable.render_checkout_html()` P1-1 uses, with `custom_id` set
+    to the exact opportunity id, priced from the opportunity's own
+    successful PLAN task's frozen offer (never recomputed). There is no
+    separate checkout URL and no non-payable placeholder fallback: a real,
+    live PayPal configuration (PAYPAL_CLIENT_ID + PAYPAL_ENV=live) is
+    required, or this fails closed (retryable - a config problem, not a
+    permanent one).
 
     The DEPLOY task is born BLOCKED_APPROVAL (acceptance.CHAIN) - a human
-    must release it before the worker ever calls this. Here we only:
-      * refuse if there is no built page to deploy
+    must release it before the worker ever calls this; that gate is
+    unchanged. Here we only:
+      * refuse if there is no built page to deploy (BUILD_PAGE succeeded)
+      * refuse if PayPal is not live-configured, or the opportunity has no
+        successful PLAN offer to price the checkout from
       * short-circuit if this opportunity already has a confirmed live_url
         for the same content (idempotency)
       * call the adapter and translate the DeploymentResult:
@@ -343,6 +360,11 @@ class DeployTaskAdapter(TaskAdapter):
         return bool(getattr(self._adapter_for(), "authorized", False))
 
     def run(self, ctx: AdapterContext) -> AdapterResult:
+        import os
+
+        from .deliverable import render_checkout_html
+        from .execution import load_tasks
+
         page = (ctx.dep_outputs.get("BUILD_PAGE")
                 or ctx.dep_outputs.get("BUILD_PRODUCT") or {})
         html = str(page.get("landing_html") or "")
@@ -352,9 +374,46 @@ class DeployTaskAdapter(TaskAdapter):
                 error="no landing_html from BUILD_PAGE - nothing to deploy")
 
         oid = ctx.opportunity.get("id") or ctx.task.opportunity_id
+
+        # Real, live PayPal configuration is required - never a silent
+        # fallback to a non-payable page.
+        client_id = os.environ.get("PAYPAL_CLIENT_ID", "").strip()
+        paypal_env = os.environ.get("PAYPAL_ENV", "sandbox").strip().lower()
+        if not client_id or paypal_env != "live":
+            return AdapterResult(
+                ok=False, retryable=True,
+                error="PayPal is not live-configured (need PAYPAL_CLIENT_ID "
+                      "and PAYPAL_ENV=live) - refusing to publish a page "
+                      "that cannot actually take a real payment")
+
+        # The frozen PLAN offer is the single source of truth for price /
+        # currency - the same field this opportunity's PayPalPaymentAdapter
+        # poll will later require an exact match against.
+        plan = next((t for t in load_tasks(ctx.data_dir).by_opportunity(oid)
+                     if t.task_type == "PLAN" and t.status == "SUCCEEDED"), None)
+        offer = (plan.output or {}).get("offer") if plan is not None else None
+        if not isinstance(offer, dict) or not offer.get("price"):
+            return AdapterResult(
+                ok=False, retryable=False,
+                error="no successful PLAN offer - nothing to price a real "
+                      "checkout from")
+
+        business_email = os.environ.get("BUSINESS_EMAIL", "").strip()
+        try:
+            checkout_html = render_checkout_html(
+                {"name": ctx.opportunity.get("title", oid),
+                 "description": ctx.opportunity.get("target_customer", "")},
+                offer, client_id=client_id, currency=offer.get("currency") or "EUR",
+                business_email=business_email, opportunity_id=oid,
+            )
+        except ValueError as exc:
+            return AdapterResult(ok=False, retryable=False,
+                                 error=f"could not build the checkout page: {exc}")
+
         slug = slugify(oid)
         artifact = DeploymentArtifact(opportunity_id=ctx.task.opportunity_id,
-                                      slug=slug, files={"index.html": html})
+                                      slug=slug,
+                                      files={"index.html": checkout_html})
 
         prior = (ctx.opportunity.get("execution") or {}).get("deployment") or {}
         if (prior.get("success") and valid_live_url(prior.get("live_url", ""))
