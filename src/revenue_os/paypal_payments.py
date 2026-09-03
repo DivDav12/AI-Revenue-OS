@@ -41,6 +41,17 @@ paypal_read_context():` block inside `autonomous_context()`. This module
 opens that scope itself around its own PayPal calls - it does not widen
 `action_class.PAYPAL_READONLY_OPS` and does not touch
 `guard_no_money_in_autonomy`.
+
+Phase 11-real P1-2: `PaymentEvent.customer_ref` is populated from the
+buyer's email address in PayPal's own Transaction Search response
+(`payer_info.email_address`) - no second lookup, no new PayPal
+operation, no widened allow-list. The value is sanitised to a plausible
+email shape or dropped; it is never trusted verbatim, and its absence
+or invalidity never blocks the payment itself - only a later DELIVER
+task's ability to run. This makes `customer_ref` real PII: it is
+persisted, unencrypted, into `revenue.json` exactly like every other
+ledger field once a payment books. Nothing here sends an email, wires a
+DeliveryAdapter, or otherwise starts Phase 12.
 """
 
 from __future__ import annotations
@@ -59,6 +70,28 @@ from .paypal import PayPalClient, PayPalConfig, _txn_row
 
 #: the ONLY accepted opportunity id shape (opportunity_store._oid())
 _OID_RE = re.compile(r"^opp_[0-9a-f]{12}$")
+
+#: a plausible email shape - the same check used elsewhere in the repo
+#: (deliverable._clean_email) for a value that will be persisted/displayed
+_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+
+
+def _payer_email(detail: dict) -> str:
+    """The buyer's email address, if PayPal's Transaction Search response
+    for this transaction carries one (`payer_info.email_address` - a
+    field already returned by the same authorized, read-only
+    `search_transactions()` call; this makes no additional PayPal call).
+
+    Never trusted verbatim: a missing or not-plausibly-an-email value
+    becomes "" rather than being passed through. A missing/invalid email
+    never rejects the payment - it only means a later DELIVER task will
+    have no reference to deliver against (it already fails closed on
+    that, unchanged)."""
+    payer = detail.get("payer_info")
+    if not isinstance(payer, dict):
+        return ""
+    email = str(payer.get("email_address") or "").strip()
+    return email if _EMAIL_RE.match(email) else ""
 
 
 class _PayPalNotConfigured(RuntimeError):
@@ -185,7 +218,7 @@ class PayPalPaymentAdapter(PaymentAdapter):
                 continue
             events.append(PaymentEvent(
                 reference=capture_id, amount=amount, currency=currency,
-                opportunity_id=oid, customer_ref="", provider=self.provider,
-                raw=dict(detail)))
+                opportunity_id=oid, customer_ref=_payer_email(detail),
+                provider=self.provider, raw=dict(detail)))
 
         return PaymentPollResult(ok=True, provider=self.provider, events=events)

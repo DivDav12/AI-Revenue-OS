@@ -46,14 +46,17 @@ class _StubPayPalClient:
         raise AssertionError("the real adapter must not call get_order()")
 
 
-def _txn(custom_id, amount, currency, txn_id="REAL-CAP-1"):
-    return {"transaction_info": {
+def _txn(custom_id, amount, currency, txn_id="REAL-CAP-1", payer_email=None):
+    row = {"transaction_info": {
         "transaction_id": txn_id,
         "transaction_status": "S",
         "transaction_amount": {"value": f"{amount:.2f}", "currency_code": currency},
         "custom_field": custom_id,
         "transaction_initiation_date": "2026-01-01T00:00:00-0000",
     }}
+    if payer_email is not None:
+        row["payer_info"] = {"email_address": payer_email}
+    return row
 
 
 class Phase11RealE2ETests(unittest.TestCase):
@@ -215,6 +218,42 @@ class Phase11RealE2ETests(unittest.TestCase):
         self.assertEqual(load_opportunities(self.d).get(OID)["state"], "LIVE")
         self.assertNotIn("REVENUE_RECORDED",
                          [e["type"] for e in load_events(self.d).all()])
+
+    def test_buyer_email_from_paypal_reaches_the_ledger_and_the_deliver_task(self):
+        """Phase 11-real P1-2: the buyer email PayPal returns alongside a
+        matched transaction is not just parsed - it survives the real
+        worker -> process_payment_event -> ledger path, and the DELIVER
+        task the worker auto-spawns on the confirmed payment carries it as
+        input. This is the concrete gap P1-2 closes: before it, a real
+        PayPal-sourced sale's DELIVER task always failed with "no customer
+        reference"; now it fails only because no DeliveryAdapter is wired
+        (fail-closed, unchanged, not part of this phase)."""
+        OID = self._discover_accept()
+        Worker(self.d, registry=self._registry(
+            PayPalPaymentAdapter(self.d, client=_StubPayPalClient([]))
+        ), name="e2e-real").run(max_ticks=100)   # -> VALIDATE, before DEPLOY release
+        price, currency = self._frozen_offer(OID)
+
+        stub = _StubPayPalClient([_txn(OID, price, currency,
+                                       payer_email="buyer@example.test")])
+        reg = self._registry(PayPalPaymentAdapter(self.d, client=stub))
+        self._release_deploy(OID)
+        # one drain: DEPLOY -> LIVE, then CHECK_REVENUE -> FIRST_SALE
+        Worker(self.d, registry=reg, name="e2e-real").run(max_ticks=100)
+
+        self.assertEqual(load_opportunities(self.d).get(OID)["state"], "FIRST_SALE")
+        led = RevenueLedger.load(self.d / "revenue.json")
+        self.assertEqual(led.entries()[0]["customer_ref"], "buyer@example.test")
+
+        deliver = next(t for t in load_tasks(self.d).all()
+                       if t.task_type == "DELIVER")
+        self.assertEqual(deliver.input.get("customer_ref"), "buyer@example.test")
+        # no DeliveryAdapter is wired in this registry (Phase 12 is out of
+        # scope) - the task fails closed on THAT, not on a missing
+        # customer_ref, proving the P1-2 gap is actually closed
+        self.assertIn(deliver.status, ("FAILED_RETRYABLE", "FAILED_FINAL"))
+        self.assertNotIn("no customer reference", deliver.error)
+        self.assertIn("delivery BLOCKED", deliver.error)
 
     def test_this_file_takes_no_shortcuts(self):
         src = Path(__file__).read_text(encoding="utf-8")

@@ -40,14 +40,17 @@ _PATH = {
 
 
 def _txn(custom_id="opp_x", amount="29.90", currency="EUR", status="S",
-         txn_id="CAP1", ts="2026-01-01T00:00:00-0000"):
-    return {"transaction_info": {
+         txn_id="CAP1", ts="2026-01-01T00:00:00-0000", payer_email=None):
+    row = {"transaction_info": {
         "transaction_id": txn_id,
         "transaction_status": status,
         "transaction_amount": {"value": amount, "currency_code": currency},
         "custom_field": custom_id,
         "transaction_initiation_date": ts,
     }}
+    if payer_email is not None:
+        row["payer_info"] = {"email_address": payer_email}
+    return row
 
 
 class _StubClient:
@@ -121,6 +124,64 @@ class ValidPayment(_Base):
         self.assertEqual(ev.provider, "paypal")
         self.assertEqual(ev.customer_ref, "")
         self.assertIn("transaction_info", ev.raw)
+
+
+# ---------------------------------------------------------------------------
+# Phase 11-real P1-2: buyer email -> customer_ref
+# ---------------------------------------------------------------------------
+
+class BuyerEmail(_Base):
+    def test_valid_payer_email_becomes_customer_ref(self):
+        oid = self._opportunity()
+        r = self._adapter([_txn(custom_id=oid, payer_email="buyer@example.test")]
+                          ).poll(opportunity_id=oid)
+        self.assertEqual(len(r.events), 1)
+        self.assertEqual(r.events[0].customer_ref, "buyer@example.test")
+
+    def test_missing_payer_info_yields_empty_customer_ref_not_rejection(self):
+        oid = self._opportunity()
+        r = self._adapter([_txn(custom_id=oid)]).poll(opportunity_id=oid)
+        self.assertEqual(len(r.events), 1)          # still attributed / booked
+        self.assertEqual(r.events[0].customer_ref, "")
+
+    def test_malformed_email_is_dropped_not_passed_through_and_not_rejected(self):
+        oid = self._opportunity()
+        for bad in ("not-an-email", "<script>alert(1)</script>",
+                    "@missing-local.test", "trailing-dot@example.", "",
+                    "two@@at.test"):
+            with self.subTest(bad=bad):
+                r = self._adapter([_txn(custom_id=oid, payer_email=bad)]
+                                  ).poll(opportunity_id=oid)
+                self.assertEqual(len(r.events), 1)   # a bad email never blocks the sale
+                self.assertEqual(r.events[0].customer_ref, "")
+
+    def test_email_is_stripped(self):
+        oid = self._opportunity()
+        r = self._adapter([_txn(custom_id=oid, payer_email="  buyer@example.test  ")]
+                          ).poll(opportunity_id=oid)
+        self.assertEqual(r.events[0].customer_ref, "buyer@example.test")
+
+    def test_non_dict_payer_info_is_ignored(self):
+        oid = self._opportunity()
+        row = _txn(custom_id=oid)
+        row["payer_info"] = "not-a-dict"
+        r = self._adapter([row]).poll(opportunity_id=oid)
+        self.assertEqual(len(r.events), 1)
+        self.assertEqual(r.events[0].customer_ref, "")
+
+    def test_email_of_a_non_matching_row_never_leaks_into_the_attributed_event(self):
+        oid_a = self._opportunity()
+        oid_b = self._opportunity(second=True)
+        rows = [_txn(custom_id=oid_a, payer_email="buyer-a@example.test"),
+                _txn(custom_id=oid_b, amount=str(_PRICE), txn_id="CAP2",
+                    payer_email="buyer-b@example.test")]
+        stub = _StubClient(rows)
+        adapter = PayPalPaymentAdapter(self.d, client=stub)
+        ra = adapter.poll(opportunity_id=oid_a)
+        self.assertEqual(len(ra.events), 1)
+        self.assertEqual(ra.events[0].customer_ref, "buyer-a@example.test")
+        self.assertNotIn("buyer-b@example.test",
+                         [e.customer_ref for e in ra.events])
 
 
 # ---------------------------------------------------------------------------
