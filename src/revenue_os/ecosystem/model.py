@@ -1,0 +1,183 @@
+"""Shared vocabulary + data shapes for the ecosystem.
+
+Pure: constants, small frozen dataclasses, and estimate helpers. No I/O.
+
+Design rule (spec sections 7 + 20): a discovered opportunity carries only
+facts that came from a real source, plus values that are explicitly marked
+`is_estimate: true`. Nothing here fabricates demand, revenue, or market
+data.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+
+# ---------------------------------------------------------------------------
+# origin - is this real or test data?
+# ---------------------------------------------------------------------------
+
+ORIGIN_SYNTHETIC = "synthetic"
+ORIGIN_REAL = "real"
+ORIGINS = (ORIGIN_SYNTHETIC, ORIGIN_REAL)
+
+# ---------------------------------------------------------------------------
+# how a source is accessed + whether automation is allowed there
+# ---------------------------------------------------------------------------
+
+ACCESS_OFFICIAL_API = "official_api"     # documented, keyless-or-keyed public API
+ACCESS_PUBLIC_FEED = "public_feed"       # RSS / Atom / JSON feed meant for consumption
+ACCESS_PUBLIC_WEB = "public_web"         # a public page, fetched politely, robots-respecting
+ACCESS_CURATED_FILE = "curated_file"     # a human-curated local JSON list of signals
+ACCESS_SYNTHETIC = "synthetic"           # generated test data, not a real source
+ACCESS_METHODS = (ACCESS_OFFICIAL_API, ACCESS_PUBLIC_FEED, ACCESS_PUBLIC_WEB,
+                  ACCESS_CURATED_FILE, ACCESS_SYNTHETIC)
+
+# policy_status - the single gate that decides whether the fleet may act on
+# a source at all. Fail closed: an unknown status is treated as BLOCKED.
+POLICY_OK = "OK"                         # public read + fleet may act autonomously
+POLICY_HUMAN_REQUIRED = "HUMAN_REQUIRED"  # a human must perform the external action
+POLICY_HUMAN_SETUP_REQUIRED = "HUMAN_SETUP_REQUIRED"  # needs an account / API key first
+POLICY_BLOCKED = "BLOCKED_BY_POLICY"     # the platform forbids the planned automation
+POLICY_STATUSES = (POLICY_OK, POLICY_HUMAN_REQUIRED, POLICY_HUMAN_SETUP_REQUIRED,
+                   POLICY_BLOCKED)
+
+# ---------------------------------------------------------------------------
+# verification lifecycle (spec section 8) - a sub-status inside `discovery`
+# ---------------------------------------------------------------------------
+
+V_DISCOVERED = "DISCOVERED"
+V_VERIFYING = "VERIFYING"
+V_VERIFIED = "VERIFIED"
+V_QUALIFIED = "QUALIFIED"
+V_REJECTED = "REJECTED"
+V_HUMAN_REQUIRED = "HUMAN_REQUIRED"
+V_BLOCKED = "BLOCKED"
+VERIFICATION_STATUSES = (V_DISCOVERED, V_VERIFYING, V_VERIFIED, V_QUALIFIED,
+                         V_REJECTED, V_HUMAN_REQUIRED, V_BLOCKED)
+
+#: only a QUALIFIED opportunity may be planned into a real task chain
+PLANNABLE = frozenset({V_QUALIFIED})
+
+# ---------------------------------------------------------------------------
+# opportunity types - WHAT kind of money-making thing this is
+# ---------------------------------------------------------------------------
+
+TYPE_TASK = "task"                 # a small paid online task / gig unit of work
+TYPE_DIGITAL_PRODUCT = "digital_product"
+TYPE_SOFTWARE_TOOL = "software_tool"
+TYPE_AFFILIATE = "affiliate"
+TYPE_ECOMMERCE = "ecommerce"
+TYPE_DROPSHIPPING = "dropshipping"
+TYPE_SERVICE = "service"
+TYPE_CONTENT = "content"
+TYPE_OTHER = "other"
+OPPORTUNITY_TYPES = (TYPE_TASK, TYPE_DIGITAL_PRODUCT, TYPE_SOFTWARE_TOOL,
+                     TYPE_AFFILIATE, TYPE_ECOMMERCE, TYPE_DROPSHIPPING,
+                     TYPE_SERVICE, TYPE_CONTENT, TYPE_OTHER)
+
+# ---------------------------------------------------------------------------
+# monetisation strategies (spec section 10) - HOW we make money from an
+# opportunity. An opportunity may support several; the strategy engine picks.
+# ---------------------------------------------------------------------------
+
+STRAT_TASK = "TASK"
+STRAT_PRODUCT = "PRODUCT"
+STRAT_AFFILIATE = "AFFILIATE"
+STRAT_ECOMMERCE = "ECOMMERCE"
+STRAT_SERVICE = "SERVICE"
+STRAT_OTHER = "OTHER"
+STRATEGIES = (STRAT_TASK, STRAT_PRODUCT, STRAT_AFFILIATE, STRAT_ECOMMERCE,
+              STRAT_SERVICE, STRAT_OTHER)
+
+
+# ---------------------------------------------------------------------------
+# estimate helper - every non-observed number is wrapped so a reader can
+# never mistake it for a fact (spec section 7 + 20).
+# ---------------------------------------------------------------------------
+
+def estimate(value: float, basis: str = "") -> dict:
+    """A number the system guessed, not a number it observed."""
+    try:
+        v = round(float(value), 4)
+    except (TypeError, ValueError):
+        v = 0.0
+    return {"value": v, "is_estimate": True, "basis": str(basis or "heuristic")}
+
+
+def estimate_value(maybe_estimate) -> float:
+    """Read the number out of an `estimate()` dict, or coerce a bare number."""
+    if isinstance(maybe_estimate, dict):
+        try:
+            return float(maybe_estimate.get("value", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+    try:
+        return float(maybe_estimate)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+# ---------------------------------------------------------------------------
+# source metadata (spec section 6) - every source declares this
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class SourceMeta:
+    source: str                       # short id, e.g. "hacker-news"
+    source_type: str                  # e.g. "demand_signal", "job_board", "synthetic"
+    source_url: str = ""              # canonical URL of the source
+    access_method: str = ACCESS_PUBLIC_WEB
+    automation_allowed: bool = False  # may the fleet act on findings without a human?
+    requires_login: bool = False
+    requires_human: bool = False
+    policy_status: str = POLICY_OK
+
+    def to_dict(self) -> dict:
+        return {
+            "source": self.source, "source_type": self.source_type,
+            "source_url": self.source_url, "access_method": self.access_method,
+            "automation_allowed": bool(self.automation_allowed),
+            "requires_login": bool(self.requires_login),
+            "requires_human": bool(self.requires_human),
+            "policy_status": self.policy_status,
+        }
+
+
+# ---------------------------------------------------------------------------
+# the normalized pre-persist opportunity (what a Source yields)
+# ---------------------------------------------------------------------------
+
+_WS = re.compile(r"\s+")
+
+
+def norm_title(title: str) -> str:
+    """Lower-cased, whitespace-collapsed, punctuation-stripped - for dedup."""
+    t = _WS.sub(" ", str(title or "").lower()).strip()
+    return re.sub(r"[^a-z0-9 ]+", "", t)
+
+
+@dataclass
+class OpportunityDraft:
+    """A candidate opportunity a Source produced, before verification /
+    evaluation / persistence."""
+
+    title: str
+    description: str = ""
+    opportunity_type: str = TYPE_OTHER
+    evidence: list = field(default_factory=list)      # verbatim quotes / facts from the source
+    source_meta: SourceMeta | None = None
+    source_id: str = ""                               # the item id at the source
+    source_url: str = ""                              # the item URL at the source
+    discovered_at: str = ""
+    # optional coarse hints the source can supply (all treated as estimates)
+    est_pay_eur: float = 0.0
+    est_time_minutes: float = 0.0
+    demand_hint: float = 0.0            # 0..1 - how strong the demand signal is
+    category: str = "other"            # opportunity_store CATEGORIES value
+    raw: dict = field(default_factory=dict)
+
+    def dedup_key(self) -> str:
+        if self.source_meta and self.source_id:
+            return f"{self.source_meta.source}:{self.source_id}"
+        return norm_title(self.title)

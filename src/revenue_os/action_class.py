@@ -65,6 +65,13 @@ _SAFE = frozenset({
     "research", "browse_web", "discover_opportunity", "market_analysis",
     "competitor_analysis", "product_research", "customer_research",
     "lead_discovery", "research_distribution", "analytics", "monitor", "report",
+    # ecosystem: real opportunity discovery -> evaluation -> strategy (all
+    # read-only projection; nothing here spends, posts, or contacts anyone)
+    "verify_opportunity", "evaluate_profitability", "select_strategy",
+    "simulate_revenue", "demand_discovery", "affiliate_offer_research",
+    "commission_analysis", "supplier_research", "margin_analysis",
+    "traffic_strategy", "prepare_task_solution", "prepare_store_listing",
+    "ad_strategy_analysis", "learn_from_outcomes",
     # build (assets, code, design, copy) - nothing is shipped that binds money
     "write_code", "build_website", "build_landing_page", "build_product_page",
     "create_digital_product", "create_design", "write_copy", "seo_work",
@@ -90,6 +97,9 @@ _MONEY_ALWAYS = frozenset({
     "record_real_payment", "book_revenue", "commit_future_spend",
     "incur_processor_fees", "activate_revenue_share", "pay_listing_fee",
     "pay_platform_commission", "activate_paid_checkout", "publish_paid_checkout",
+    # ecosystem strategy execution that would move real money
+    "place_supplier_order", "fund_ad_test", "pay_affiliate_network_fee",
+    "order_inventory", "fund_dropship_order",
 })
 
 # kinds that are usually FREE but can carry a real financial effect - MONEY

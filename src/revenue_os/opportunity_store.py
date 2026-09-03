@@ -74,6 +74,11 @@ class Opportunity:
     score: float = 0.0
     source: str = "engine"            # engine | llm | manual | adjacent
     parent_id: str = ""               # if spawned as an adjacent opportunity
+    # --- ecosystem (real discovery -> evaluation -> strategy) -------------
+    origin: str = "synthetic"         # "synthetic" (test data) | "real" (discovered from a source)
+    discovery: dict = field(default_factory=dict)   # {source, source_url, source_id, evidence, access_method, policy_status, verification:{...}}
+    evaluation: dict = field(default_factory=dict)  # {expected_revenue, expected_cost, expected_profit, profit_per_hour, risk, ..., is_estimate: True}
+    strategy: dict = field(default_factory=dict)    # {recommended, options:[{name, score, ...}], selected_at}
     experiments: list = field(default_factory=list)   # [{ts, kind, note, result}]
     transitions: list = field(default_factory=list)   # append-only state history
     execution: dict = field(default_factory=dict)     # {accepted, accepted_by, chain}
@@ -133,6 +138,12 @@ class OpportunityStore:
         it existed. Derives the state from the legacy status and seeds one
         bootstrap transition; never invents history."""
         r.setdefault("transitions", [])
+        # ecosystem namespaces: every pre-ecosystem record is synthetic test
+        # data by definition (it came from opportunity_engine / the llm hook).
+        r.setdefault("origin", "synthetic")
+        r.setdefault("discovery", {})
+        r.setdefault("evaluation", {})
+        r.setdefault("strategy", {})
         if not r.get("state"):
             st = ostate.state_for_legacy_status(r.get("status", "discovered"))
             r["state"] = st
@@ -172,12 +183,20 @@ class OpportunityStore:
                     actor="system").to_dict()]
             self._by_id[opp.id] = rec
             return self._by_id[opp.id]
-        # preserve lifecycle + history; refresh the estimates
+        # preserve lifecycle + history + downstream ecosystem verdicts;
+        # refresh the estimates.
         keep = {k: existing[k] for k in ("status", "state", "experiments",
                                          "transitions", "execution", "results",
-                                         "created_at", "notes")
+                                         "created_at", "notes",
+                                         "evaluation", "strategy")
                 if k in existing}
         merged = {**opp.to_dict(), **keep}
+        # discovery evidence merges (a re-scan adds evidence, never drops a
+        # recorded verification); origin only ever ratchets synthetic -> real.
+        merged["discovery"] = {**(existing.get("discovery") or {}),
+                               **(opp.to_dict().get("discovery") or {})}
+        if existing.get("origin") == "real" or opp.origin == "real":
+            merged["origin"] = "real"
         self._by_id[opp.id] = merged
         return merged
 
@@ -324,6 +343,34 @@ class OpportunityStore:
         r.setdefault("execution", {})["deployment"] = dict(deployment)
         if deployment.get("live_url"):
             r["execution"]["live_url"] = deployment["live_url"]
+        r["updated_at"] = now_iso()
+        return r
+
+    # --- ecosystem verdicts (merge-write, never wipe) -----------------
+    def record_discovery(self, oid: str, discovery: dict) -> dict:
+        """Merge discovery/verification metadata onto the opportunity's
+        `discovery` namespace (a re-scan adds evidence, never drops a
+        recorded verification)."""
+        r = self._by_id[oid]
+        r["discovery"] = {**(r.get("discovery") or {}), **dict(discovery)}
+        if discovery.get("origin") == "real" or r.get("origin") == "real":
+            r["origin"] = "real"
+        r["updated_at"] = now_iso()
+        return r
+
+    def record_evaluation(self, oid: str, evaluation: dict) -> dict:
+        """Replace the deterministic profitability `evaluation` namespace
+        (always ESTIMATE data - it carries `is_estimate: true`)."""
+        r = self._by_id[oid]
+        r["evaluation"] = dict(evaluation)
+        r["updated_at"] = now_iso()
+        return r
+
+    def record_strategy(self, oid: str, strategy: dict) -> dict:
+        """Replace the `strategy` namespace (recommended monetisation
+        strategy + the scored options it was chosen from)."""
+        r = self._by_id[oid]
+        r["strategy"] = dict(strategy)
         r["updated_at"] = now_iso()
         return r
 

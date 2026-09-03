@@ -829,4 +829,7 @@ def default_registry() -> AdapterRegistry:
     reg.register(AnalyzeAdapter())
     reg.register(OptimizeAdapter())
     reg.register(ScaleTaskAdapter())
+    # ecosystem: DISCOVER / VERIFY / EVALUATE / SELECT_STRATEGY (read-only)
+    from .ecosystem.task_adapters import register_ecosystem_adapters
+    register_ecosystem_adapters(reg)
     return reg

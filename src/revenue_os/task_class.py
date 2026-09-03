@@ -64,6 +64,11 @@ _TASK_KIND: dict[str, str] = {
     "OPTIMIZE":         "optimize_nonfinancial",
     "SPAWN_VARIANT":    "experiment_no_spend",
     "SCALE":            "optimize_nonfinancial",
+    # ecosystem - all read-only projection, never spend / post / contact
+    "DISCOVER":         "discover_opportunity",
+    "VERIFY":           "verify_opportunity",
+    "EVALUATE":         "evaluate_profitability",
+    "SELECT_STRATEGY":  "select_strategy",
 }
 
 #: DISTRIBUTE sub-channels that are pure drafting (no external action)

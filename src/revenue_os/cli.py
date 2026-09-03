@@ -1443,6 +1443,78 @@ def _cmd_accept_opportunity(args) -> int:
     return 0
 
 
+def _cmd_eco_discover(args) -> int:
+    """Autonomous ecosystem: run real opportunity discovery.
+
+    `--source synthetic` (default) is offline/deterministic. `hn` and
+    `remoteok` hit real, keyless public APIs (read-only). A source that
+    needs an account (upwork/fiverr/amazon_associates/shopify) yields
+    nothing and is reported HUMAN_SETUP_REQUIRED - the fleet never
+    self-provisions credentials."""
+    from .ecosystem.discovery import DiscoveryEngine
+    from .ecosystem.sources import build_source
+
+    data_dir = _data_dir(args)
+    names = [s.strip() for s in (args.source or "synthetic").split(",") if s.strip()]
+    srcs = []
+    for n in names:
+        kw = {}
+        if n == "file":
+            if not args.source_path:
+                raise ValueError("--source file needs --source-path")
+            kw["path"] = args.source_path
+        srcs.append(build_source(n, **kw))
+    report = DiscoveryEngine(data_dir, sources=srcs).run(
+        limit_per_source=max(1, int(args.limit)))
+    print(json.dumps(report.to_dict(), indent=2))
+    return 0
+
+
+def _cmd_eco_evaluate(args) -> int:
+    """Deterministic profitability projection for one discovered opportunity
+    (every number is marked is_estimate)."""
+    from .ecosystem.pipeline import evaluate
+    print(json.dumps(evaluate(_data_dir(args), args.opportunity_id), indent=2))
+    return 0
+
+
+def _cmd_eco_strategy(args) -> int:
+    """Score every viable monetisation strategy for an opportunity and record
+    the recommendation (service is never the default - spec 29)."""
+    from .ecosystem.pipeline import select
+    print(json.dumps(select(_data_dir(args), args.opportunity_id), indent=2))
+    return 0
+
+
+def _cmd_eco_plan(args) -> int:
+    """Turn a QUALIFIED opportunity + its selected strategy into an
+    executable plan. PRODUCT -> the existing acceptance task chain; other
+    strategies -> a prepared plan marked HUMAN_REQUIRED for the external
+    step (no account/spend/submission is ever done autonomously)."""
+    from .ecosystem.pipeline import plan
+    print(json.dumps(plan(_data_dir(args), args.opportunity_id,
+                          actor=args.actor), indent=2, default=str))
+    return 0
+
+
+def _cmd_eco_simulate(args) -> int:
+    """Revenue Simulation Mode: run N synthetic opportunities through the
+    whole loop (discover -> verify -> evaluate -> strategy -> execute-sim ->
+    revenue-sim -> analytics) with ZERO external side effects."""
+    from .ecosystem.simulation import simulate
+    rep = simulate(n=max(1, int(args.n)), seed=int(args.seed))
+    print(json.dumps(rep.to_dict(), indent=2))
+    return 0
+
+
+def _cmd_eco_status(args) -> int:
+    """Read-only ecosystem intelligence (discovery / strategies / outcomes /
+    human actions) - every number counted from real persisted state."""
+    from .ecosystem.intel import ecosystem_status
+    print(json.dumps(ecosystem_status(_data_dir(args)), indent=2, default=str))
+    return 0
+
+
 def _cmd_release_task(args) -> int:
     """Phase 11-real P1-10: thin CLI wrapper around the existing, already-
     tested `acceptance.release_task()` - the exact same function JARVIS's
@@ -2613,6 +2685,43 @@ def build_parser() -> argparse.ArgumentParser:
     abo.add_argument("opportunity_id", metavar="OPPORTUNITY_ID")
     abo.add_argument("--reason", default=None, help="why it is being abandoned")
     abo.set_defaults(func=_cmd_abandon_opportunity)
+
+    # --- autonomous ecosystem (real discovery -> evaluation -> strategy) ---
+    ed = sub.add_parser(
+        "discover", parents=[common],
+        help="ecosystem: run real opportunity discovery (--source "
+             "synthetic|hn|remoteok|file|<setup-required>, comma-separated)")
+    ed.add_argument("--source", default="synthetic",
+                    help="comma-separated source names (default: synthetic)")
+    ed.add_argument("--source-path", default=None, help="for --source file")
+    ed.add_argument("--limit", type=int, default=25, help="max items per source")
+    ed.set_defaults(func=_cmd_eco_discover)
+
+    ee = sub.add_parser("evaluate", parents=[common],
+                        help="ecosystem: profitability projection for an opportunity")
+    ee.add_argument("opportunity_id", metavar="OPPORTUNITY_ID")
+    ee.set_defaults(func=_cmd_eco_evaluate)
+
+    es = sub.add_parser("select-strategy", parents=[common],
+                        help="ecosystem: score + choose a monetisation strategy")
+    es.add_argument("opportunity_id", metavar="OPPORTUNITY_ID")
+    es.set_defaults(func=_cmd_eco_strategy)
+
+    ep = sub.add_parser("plan-strategy", parents=[common, actor_only],
+                        help="ecosystem: turn a QUALIFIED opportunity + strategy "
+                             "into an executable plan")
+    ep.add_argument("opportunity_id", metavar="OPPORTUNITY_ID")
+    ep.set_defaults(func=_cmd_eco_plan)
+
+    esim = sub.add_parser("simulate", parents=[common],
+                          help="ecosystem: full-loop revenue simulation, no side effects")
+    esim.add_argument("--n", type=int, default=1000, help="opportunities to simulate")
+    esim.add_argument("--seed", type=int, default=42)
+    esim.set_defaults(func=_cmd_eco_simulate)
+
+    est = sub.add_parser("ecosystem-status", parents=[common],
+                         help="ecosystem: read-only discovery/strategy/outcome intel")
+    est.set_defaults(func=_cmd_eco_status)
 
     cand = sub.add_parser("candidate", parents=[common], help="show one candidate")
     cand.add_argument("name")

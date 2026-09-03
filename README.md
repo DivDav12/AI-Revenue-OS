@@ -1,6 +1,26 @@
 # AI-Revenue-OS
 Autonomous multi-agent AI revenue ecosystem
 
+## Autonomous Revenue Ecosystem (`discover` / `evaluate` / `select-strategy` / `simulate`)
+
+Real opportunity discovery → deterministic profitability evaluation →
+monetisation-strategy selection → an executable task chain that reuses the
+existing PayPal checkout / SMTP delivery / revenue-ledger stack.
+
+```
+revenue_os discover --source synthetic|hn|remoteok|file[,...] [--limit N]
+revenue_os evaluate <OPP_ID>            # profitability projection (every number is an ESTIMATE)
+revenue_os select-strategy <OPP_ID>     # TASK|PRODUCT|AFFILIATE|ECOMMERCE|SERVICE|OTHER (service is never the default)
+revenue_os plan-strategy <OPP_ID>       # PRODUCT -> acceptance chain; other -> prepared, HUMAN_REQUIRED
+revenue_os simulate --n 10000 --seed 42 # whole-loop simulation, zero external side effects
+revenue_os ecosystem-status
+```
+
+`hn` and `remoteok` are real, keyless, read-only public APIs. Sources that
+need an account (`upwork`, `fiverr`, `amazon_associates`, `shopify`) report
+`HUMAN_SETUP_REQUIRED` and yield nothing - the fleet never self-provisions
+credentials, logs in, or posts. See **[docs/ECOSYSTEM.md](docs/ECOSYSTEM.md)**.
+
 ## Acquisition Agent (`discover-opportunities` / `top-opportunities`)
 
 Finds **current, real** public posts from founders who are actively

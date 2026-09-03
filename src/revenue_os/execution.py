@@ -60,6 +60,8 @@ TASK_TYPES: tuple[str, ...] = (
     "DEPLOY", "DISTRIBUTE",
     "CHECK_TRAFFIC", "CHECK_LEADS", "CHECK_REVENUE",
     "DELIVER", "ANALYZE", "OPTIMIZE", "SPAWN_VARIANT", "SCALE",
+    # ecosystem: real opportunity discovery -> evaluation -> strategy
+    "DISCOVER", "VERIFY", "EVALUATE", "SELECT_STRATEGY",
 )
 
 _APPROVAL_TYPES: frozenset[str] = frozenset({"money", "identity", "legal"})
