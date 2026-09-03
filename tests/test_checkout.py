@@ -164,6 +164,81 @@ class RenderTests(unittest.TestCase):
             render_checkout_html(_CAND, _OFFER, client_id="")
 
 
+# ---------------------------------------------------------------------------
+# Phase 11-real P1-1: opportunity_id -> custom_id attribution
+# ---------------------------------------------------------------------------
+
+_OPP_ID = "opp_0123456789ab"
+
+
+class OpportunityAttributionTests(unittest.TestCase):
+    """A. a valid opportunity id becomes the PayPal custom_id.
+    B. the exact same id reaches the order-creation payload.
+    C. invalid opportunity ids are rejected (fail closed).
+    D. no opportunity_id -> no silent fallback to any other identifier.
+    """
+
+    def test_A_valid_opportunity_id_becomes_custom_id(self):
+        h = render_checkout_html(_CAND, _OFFER, client_id=_CLIENT_ID,
+                                 opportunity_id=_OPP_ID)
+        self.assertIn(f'custom_id: "{_OPP_ID}"', h)
+        # the candidate name must NOT leak into custom_id when an
+        # opportunity_id is given
+        self.assertNotIn(f'custom_id: "{_CAND["name"]}"', h)
+
+    def test_B_same_id_reaches_the_order_create_payload(self):
+        h = render_checkout_html(_CAND, _OFFER, client_id=_CLIENT_ID,
+                                 opportunity_id=_OPP_ID)
+        m = re.search(r"actions\.order\.create\(\{.*?custom_id:\s*\"([^\"]+)\"",
+                      h, re.S)
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group(1), _OPP_ID)
+        # and the footer's human-visible order reference agrees with it
+        self.assertIn(f"Order reference: <code>{_OPP_ID}</code>", h)
+
+    def test_C_invalid_opportunity_ids_are_rejected(self):
+        for bad in ("candidate", "opp_123", "opp_zzzzzzzzzzzz",
+                    "foo_0123456789ab", "opp_0123456789ab ", " opp_0123456789ab",
+                    "OPP_0123456789AB", "opp_0123456789abx"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    render_checkout_html(_CAND, _OFFER, client_id=_CLIENT_ID,
+                                         opportunity_id=bad)
+
+    def test_C_empty_opportunity_id_is_a_noop_not_an_error(self):
+        # empty means "no opportunity_id given" - falls back to the
+        # existing candidate-name behaviour, not a validation error
+        # (a real whitespace-padded id is still rejected - no leniency, see
+        # test_C_invalid_opportunity_ids_are_rejected)
+        h = render_checkout_html(_CAND, _OFFER, client_id=_CLIENT_ID,
+                                 opportunity_id="")
+        self.assertIn(f'custom_id: "{_CAND["name"]}"', h)
+
+    def test_D_missing_opportunity_id_never_falls_back_to_another_identifier(self):
+        h = render_checkout_html(_CAND, _OFFER, client_id=_CLIENT_ID)
+        # the ONLY identifier that can ever appear as custom_id here is the
+        # candidate name explicitly passed in - never a guessed opportunity id
+        self.assertNotRegex(h, r'custom_id:\s*"opp_[0-9a-f]{12}"')
+        self.assertIn(f'custom_id: "{_CAND["name"]}"', h)
+
+    def test_E_existing_candidate_checkout_is_byte_identical_without_the_param(self):
+        with_default = render_checkout_html(_CAND, _OFFER, client_id=_CLIENT_ID)
+        without_param = render_checkout_html(
+            _CAND, _OFFER, client_id=_CLIENT_ID, currency="EUR",
+            form_action="", business_email="")
+        self.assertEqual(with_default, without_param)
+
+    def test_F_no_paypal_secret_appears_on_the_opportunity_checkout(self):
+        h = render_checkout_html(_CAND, _OFFER, client_id=_CLIENT_ID,
+                                 opportunity_id=_OPP_ID)
+        for secret_marker in ("CLIENT_SECRET", "client_secret", "PAYPAL_CLIENT_SECRET"):
+            self.assertNotIn(secret_marker, h)
+        # only the (public, by design) client id and the opportunity id are
+        # embedded - no other credential-shaped token
+        origins = set(re.findall(r'https?://[a-z0-9.\-]+', h))
+        self.assertEqual(origins, {"https://www.paypal.com"})
+
+
 class PaidOfferTests(unittest.TestCase):
     def test_real_price_is_not_an_estimate(self):
         o = paid_offer(Candidate(name="c", description="d"), price=29.9,

@@ -228,15 +228,29 @@ def _intake_form(candidate: str, *, form_action: str, form_id: str,
     )
 
 
+_OPPORTUNITY_ID_RE = re.compile(r"^opp_[0-9a-f]{12}$")
+
+
 def render_checkout_html(candidate: dict, offer: dict, *,
                          client_id: str, currency: str = "EUR",
-                         form_action: str = "", business_email: str = "") -> str:
+                         form_action: str = "", business_email: str = "",
+                         opportunity_id: str = "") -> str:
     """A real one-item PayPal checkout page for a human-priced offer.
 
     Self-contained except the PayPal JS SDK. The order it creates sets
     purchase_units[].custom_id to the exact candidate name, so a later
     `paypal-sync` / `paypal-verify` books the payment against this
     candidate. This page never records revenue itself.
+
+    `opportunity_id`, when given, MUST be the canonical persisted
+    Opportunity id (matching `^opp_[0-9a-f]{12}$` - the same shape
+    `opportunity_store._oid()` produces) and is used as PayPal's
+    `custom_id` INSTEAD of the candidate name. This is the only way a
+    later `paypal_payments.PayPalPaymentAdapter` poll can attribute the
+    resulting payment to the right Opportunity - there is no fallback
+    (name / email / amount / "only one opportunity"). Leave it empty for
+    the existing candidate/manual checkout path, whose behaviour
+    (including the footer's order-reference text) is unchanged.
     """
     offer = offer or {}
     name = str(candidate.get("name", ""))
@@ -244,6 +258,16 @@ def render_checkout_html(candidate: dict, offer: dict, *,
         raise ValueError("candidate has no name")
     if not client_id:
         raise ValueError("client_id is required")
+
+    checkout_id = name
+    if opportunity_id:
+        # no leniency at this boundary: no stripping, no case-folding - the
+        # value must be the exact canonical id or this is refused outright.
+        if not _OPPORTUNITY_ID_RE.match(opportunity_id):
+            raise ValueError(
+                f"invalid opportunity_id {opportunity_id!r} - must match "
+                f"{_OPPORTUNITY_ID_RE.pattern!r}")
+        checkout_id = opportunity_id
     try:
         price = round(float(offer["price"]), 2)
     except (KeyError, TypeError, ValueError) as exc:
@@ -269,7 +293,7 @@ def render_checkout_html(candidate: dict, offer: dict, *,
         + "&intent=capture"
     )
     # JS string literals - escaped so nothing can break out of <script>.
-    js_custom_id = _js(name)
+    js_custom_id = _js(checkout_id)
     js_amount = _js(amount)
     js_currency = _js(currency)
     js_desc = _js(what[:127])
@@ -367,7 +391,7 @@ def render_checkout_html(candidate: dict, offer: dict, *,
         "<p class='terms'>Payment is handled entirely by PayPal. If the plan "
         "cannot be delivered, the payment is refunded in full via PayPal.</p>\n"
         f"<div class='foot'>Sold by the operator of this page. Order reference: "
-        f"<code>{_esc(name)}</code>."
+        f"<code>{_esc(checkout_id)}</code>."
         + (f" Contact: {_esc(business_email)}." if business_email else "")
         + "</div>\n"
         "</div>\n"

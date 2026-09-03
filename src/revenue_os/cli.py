@@ -41,6 +41,9 @@ Human decision commands (operate on the persistent --data-dir store):
   prepare-launch    (--proposer llm opt-in; template by default)
   launch NAME
   build-checkout NAME --price N [--currency EUR]   write a real PayPal checkout page
+  build-opportunity-checkout OPP_ID   write a real PayPal checkout page for an
+                          Opportunity's frozen PLAN offer; custom_id = the opportunity id
+                          (for PayPalPaymentAdapter attribution - Phase 11-real P1-1)
   deploy-checkout NAME    publish checkout.html/intake.html to GitHub Pages (needs
                           GITHUB_TOKEN + GITHUB_PAGES_REPO in .env); stores public_url
   deploy-status NAME      is the checkout page built / deployed?
@@ -1572,6 +1575,70 @@ def _cmd_build_checkout(args) -> int:
     return 0
 
 
+def _cmd_build_opportunity_checkout(args) -> int:
+    """Write a real PayPal checkout page for an Opportunity, with
+    `custom_id` set to the exact, canonical opportunity id - so a later
+    `paypal_payments.PayPalPaymentAdapter` poll can attribute the payment
+    strictly to this opportunity. Human-triggered only; does not deploy,
+    does not touch the autonomous worker/DEPLOY task, does not build an
+    intake page (Phase 12 delivery is a separate, later phase)."""
+    from .deliverable import render_checkout_html
+    from .execution import load_tasks
+    from .opportunity_store import load_opportunities
+
+    data_dir = _data_dir(args)
+    oid = str(args.opportunity_id).strip()
+
+    opp = load_opportunities(data_dir).get(oid)
+    if opp is None:
+        raise ValueError(f"unknown opportunity: {oid!r}")
+
+    plan = next((t for t in load_tasks(data_dir).by_opportunity(oid)
+                 if t.task_type == "PLAN" and t.status == "SUCCEEDED"), None)
+    if plan is None:
+        raise ValueError(
+            f"opportunity {oid!r} has no successful PLAN task - no frozen "
+            "offer to build a checkout from")
+    offer = (plan.output or {}).get("offer")
+    if not isinstance(offer, dict) or not offer.get("price"):
+        raise ValueError(f"opportunity {oid!r}'s PLAN output has no usable offer")
+
+    client_id = os.environ.get("PAYPAL_CLIENT_ID", "").strip()
+    env = os.environ.get("PAYPAL_ENV", "sandbox").strip().lower()
+    if not client_id:
+        raise ValueError("set PAYPAL_CLIENT_ID in the environment")
+    if env != "live":
+        raise ValueError(f"PAYPAL_ENV is {env!r}; set PAYPAL_ENV=live for a real checkout")
+
+    form_action = (args.form_action or "").strip()
+    business_email = (args.business_email
+                      or os.environ.get("BUSINESS_EMAIL", "")).strip()
+    html = render_checkout_html(
+        {"name": opp.get("title", oid), "description": opp.get("target_customer", "")},
+        offer, client_id=client_id, currency=offer.get("currency") or args.currency,
+        form_action=form_action, business_email=business_email,
+        opportunity_id=oid,
+    )
+    out = (Path(args.out) if args.out
+           else data_dir / "deliverables" / oid / "checkout.html")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(html, encoding="utf-8")
+    print(f"wrote {out}")
+    print(f"custom_id = {oid}")
+    print(f"price = {offer['price']} {offer.get('currency', 'EUR')}")
+    if not form_action:
+        print("NOTE: form endpoint not set - pass --form-action <url> so the "
+              "intake form submits somewhere (both pages show a placeholder).")
+    if not business_email:
+        print("NOTE: BUSINESS_EMAIL not set - pages show the generic "
+              "\"the address that sold you this plan\" wording.")
+    print(
+        "a real PayPal payment on this page can now be attributed to this "
+        f"opportunity by a paypal_payments.PayPalPaymentAdapter poll of {oid!r}"
+    )
+    return 0
+
+
 def _cmd_deploy_checkout(args) -> int:
     from .deploy import DeployError, deploy_checkout
 
@@ -2441,6 +2508,25 @@ def build_parser() -> argparse.ArgumentParser:
     bc.add_argument("--out", default=None,
                     help="output path (default: <data-dir>/deliverables/<name>/checkout.html)")
     bc.set_defaults(func=_cmd_build_checkout)
+
+    boc = sub.add_parser(
+        "build-opportunity-checkout", parents=[common],
+        help="write a real PayPal checkout page for an Opportunity's frozen "
+             "PLAN offer, with custom_id = the opportunity id",
+    )
+    boc.add_argument("opportunity_id", metavar="OPPORTUNITY_ID",
+                     help="the opportunity's canonical id (opp_...)")
+    boc.add_argument("--currency", default="EUR",
+                     help="fallback currency if the frozen offer has none")
+    boc.add_argument("--form-action", default=None, metavar="URL",
+                     help="endpoint the post-payment intake form POSTs to "
+                          "(a form provider; a placeholder is shown if omitted)")
+    boc.add_argument("--business-email", default=None, metavar="ADDR",
+                     help="contact address shown on the page "
+                          "(default: $BUSINESS_EMAIL; generic wording if unset)")
+    boc.add_argument("--out", default=None,
+                     help="output path (default: <data-dir>/deliverables/<opp_id>/checkout.html)")
+    boc.set_defaults(func=_cmd_build_opportunity_checkout)
 
     dc = sub.add_parser(
         "deploy-checkout", parents=[common],
