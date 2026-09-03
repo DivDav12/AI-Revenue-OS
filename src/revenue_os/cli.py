@@ -55,6 +55,12 @@ Human decision commands (operate on the persistent --data-dir store):
   pending-actions         read-only: list concrete pending human actions (release-task /
                           check-payments / deliver-product) with the exact next command
                           (Phase 11-real P1-9)
+  accept-opportunity OPP_ID   business decision: accept an Opportunity, build its
+                          real ExecutionTask chain (Phase 11-real P1-10)
+  release-task TASK_ID    satisfy an existing BLOCKED_APPROVAL gate (e.g. DEPLOY);
+                          does not execute the task itself (Phase 11-real P1-10)
+  abandon-opportunity OPP_ID [--reason TEXT]   cancel an Opportunity's non-terminal
+                          tasks, move it to ABANDONED (Phase 11-real P1-10)
   deploy-checkout NAME    publish checkout.html/intake.html to GitHub Pages (needs
                           GITHUB_TOKEN + GITHUB_PAGES_REPO in .env); stores public_url
   deploy-status NAME      is the checkout page built / deployed?
@@ -1422,6 +1428,47 @@ def _cmd_pending_actions(args) -> int:
     return 0
 
 
+def _cmd_accept_opportunity(args) -> int:
+    """Phase 11-real P1-10: thin CLI wrapper around the existing, already-
+    tested `acceptance.accept_opportunity()` - the exact same function
+    JARVIS's "Accept" button already calls. No new logic: a business
+    decision only, moves no money, performs no protected action."""
+    from .acceptance import accept_opportunity
+
+    data_dir = _data_dir(args)
+    out = accept_opportunity(data_dir, args.opportunity_id, actor=args.actor)
+    print(json.dumps(out, indent=2))
+    return 0
+
+
+def _cmd_release_task(args) -> int:
+    """Phase 11-real P1-10: thin CLI wrapper around the existing, already-
+    tested `acceptance.release_task()` - the exact same function JARVIS's
+    "Approve deployment" button already calls. Only satisfies an existing
+    BLOCKED_APPROVAL gate; never executes the task itself (the worker
+    still does that, with all of its existing checks, e.g. the real
+    live-PayPal-config requirement for DEPLOY)."""
+    from .acceptance import release_task
+
+    data_dir = _data_dir(args)
+    out = release_task(data_dir, args.task_id, actor=args.actor)
+    print(json.dumps(out, indent=2))
+    return 0
+
+
+def _cmd_abandon_opportunity(args) -> int:
+    """Phase 11-real P1-10: thin CLI wrapper around the existing, already-
+    tested `acceptance.abandon_opportunity()` - the exact same function
+    JARVIS's "Abandon" button already calls."""
+    from .acceptance import abandon_opportunity
+
+    data_dir = _data_dir(args)
+    out = abandon_opportunity(data_dir, args.opportunity_id, actor=args.actor,
+                              reason=args.reason or "")
+    print(json.dumps(out, indent=2))
+    return 0
+
+
 def _cmd_autonomy(args) -> int:
     """The autonomous revenue loop. €0, no LLM, no money, no external send."""
     from . import autonomy
@@ -2526,6 +2573,31 @@ def build_parser() -> argparse.ArgumentParser:
              "with the exact command to run next",
     )
     pa.set_defaults(func=_cmd_pending_actions)
+
+    ao = sub.add_parser(
+        "accept-opportunity", parents=[common, actor_only],
+        help="business decision: accept an Opportunity and build its real "
+             "ExecutionTask chain (moves no money, no protected action)",
+    )
+    ao.add_argument("opportunity_id", metavar="OPPORTUNITY_ID")
+    ao.set_defaults(func=_cmd_accept_opportunity)
+
+    rt = sub.add_parser(
+        "release-task", parents=[common, actor_only],
+        help="satisfy an existing BLOCKED_APPROVAL gate (e.g. a DEPLOY task) "
+             "- does not execute the task itself, only makes it eligible",
+    )
+    rt.add_argument("task_id", metavar="TASK_ID")
+    rt.set_defaults(func=_cmd_release_task)
+
+    abo = sub.add_parser(
+        "abandon-opportunity", parents=[common, actor_only],
+        help="cancel an Opportunity's non-terminal tasks and move it to "
+             "ABANDONED",
+    )
+    abo.add_argument("opportunity_id", metavar="OPPORTUNITY_ID")
+    abo.add_argument("--reason", default=None, help="why it is being abandoned")
+    abo.set_defaults(func=_cmd_abandon_opportunity)
 
     cand = sub.add_parser("candidate", parents=[common], help="show one candidate")
     cand.add_argument("name")

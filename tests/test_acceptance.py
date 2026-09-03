@@ -494,6 +494,106 @@ class PendingActionsTests(AcceptanceBase):
         self.assertEqual(rc, 0)
 
 
+# ---------------------------------------------------------------------------
+# Phase 11-real P1-10: CLI parity for accept/release/abandon
+# ---------------------------------------------------------------------------
+
+class CliLifecycleCommandsTests(AcceptanceBase):
+    def _bare_opp(self, *, title="pack"):
+        s = OpportunityStore.load(self.d / "opportunities.json")
+        oid = s.upsert(Opportunity(title=title, category="saas"))["id"]
+        s.save()
+        return oid
+
+    def _run(self, *args):
+        return _cli_main(["--data-dir", str(self.d), *args])
+
+    # --- accept-opportunity ---------------------------------------------
+    def test_accept_opportunity_builds_the_real_chain(self):
+        oid = self._bare_opp()
+        rc = self._run("accept-opportunity", oid, "--actor", "founder")
+        self.assertEqual(rc, 0)
+
+        row = execution_view(self.d, oid)[0]
+        self.assertTrue(row["accepted"])
+        self.assertEqual(row["accepted_by"], "founder")
+        self.assertEqual(len(row["tasks"]), len(acceptance.CHAIN))
+        self.assertEqual(load_opportunities(self.d).get(oid)["state"], "SELECTED")
+
+    def test_accept_opportunity_is_idempotent_via_cli(self):
+        oid = self._bare_opp()
+        self._run("accept-opportunity", oid)
+        rc = self._run("accept-opportunity", oid)
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(load_tasks(self.d).by_opportunity(oid)),
+                         len(acceptance.CHAIN))   # not duplicated
+
+    def test_accept_opportunity_unknown_id_fails_closed(self):
+        rc = self._run("accept-opportunity", "opp_" + "a" * 12)
+        self.assertEqual(rc, 1)
+
+    # --- release-task -----------------------------------------------------
+    def test_release_task_satisfies_the_approval_gate(self):
+        oid = self._bare_opp()
+        q = load_tasks(self.d)
+        t = q.create(oid, "DEPLOY", requires_approval=True, approval_type="money")
+        q.resolve_dependencies()
+        q.save()
+        self.assertEqual(load_tasks(self.d).get(t.task_id).status, "BLOCKED_APPROVAL")
+
+        rc = self._run("release-task", t.task_id, "--actor", "founder")
+        self.assertEqual(rc, 0)
+
+        released = load_tasks(self.d).get(t.task_id)
+        self.assertNotEqual(released.status, "BLOCKED_APPROVAL")
+        self.assertTrue(released.approval_granted)
+        self.assertEqual(released.approval_granted_by, "founder")
+        types = [e["type"] for e in load_events(self.d).all()]
+        self.assertIn("TASK_UNBLOCKED", types)
+
+    def test_release_task_never_executes_the_task_itself(self):
+        # release only clears the approval gate - it does not run the
+        # adapter or touch execution/live_url at all
+        oid = self._bare_opp()
+        q = load_tasks(self.d)
+        t = q.create(oid, "DEPLOY", requires_approval=True, approval_type="money")
+        q.resolve_dependencies()
+        q.save()
+        self._run("release-task", t.task_id)
+        self.assertNotIn("live_url", load_opportunities(self.d).get(oid).get("execution", {}))
+        self.assertNotEqual(load_tasks(self.d).get(t.task_id).status, "SUCCEEDED")
+
+    def test_release_task_unknown_id_fails_closed(self):
+        rc = self._run("release-task", "task_" + "a" * 16)
+        self.assertEqual(rc, 1)
+
+    def test_release_task_not_blocked_fails_closed(self):
+        oid = self._bare_opp()
+        q = load_tasks(self.d)
+        t = q.create(oid, "DEPLOY")   # PENDING, not BLOCKED_APPROVAL
+        q.save()
+        rc = self._run("release-task", t.task_id)
+        self.assertEqual(rc, 1)
+
+    # --- abandon-opportunity ----------------------------------------------
+    def test_abandon_opportunity_cancels_tasks_and_moves_to_abandoned(self):
+        oid = self._bare_opp()
+        self._run("accept-opportunity", oid)
+        rc = self._run("abandon-opportunity", oid, "--reason", "not worth it",
+                       "--actor", "founder")
+        self.assertEqual(rc, 0)
+
+        self.assertEqual(load_opportunities(self.d).get(oid)["state"], "ABANDONED")
+        statuses = {t.status for t in load_tasks(self.d).by_opportunity(oid)}
+        self.assertIn("CANCELLED", statuses)
+        self.assertNotIn("PENDING", statuses)
+        self.assertNotIn("READY", statuses)
+
+    def test_abandon_opportunity_unknown_id_fails_closed(self):
+        rc = self._run("abandon-opportunity", "opp_" + "a" * 12)
+        self.assertEqual(rc, 1)
+
+
 class JarvisWiringTests(AcceptanceBase):
     def test_accept_abandon_run_worker_through_apply_control(self):
         from revenue_os.jarvis_server import (
