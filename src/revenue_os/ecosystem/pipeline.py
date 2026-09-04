@@ -115,9 +115,69 @@ def select(data_dir, oid: str, *, priority_weights: dict | None = None,
     return payload
 
 
+_TASK_CHAIN: tuple[str, ...] = ("PLAN_TASK", "EXECUTE_TASK", "VERIFY_RESULT")
+
+
+def _plan_task_chain(data_dir, oid: str, rec: dict, *, actor: str) -> dict:
+    """TASK strategy (spec 11): a real, persistent ExecutionTask chain that
+    prepares the deliverable end to end (PLAN_TASK -> EXECUTE_TASK ->
+    VERIFY_RESULT, all SAFE_AUTONOMOUS - task_class.py). Idempotent - a
+    second call reuses the existing tasks. Mirrors
+    acceptance.accept_opportunity's shape (SELECTED + execution.accepted) so
+    execution_view()/pending_actions() surface it for free. Unlike the
+    PRODUCT chain there is no DEPLOY/DISTRIBUTE/CHECK_* - submitting the
+    finished deliverable on the source platform, and recording what actually
+    happened, stay explicit human actions (see acceptance.pending_actions'
+    SUBMIT_TASK row and record_task_outcome() below)."""
+    from ..acceptance import _ensure_selected
+    from ..events import load_events
+    from ..execution import load_tasks
+
+    store = load_opportunities(data_dir)
+    moves = _ensure_selected(store, oid, actor)
+
+    q = load_tasks(data_dir)
+    ev = load_events(data_dir)
+    ids: dict[str, str] = {}
+    created: list[str] = []
+    reused: list[str] = []
+    existing_ids = {t.task_id for t in q.all()}
+    prev = None
+    for ttype in _TASK_CHAIN:
+        deps = [ids[prev]] if prev else []
+        t = q.create(oid, ttype, depends_on=deps, priority=5,
+                     idempotency_key=f"plan_task:{oid}:{ttype}",
+                     input={"title": rec.get("title", ""), "accepted_by": actor})
+        ids[ttype] = t.task_id
+        if t.task_id in existing_ids:
+            reused.append(ttype)
+        else:
+            created.append(ttype)
+            ev.emit("TASK_CREATED", task_id=t.task_id, opportunity_id=oid,
+                    task_type=ttype, actor=actor, depends_on=list(deps),
+                    priority=5)
+        prev = ttype
+
+    res = q.resolve_dependencies()
+    q.save()
+    for a, b in moves:
+        ev.emit("OPPORTUNITY_TRANSITIONED", opportunity_id=oid, actor=actor,
+                **{"from": a, "to": b, "reason": "accepted for execution"})
+    for tid in res.get("promoted", []):
+        tt = q.get(tid)
+        ev.emit("TASK_READY", task_id=tid, opportunity_id=oid,
+                task_type=tt.task_type, actor=actor)
+    ev.save()
+
+    store.mark_accepted(oid, by=actor, task_ids=list(ids.values()))
+    store.save()
+
+    return {"kind": "task_chain", "engine": "ecosystem_task",
+            "chain": list(_TASK_CHAIN), "created": created, "reused": reused,
+            "planned_at": now_iso()}
+
+
 _PREPARED_STRATEGIES = {
-    model.STRAT_TASK: ("prepare the deliverable/answer for this task, then a "
-                       "human submits it on the source platform"),
     model.STRAT_AFFILIATE: ("prepare comparison/how-to assets; a human joins the "
                             "affiliate program (HUMAN_SETUP_REQUIRED) before any link goes live"),
     model.STRAT_ECOMMERCE: ("prepare listings + margin analysis; a human opens the "
@@ -158,7 +218,17 @@ def plan(data_dir, oid: str, *, actor: str = "ecosystem") -> dict:
         return {"opportunity_id": oid, "strategy": recommended,
                 "kind": "task_chain", "acceptance": result}
 
-    # prepared plan for the non-product strategies (spec 11/13/14 are later)
+    if recommended == model.STRAT_TASK:
+        result = _plan_task_chain(data_dir, oid, rec, actor=actor)
+        store2 = load_opportunities(data_dir)
+        s = store2.get(oid).get("strategy") or {}
+        s["plan"] = result
+        store2.record_strategy(oid, s)
+        store2.save()
+        return {"opportunity_id": oid, "strategy": recommended,
+                "kind": "task_chain", "plan": result}
+
+    # prepared plan for the remaining strategies (spec 13/14 are later)
     note = _PREPARED_STRATEGIES.get(recommended, _PREPARED_STRATEGIES[model.STRAT_OTHER])
     plan_payload = {"kind": "prepared", "recommended": recommended,
                     "note": note, "planned_at": now_iso(),
@@ -172,3 +242,125 @@ def plan(data_dir, oid: str, *, actor: str = "ecosystem") -> dict:
     return {"opportunity_id": oid, "strategy": recommended,
             "kind": "prepared", "note": note,
             "next_step_class": "HUMAN_REQUIRED"}
+
+
+def record_task_outcome(data_dir, oid: str, *, success: bool, amount: float = 0.0,
+                        currency: str = "EUR", ref: str = "", note: str = "",
+                        actor: str = "human") -> dict:
+    """Human, out-of-band confirmation of a TASK-strategy real-world outcome
+    (spec 11): a human took the VERIFY_RESULT-approved deliverable, submitted
+    it themselves on the source platform (the fleet never does that - see
+    action_class's platform-posting rules / acceptance.pending_actions'
+    SUBMIT_TASK row), and is now recording what actually happened. A plain,
+    synchronous, human-triggered call - never used by the worker, never
+    inside autonomous_context() - exactly like acceptance.deliver_now() for
+    the PRODUCT chain.
+
+    success=True books the REAL, already-received payment into the SAME
+    ledger CHECK_REVENUE uses (revenue.record_opportunity_payment) -
+    idempotent by `ref` - then moves the opportunity
+    VALIDATING -> FIRST_SALE -> ACTIVE (the task's "delivery" already
+    happened when the human submitted it; there is no separate DELIVER
+    step, unlike the PRODUCT chain). success requires a positive `amount`
+    and a stable `ref` - this records a CONFIRMED payment, not a hopeful
+    outcome. success=False records a settled loss (rejected / unpaid /
+    never submitted) and moves nothing.
+
+    Every outcome - win or loss - is fed to the learning loop
+    (ecosystem.learning.record_outcome) so future DISCOVER / SELECT_STRATEGY
+    runs weight TASK opportunities by what actually happened, not a guess.
+    Fails closed on: unknown opportunity, no VERIFIED deliverable ever
+    produced, or an invalid success/amount/ref combination - never
+    fabricates a payment or an outcome.
+    """
+    from .. import opportunity_state as ostate
+    from ..events import load_events
+    from ..execution import load_tasks
+    from ..revenue import RevenueLedger, record_opportunity_payment
+    from . import learning
+
+    data_dir = Path(data_dir)
+    store = load_opportunities(data_dir)
+    rec = store.get(oid)
+    if rec is None:
+        raise EcosystemError(f"unknown opportunity {oid!r}")
+
+    q = load_tasks(data_dir)
+    verify_tasks = [t for t in q.by_opportunity(oid) if t.task_type == "VERIFY_RESULT"]
+    if not any(t.status == "SUCCEEDED" for t in verify_tasks):
+        raise EcosystemError(
+            f"{oid}: no successful VERIFY_RESULT - no verified deliverable was "
+            "ever produced for this task, refusing to record an outcome")
+
+    if success:
+        if amount <= 0:
+            raise EcosystemError(
+                "success=True requires a positive amount - this records a "
+                "CONFIRMED real payment, not a hopeful outcome")
+        if not ref:
+            raise EcosystemError(
+                "a stable payment reference (--ref) is required to record a "
+                "real payment idempotently")
+
+    ledger_path = data_dir / "revenue.json"
+    booked_outcome = None
+    if success:
+        ledger = RevenueLedger.load(ledger_path)
+        if ledger.has_ref(ref):
+            return {"opportunity_id": oid, "outcome": "already_recorded",
+                    "ref": ref, "state": rec.get("state")}
+        booked = record_opportunity_payment(
+            ledger, opportunity_id=oid, amount=amount, ref=ref, currency=currency,
+            note=note or "task payment (human-confirmed)", actor=actor)
+        booked_outcome = booked["outcome"]
+
+        ev = load_events(data_dir)
+        ev.emit("PAYMENT_DETECTED", opportunity_id=oid, actor=actor,
+                reference=ref, amount=amount, currency=currency, provider="manual",
+                customer_ref="")
+        ev.emit("REVENUE_RECORDED", opportunity_id=oid, actor=actor,
+                reference=ref, ledger_ref=ref, amount=amount, currency=currency,
+                opportunity_total_eur=booked.get("opportunity_total", 0))
+        for tgt, why in (("FIRST_SALE", "task payment confirmed"),
+                         ("ACTIVE", "the task was fulfilled at submission - "
+                                    "no separate delivery step")):
+            cur = (store.get(oid) or {}).get("state") or ostate.INITIAL
+            if ostate.can_transition(cur, tgt):
+                tr = store.transition(oid, tgt, reason=f"record_task_outcome: {why}",
+                                      source="human", actor=actor)
+                ev.emit("OPPORTUNITY_TRANSITIONED", opportunity_id=oid, actor=actor,
+                        **{"from": tr["previous_state"], "to": tr["next_state"],
+                           "reason": tr["reason"]})
+        store.save()
+        ev.save()
+    else:
+        ev = load_events(data_dir)
+        ev.emit("TASK_OUTCOME_RECORDED", opportunity_id=oid, actor=actor,
+                success=False, amount=0.0, currency=currency, ref=ref, note=note)
+        ev.save()
+
+    store.add_experiment(
+        oid, "task_outcome",
+        (f"paid: EUR {amount:.2f}" if success else
+         f"not paid/accepted: {note or 'no reason given'}"),
+        result="success" if success else "failure")
+    store.save()
+
+    d = rec.get("discovery") or {}
+    outcome = learning.Outcome(
+        opportunity_id=oid,
+        strategy=str((rec.get("strategy") or {}).get("recommended") or model.STRAT_TASK),
+        source=str(d.get("source", "")),
+        category=str(rec.get("category", "other")),
+        opportunity_type=str(d.get("opportunity_type") or model.TYPE_TASK),
+        execution_time_hours=round(float(d.get("est_time_minutes", 0.0) or 0.0) / 60.0, 3),
+        cost_eur=0.0,
+        revenue_eur=float(amount) if success else 0.0,
+        success=bool(success),
+        failure_reason="" if success else (note or "not accepted / not paid"),
+        settled=True)
+    learning.record_outcome(data_dir, outcome)
+
+    return {"opportunity_id": oid, "outcome": "success" if success else "failure",
+            "amount": float(amount) if success else 0.0, "ref": ref,
+            "state": store.get(oid).get("state"), "booked": booked_outcome}

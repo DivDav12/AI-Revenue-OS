@@ -62,6 +62,9 @@ TASK_TYPES: tuple[str, ...] = (
     "DELIVER", "ANALYZE", "OPTIMIZE", "SPAWN_VARIANT", "SCALE",
     # ecosystem: real opportunity discovery -> evaluation -> strategy
     "DISCOVER", "VERIFY", "EVALUATE", "SELECT_STRATEGY",
+    # ecosystem: TASK-strategy execution (spec 11) - the fleet prepares the
+    # deliverable end to end; only the external submission stays human.
+    "PLAN_TASK", "EXECUTE_TASK", "VERIFY_RESULT",
 )
 
 _APPROVAL_TYPES: frozenset[str] = frozenset({"money", "identity", "legal"})

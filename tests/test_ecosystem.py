@@ -388,14 +388,34 @@ class PipelineTests(unittest.TestCase):
             pipeline.plan(self.d, oid)
 
     def test_non_product_strategy_is_prepared_and_human_gated(self):
+        oid = self._one(opportunity_type=model.TYPE_AFFILIATE, est_pay_eur=25.0,
+                        demand_hint=0.6)
+        sel = pipeline.select(self.d, oid)
+        if sel["recommended"] != model.STRAT_AFFILIATE:
+            self.skipTest("strategy engine did not pick AFFILIATE for this fixture")
+        out = pipeline.plan(self.d, oid)
+        self.assertEqual(out["kind"], "prepared")
+        self.assertEqual(out["next_step_class"], "HUMAN_REQUIRED")
+
+    def test_task_strategy_gets_a_real_execution_chain(self):
         oid = self._one(opportunity_type=model.TYPE_TASK, est_pay_eur=25.0,
                         demand_hint=0.6)
         sel = pipeline.select(self.d, oid)
         if sel["recommended"] != model.STRAT_TASK:
             self.skipTest("strategy engine did not pick TASK for this fixture")
         out = pipeline.plan(self.d, oid)
-        self.assertEqual(out["kind"], "prepared")
-        self.assertEqual(out["next_step_class"], "HUMAN_REQUIRED")
+        self.assertEqual(out["kind"], "task_chain")
+        from revenue_os.execution import load_tasks
+        chain = [t.task_type for t in load_tasks(self.d).by_opportunity(oid)]
+        self.assertEqual(chain, ["PLAN_TASK", "EXECUTE_TASK", "VERIFY_RESULT"])
+        rec = load_opportunities(self.d).get(oid)
+        self.assertTrue(rec["execution"]["accepted"])
+        self.assertEqual(rec["state"], "SELECTED")
+        # idempotent: re-planning reuses the same tasks, creates nothing new
+        out2 = pipeline.plan(self.d, oid)
+        self.assertEqual(out2["plan"]["created"], [])
+        self.assertEqual(out2["plan"]["reused"],
+                         ["PLAN_TASK", "EXECUTE_TASK", "VERIFY_RESULT"])
 
 
 # ---------------------------------------------------------------------------
@@ -578,7 +598,8 @@ class EcosystemTaskTests(unittest.TestCase):
 
     def test_all_ecosystem_task_types_are_safe_autonomous(self):
         from revenue_os.task_class import classify_task
-        for t in ("DISCOVER", "VERIFY", "EVALUATE", "SELECT_STRATEGY"):
+        for t in ("DISCOVER", "VERIFY", "EVALUATE", "SELECT_STRATEGY",
+                  "PLAN_TASK", "EXECUTE_TASK", "VERIFY_RESULT"):
             self.assertTrue(classify_task(t).autonomous, t)
 
     def test_discover_task_runs_through_the_worker(self):
@@ -619,6 +640,170 @@ class EcosystemTaskTests(unittest.TestCase):
         out = run_worker(self.d, max_ticks=2)
         self.assertIn(out["processed"][0]["status"],
                       ("FAILED_FINAL", "FAILED_RETRYABLE"))
+
+
+# ---------------------------------------------------------------------------
+# TASK-strategy vertical slice: PLAN_TASK -> EXECUTE_TASK -> VERIFY_RESULT ->
+# (human submits) -> record_task_outcome -> ledger + FSM + learning
+# ---------------------------------------------------------------------------
+
+class TaskExecutionChainTests(unittest.TestCase):
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.d = Path(self._d.name)
+
+    def tearDown(self):
+        self._d.cleanup()
+
+    def _qualified_task_opportunity(self):
+        DiscoveryEngine(self.d, sources=[_StaticSource([_draft(
+            opportunity_type=model.TYPE_TASK, source_id="t1", est_pay_eur=25.0,
+            demand_hint=0.6,
+            evidence=["Ask HN: I will pay for a CSV dedupe script"])])]).run()
+        oid = load_opportunities(self.d).all()[0]["id"]
+        pipeline.evaluate(self.d, oid)
+        sel = pipeline.select(self.d, oid)
+        if sel["recommended"] != model.STRAT_TASK:
+            self.skipTest("strategy engine did not pick TASK for this fixture")
+        pipeline.plan(self.d, oid)
+        return oid
+
+    def _drain(self, max_ticks=10):
+        from revenue_os.worker import run_worker
+        return run_worker(self.d, max_ticks=max_ticks)
+
+    def test_chain_runs_through_the_worker_and_produces_a_verified_deliverable(self):
+        from revenue_os.execution import load_tasks
+
+        oid = self._qualified_task_opportunity()
+        out = self._drain()
+        statuses = {p["task_type"]: p["status"] for p in out["processed"]}
+        self.assertEqual(statuses.get("PLAN_TASK"), "SUCCEEDED")
+        self.assertEqual(statuses.get("EXECUTE_TASK"), "SUCCEEDED")
+        self.assertEqual(statuses.get("VERIFY_RESULT"), "SUCCEEDED")
+
+        deliverable = self.d / "deliverables" / oid / "task_solution.md"
+        self.assertTrue(deliverable.is_file())
+        content = deliverable.read_text(encoding="utf-8")
+        self.assertIn("CSV dedupe script", content)
+        self.assertIn("Ask HN: I will pay for a CSV dedupe script", content)
+
+        rec = load_opportunities(self.d).get(oid)
+        self.assertEqual(rec["state"], "VALIDATING")   # never auto-advanced past this
+
+        vt = [t for t in load_tasks(self.d).by_opportunity(oid)
+              if t.task_type == "VERIFY_RESULT"][0]
+        self.assertTrue(vt.output["checklist"]["references_title"])
+
+    def test_worker_never_moves_money_or_submits_anywhere(self):
+        # the whole chain runs inside autonomous_context() (worker._execute) -
+        # if any adapter ever tried a money/identity action it would raise.
+        from revenue_os import action_class as ac2
+        oid = self._qualified_task_opportunity()
+        with ac2.autonomous_context():
+            out = self._drain()
+        self.assertTrue(all(p["ok"] for p in out["processed"] if "ok" in p))
+
+    def test_pending_actions_surfaces_submit_task_after_verification(self):
+        from revenue_os.acceptance import pending_actions
+
+        oid = self._qualified_task_opportunity()
+        self._drain()
+        rows = [r for r in pending_actions(self.d) if r["opportunity_id"] == oid]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["action"], "SUBMIT_TASK")
+        self.assertIn("task_solution.md", rows[0]["detail"])
+
+    def test_record_task_outcome_before_verification_fails_closed(self):
+        oid = self._qualified_task_opportunity()   # chain not drained yet
+        with self.assertRaises(pipeline.EcosystemError):
+            pipeline.record_task_outcome(self.d, oid, success=True, amount=20.0,
+                                         ref="r1")
+
+    def test_record_task_outcome_success_books_ledger_and_advances_state(self):
+        from revenue_os.acceptance import pending_actions
+        from revenue_os.ecosystem.learning import OutcomeStore
+        from revenue_os.revenue import RevenueLedger
+
+        oid = self._qualified_task_opportunity()
+        self._drain()
+
+        out = pipeline.record_task_outcome(self.d, oid, success=True, amount=22.5,
+                                           ref="paypal-abc", note="paid via PayPal")
+        self.assertEqual(out["outcome"], "success")
+        self.assertEqual(out["state"], "ACTIVE")
+
+        ledger = RevenueLedger.load(self.d / "revenue.json")
+        self.assertEqual(ledger.total_for(oid), 22.5)
+
+        rows = OutcomeStore.load(self.d).rows()
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["success"])
+        self.assertEqual(rows[0]["revenue_eur"], 22.5)
+        self.assertEqual(rows[0]["strategy"], "TASK")
+
+        # settled - no longer a pending SUBMIT_TASK action
+        rows2 = [r for r in pending_actions(self.d) if r["opportunity_id"] == oid]
+        self.assertEqual(rows2, [])
+
+        # idempotent replay with the same ref books nothing new
+        out2 = pipeline.record_task_outcome(self.d, oid, success=True, amount=22.5,
+                                            ref="paypal-abc")
+        self.assertEqual(out2["outcome"], "already_recorded")
+        self.assertEqual(RevenueLedger.load(self.d / "revenue.json").total_for(oid), 22.5)
+
+    def test_record_task_outcome_failure_settles_without_payment(self):
+        from revenue_os.ecosystem.learning import OutcomeStore
+        from revenue_os.revenue import RevenueLedger
+
+        oid = self._qualified_task_opportunity()
+        self._drain()
+
+        out = pipeline.record_task_outcome(self.d, oid, success=False,
+                                           note="requester filled the gig elsewhere")
+        self.assertEqual(out["outcome"], "failure")
+
+        self.assertEqual(RevenueLedger.load(self.d / "revenue.json").total_for(oid), 0.0)
+        rec = load_opportunities(self.d).get(oid)
+        self.assertEqual(rec["state"], "VALIDATING")   # unchanged - no fake progress
+
+        rows = OutcomeStore.load(self.d).rows()
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0]["success"])
+        self.assertEqual(rows[0]["failure_reason"], "requester filled the gig elsewhere")
+
+    def test_record_task_outcome_success_requires_amount_and_ref(self):
+        oid = self._qualified_task_opportunity()
+        self._drain()
+        with self.assertRaises(pipeline.EcosystemError):
+            pipeline.record_task_outcome(self.d, oid, success=True, amount=0.0,
+                                         ref="r1")
+        with self.assertRaises(pipeline.EcosystemError):
+            pipeline.record_task_outcome(self.d, oid, success=True, amount=10.0,
+                                         ref="")
+
+    def test_execute_task_fails_closed_with_no_plan(self):
+        from revenue_os.ecosystem.task_adapters import ExecuteTaskAdapter
+        from revenue_os.execution import ExecutionTask
+        from revenue_os.worker import AdapterContext
+
+        task = ExecutionTask(opportunity_id="opp_x", task_type="EXECUTE_TASK")
+        ctx = AdapterContext(self.d, task, {"id": "opp_x", "title": "x"}, {})
+        res = ExecuteTaskAdapter().run(ctx)
+        self.assertFalse(res.ok)
+        self.assertFalse(res.retryable)
+
+    def test_verify_result_fails_closed_on_a_missing_file(self):
+        from revenue_os.ecosystem.task_adapters import VerifyResultTaskAdapter
+        from revenue_os.execution import ExecutionTask
+        from revenue_os.worker import AdapterContext
+
+        task = ExecutionTask(opportunity_id="opp_x", task_type="VERIFY_RESULT")
+        ctx = AdapterContext(self.d, task, {"id": "opp_x", "title": "x"},
+                             {"EXECUTE_TASK": {"deliverable_path": "deliverables/opp_x/task_solution.md"}})
+        res = VerifyResultTaskAdapter().run(ctx)
+        self.assertFalse(res.ok)
+        self.assertFalse(res.retryable)
 
 
 if __name__ == "__main__":

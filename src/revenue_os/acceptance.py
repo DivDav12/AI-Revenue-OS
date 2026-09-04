@@ -520,6 +520,32 @@ def pending_actions(data_dir) -> list[dict]:
                 })
 
         rec = store.get(oid) or {}
+
+        verify_tasks = sorted(
+            (t for t in opp_tasks if t.task_type == "VERIFY_RESULT"),
+            key=lambda t: t.created_at)
+        if verify_tasks and verify_tasks[-1].status == "SUCCEEDED":
+            already_recorded = any(
+                e.get("kind") == "task_outcome" for e in rec.get("experiments") or [])
+            if not already_recorded:
+                deliverable = (verify_tasks[-1].output or {}).get(
+                    "deliverable_path", f"deliverables/{oid}/task_solution.md")
+                source_url = (rec.get("discovery") or {}).get("source_url", "")
+                out.append({
+                    "action": "SUBMIT_TASK",
+                    "opportunity_id": oid,
+                    "title": title,
+                    "detail": f"verified deliverable ready at {deliverable}"
+                              + (f" - a human submits it at {source_url}"
+                                 if source_url else " - a human submits it on "
+                                 "the source platform")
+                              + "; the fleet never submits it (platform "
+                              "rules/login/TOS)",
+                    "command": f"revenue_os record-task-outcome {oid} --success "
+                               "--amount <EUR> --ref <payment-reference> "
+                               f"(or --failure --note <reason> if it was not paid)",
+                })
+
         deliveries = (rec.get("execution") or {}).get("deliveries") or {}
         for t in opp_tasks:
             if t.task_type != "DELIVER":

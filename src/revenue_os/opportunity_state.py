@@ -91,7 +91,13 @@ _FORWARD: dict[str, set[str]] = {
     "SELECTED":          {"PLANNING"},
     "PLANNING":          {"BUILDING", "FAILED"},
     "BUILDING":          {"VALIDATING", "FAILED"},
-    "VALIDATING":        {"READY_TO_DEPLOY", "BUILDING", "FAILED"},
+    # FIRST_SALE from VALIDATING: the TASK-strategy chain (spec 11) has no
+    # DEPLOY step - a validated deliverable is submitted by a human on the
+    # source platform, and a confirmed real payment
+    # (ecosystem.pipeline.record_task_outcome) lands here directly, exactly
+    # like the existing LIVE -> FIRST_SALE precedent above for the PRODUCT
+    # chain. Never set except from a human-confirmed payment.
+    "VALIDATING":        {"READY_TO_DEPLOY", "BUILDING", "FAILED", "FIRST_SALE"},
     "READY_TO_DEPLOY":   {"DEPLOYING"},
     "DEPLOYING":         {"LIVE", "READY_TO_DEPLOY", "FAILED"},
     # a confirmed first payment can land on a live page before any separate

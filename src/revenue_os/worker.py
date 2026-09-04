@@ -115,6 +115,12 @@ _START_STATE: dict[str, str] = {
     "VALIDATE_PRODUCT": "VALIDATING",
     "VALIDATE_PAGE": "VALIDATING",
     "DEPLOY": "DEPLOYING",
+    # ecosystem TASK-strategy chain (spec 11) - reuses the exact same
+    # PLANNING/BUILDING/VALIDATING states the PRODUCT chain already uses;
+    # there is no separate "task state machine".
+    "PLAN_TASK": "PLANNING",
+    "EXECUTE_TASK": "BUILDING",
+    "VERIFY_RESULT": "VALIDATING",
     # DELIVER / OPTIMIZE intentionally have NO start transition:
     #  - DELIVERING is reached only from a confirmed successful delivery
     #  - OPTIMIZE is a safe internal draft step and must not move / regress

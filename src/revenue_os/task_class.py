@@ -69,6 +69,16 @@ _TASK_KIND: dict[str, str] = {
     "VERIFY":           "verify_opportunity",
     "EVALUATE":         "evaluate_profitability",
     "SELECT_STRATEGY":  "select_strategy",
+    # ecosystem TASK-strategy execution - all three reuse an EXISTING SAFE
+    # kind (no new action_class rule): PLAN_TASK is a spec draft, EXECUTE_TASK
+    # is exactly the already-declared "prepare_task_solution" kind, and
+    # VERIFY_RESULT is the same deterministic self-check kind VALIDATE_*
+    # already uses. None of them spend money, post anywhere, or touch an
+    # identity - the external submission step stays a human action (see
+    # ecosystem/pipeline.py + acceptance.pending_actions SUBMIT_TASK).
+    "PLAN_TASK":        "agent_spec_draft",
+    "EXECUTE_TASK":     "prepare_task_solution",
+    "VERIFY_RESULT":    "run_deterministic_agent",
 }
 
 #: DISTRIBUTE sub-channels that are pure drafting (no external action)

@@ -55,8 +55,11 @@ Human decision commands (operate on the persistent --data-dir store):
                           (needs PAYPAL_CLIENT_ID + PAYPAL_ENV=live); the autonomous
                           `worker` command is unaffected (Phase 11-real P1-8)
   pending-actions         read-only: list concrete pending human actions (release-task /
-                          check-payments / deliver-product) with the exact next command
-                          (Phase 11-real P1-9)
+                          check-payments / deliver-product / submit-task) with the exact
+                          next command (Phase 11-real P1-9; submit-task: TASK strategy)
+  record-task-outcome OPP_ID --success --amount N --ref REF (or --failure --note TEXT)
+                          record what happened after a human submitted a TASK-strategy
+                          deliverable on the source platform - human-triggered only
   accept-opportunity OPP_ID   business decision: accept an Opportunity, build its
                           real ExecutionTask chain (Phase 11-real P1-10)
   release-task TASK_ID    satisfy an existing BLOCKED_APPROVAL gate (e.g. DEPLOY);
@@ -1497,6 +1500,22 @@ def _cmd_eco_plan(args) -> int:
     return 0
 
 
+def _cmd_eco_record_task_outcome(args) -> int:
+    """Human, out-of-band confirmation of a TASK-strategy real-world outcome
+    (spec 11): the human already submitted the VERIFY_RESULT-approved
+    deliverable on the source platform themselves - this just records what
+    happened. Human-triggered only, never runs through the worker or inside
+    autonomous_context() (see ecosystem.pipeline.record_task_outcome)."""
+    from .ecosystem.pipeline import record_task_outcome
+
+    out = record_task_outcome(
+        _data_dir(args), args.opportunity_id, success=bool(args.success),
+        amount=float(args.amount or 0.0), currency=args.currency,
+        ref=args.ref or "", note=args.note or "", actor=args.actor)
+    print(json.dumps(out, indent=2))
+    return 0
+
+
 def _cmd_eco_simulate(args) -> int:
     """Revenue Simulation Mode: run N synthetic opportunities through the
     whole loop (discover -> verify -> evaluate -> strategy -> execute-sim ->
@@ -2712,6 +2731,24 @@ def build_parser() -> argparse.ArgumentParser:
                              "into an executable plan")
     ep.add_argument("opportunity_id", metavar="OPPORTUNITY_ID")
     ep.set_defaults(func=_cmd_eco_plan)
+
+    eto = sub.add_parser(
+        "record-task-outcome", parents=[common, actor_only],
+        help="ecosystem TASK strategy: record what really happened after a "
+             "human submitted the prepared deliverable on the source "
+             "platform (payment confirmed, or rejected/unpaid)")
+    eto.add_argument("opportunity_id", metavar="OPPORTUNITY_ID")
+    outcome_grp = eto.add_mutually_exclusive_group(required=True)
+    outcome_grp.add_argument("--success", action="store_true",
+                             help="the task was paid - requires --amount and --ref")
+    outcome_grp.add_argument("--failure", action="store_true",
+                             help="not accepted / not paid / never submitted")
+    eto.add_argument("--amount", type=float, default=0.0, metavar="EUR")
+    eto.add_argument("--currency", default="EUR")
+    eto.add_argument("--ref", default=None, metavar="REF",
+                     help="a stable payment reference (idempotency)")
+    eto.add_argument("--note", default=None, help="why it failed, if it did")
+    eto.set_defaults(func=_cmd_eco_record_task_outcome)
 
     esim = sub.add_parser("simulate", parents=[common],
                           help="ecosystem: full-loop revenue simulation, no side effects")
