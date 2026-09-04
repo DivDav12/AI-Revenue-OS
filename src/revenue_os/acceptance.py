@@ -530,17 +530,37 @@ def pending_actions(data_dir) -> list[dict]:
             if not already_recorded:
                 deliverable = (verify_tasks[-1].output or {}).get(
                     "deliverable_path", f"deliverables/{oid}/task_solution.md")
-                source_url = (rec.get("discovery") or {}).get("source_url", "")
+                d = rec.get("discovery") or {}
+                source_url = d.get("source_url", "")
+                source = str(d.get("source", ""))
+                platform = source.split("human_fed:", 1)[1] if source.startswith(
+                    "human_fed:") else ""
+                pay = d.get("payment_evidence") or {}
+                policy_status = d.get("policy_status", "")
+
+                detail = (f"verified deliverable ready at {deliverable}"
+                         + (f" - a human submits it at {source_url}"
+                            if source_url else " - a human submits it on "
+                            "the source platform")
+                         + "; the fleet never submits it (platform "
+                         "rules/login/TOS) - final submission requires "
+                         "human action")
+                if policy_status in ("HUMAN_REQUIRED", "BLOCKED_BY_POLICY"):
+                    detail += (
+                        f" | COMPLIANCE WARNING: this platform's own terms "
+                        f"are {policy_status} for AI-assisted preparation - "
+                        "review before submitting, see "
+                        "ecosystem.human_fed.PLATFORM_POLICY for the citation")
                 out.append({
                     "action": "SUBMIT_TASK",
                     "opportunity_id": oid,
                     "title": title,
-                    "detail": f"verified deliverable ready at {deliverable}"
-                              + (f" - a human submits it at {source_url}"
-                                 if source_url else " - a human submits it on "
-                                 "the source platform")
-                              + "; the fleet never submits it (platform "
-                              "rules/login/TOS)",
+                    "platform": platform,
+                    "task_url": source_url,
+                    "payment": {"amount": pay.get("amount", 0),
+                               "currency": pay.get("currency", "")},
+                    "deliverable_path": deliverable,
+                    "detail": detail,
                     "command": f"revenue_os record-task-outcome {oid} --success "
                                "--amount <EUR> --ref <payment-reference> "
                                f"(or --failure --note <reason> if it was not paid)",

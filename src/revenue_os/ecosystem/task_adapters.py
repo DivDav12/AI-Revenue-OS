@@ -101,7 +101,19 @@ def _render_task_solution(spec: dict) -> str:
     opportunity record's own title/description/evidence) - it never invents
     domain expertise, numbers, or claims about the requester. The body is
     an explicit human-completion draft, not a fabricated finished answer
-    (spec sections 5, 11)."""
+    (spec sections 5, 11).
+
+    The request/evidence text is external, untrusted content (it may come
+    from a human-fed task listing - see human_fed.py). This function does
+    not interpret it as instructions (there is no LLM call and no dynamic
+    execution here - it is plain string templating), but it is fenced with
+    the SAME `wrap_untrusted` marker the LLM call sites use, so the
+    boundary between "task content" and "this document's own structure" is
+    explicit both in the persisted file and to any future reader/tool that
+    processes it - a prompt-injection phrase inside the source text stays
+    exactly that: quoted content, never a change in what happens next."""
+    from ..llm_normalize import wrap_untrusted
+
     title = spec.get("title", "")
     request = spec.get("request", "") or title
     evidence = spec.get("evidence") or []
@@ -109,11 +121,12 @@ def _render_task_solution(spec: dict) -> str:
         f"# Draft response: {title}",
         "",
         "## Request (from the source)",
-        request,
+        wrap_untrusted(request),
         "",
         "## Evidence this draft is based on",
     ]
-    lines += [f"- {e}" for e in evidence] if evidence else ["- (none recorded)"]
+    lines += ([f"- {wrap_untrusted(e)}" for e in evidence] if evidence
+             else ["- (none recorded)"])
     lines += [
         "",
         "## Draft solution",
@@ -192,6 +205,19 @@ class ExecuteTaskAdapter(TaskAdapter):
 
         oid = ctx.opportunity.get("id") or ctx.task.opportunity_id
         content = _render_task_solution(spec)
+
+        # untrusted-content safety net (spec: Human-Fed Task Source 5.7) -
+        # the content above is built ONLY from `spec` fields, never
+        # os.environ, so this should never fire; it is a regression guard
+        # checked before ANY deliverable is written to disk, for every
+        # TASK source, not just human-fed ones.
+        from . import human_fed
+        hits = human_fed.scan_for_exfiltration(content)
+        if hits:
+            return AdapterResult(
+                ok=False, retryable=False,
+                error=f"refusing to persist the deliverable: {'; '.join(hits)}")
+
         out_dir = ctx.data_dir / "deliverables" / oid
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / "task_solution.md"

@@ -1500,6 +1500,39 @@ def _cmd_eco_plan(args) -> int:
     return 0
 
 
+def _cmd_ingest_task(args) -> int:
+    """Human-Fed Task Source: validate + ingest one real, human-captured
+    paid-task listing (JSON file) into the ecosystem. This is a bridge
+    step, not an autonomy advance - discovery/verification/scoring/
+    planning/drafting/internal-verification all reuse the existing
+    ecosystem stack unchanged; final submission on the source platform
+    always stays a human action (see ecosystem.human_fed)."""
+    from .ecosystem.human_fed import IngestionError, ingest_task
+
+    try:
+        out = ingest_task(_data_dir(args), args.file, actor=args.actor)
+    except IngestionError as exc:
+        if args.json:
+            print(json.dumps({"error": str(exc)}, indent=2))
+        else:
+            print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(out, indent=2, default=str))
+    else:
+        print(f"opportunity_id:          {out['opportunity_id']}")
+        print(f"platform:                {out['platform']}")
+        print(f"classification:          {out['classification']}")
+        print(f"verification_status:     {out['verification_status']}")
+        print(f"task_quality_score:      {out['task_quality_score']}")
+        print(f"payment_evidence_status: {out['payment_evidence_status']}")
+        print(f"duplicate:               {out['duplicate']}")
+        print(f"platform_policy_status:  {out['platform_policy_status']}")
+        print(f"next_action:             {out['next_action']}")
+    return 0
+
+
 def _cmd_eco_record_task_outcome(args) -> int:
     """Human, out-of-band confirmation of a TASK-strategy real-world outcome
     (spec 11): the human already submitted the VERIFY_RESULT-approved
@@ -2749,6 +2782,18 @@ def build_parser() -> argparse.ArgumentParser:
                      help="a stable payment reference (idempotency)")
     eto.add_argument("--note", default=None, help="why it failed, if it did")
     eto.set_defaults(func=_cmd_eco_record_task_outcome)
+
+    ing = sub.add_parser(
+        "ingest-task", parents=[common, actor_only],
+        help="Human-Fed Task Source: validate + ingest one real, "
+             "human-captured paid-task listing (JSON file) - a bridge "
+             "step, never autonomous discovery/submission")
+    ing.add_argument("--file", required=True, metavar="PATH",
+                     help="path to the task JSON file (see ecosystem.human_fed "
+                          "for the schema)")
+    ing.add_argument("--json", action="store_true",
+                     help="machine-readable output for the command center")
+    ing.set_defaults(func=_cmd_ingest_task)
 
     esim = sub.add_parser("simulate", parents=[common],
                           help="ecosystem: full-loop revenue simulation, no side effects")
