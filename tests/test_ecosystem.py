@@ -21,10 +21,16 @@ from revenue_os.ecosystem import (
     profitability,
     simulation,
     strategy,
+    task_signal,
     verification,
 )
 from revenue_os.ecosystem.discovery import DiscoveryEngine, latest_discovery
-from revenue_os.ecosystem.model import OpportunityDraft, SourceMeta
+from revenue_os.ecosystem.model import (
+    OpportunityDraft,
+    PaymentEvidence,
+    SourceMeta,
+    SubmissionEvidence,
+)
 from revenue_os.ecosystem.sources import (
     HackerNewsDemandSource,
     HumanSetupRequiredSource,
@@ -202,6 +208,87 @@ class VerificationTests(unittest.TestCase):
     def test_unknown_opportunity_type_rejected(self):
         self.assertEqual(verification.verify(_draft(opportunity_type="teleport")).status,
                          model.V_REJECTED)
+
+    # --- discovery quality layer: TASK-signal hard gates ------------------
+
+    def test_task_kind_instant_paid_stays_qualified(self):
+        v = verification.verify(_draft(
+            opportunity_type=model.TYPE_TASK,
+            evidence=["I will pay $30 for a working script, submit via the form"]))
+        self.assertEqual(v.status, model.V_QUALIFIED)
+        self.assertEqual(v.checks["task_kind"], model.TASK_INSTANT_PAID)
+        self.assertIn("task_quality", v.checks)
+
+    def test_task_kind_job_is_human_required(self):
+        v = verification.verify(_draft(
+            opportunity_type=model.TYPE_TASK,
+            evidence=["We're hiring a full-time developer, apply now"]))
+        self.assertEqual(v.status, model.V_HUMAN_REQUIRED)
+        self.assertEqual(v.checks["task_kind"], model.TASK_JOB)
+
+    def test_task_kind_service_lead_is_human_required(self):
+        v = verification.verify(_draft(
+            opportunity_type=model.TYPE_TASK,
+            evidence=["Looking for a freelancer to build a website, "
+                     "need someone to help"]))
+        self.assertEqual(v.status, model.V_HUMAN_REQUIRED)
+        self.assertEqual(v.checks["task_kind"], model.TASK_SERVICE_LEAD)
+
+    def test_captcha_submission_forces_human_required(self):
+        v = verification.verify(_draft(
+            opportunity_type=model.TYPE_TASK,
+            evidence=["I will pay $20 for this bounty"],
+            submission_evidence=SubmissionEvidence(requires_captcha=True)))
+        self.assertEqual(v.status, model.V_HUMAN_REQUIRED)
+        self.assertIn("CAPTCHA", v.reasons[0])
+
+    def test_login_required_submission_forces_human_required(self):
+        v = verification.verify(_draft(
+            opportunity_type=model.TYPE_TASK,
+            evidence=["I will pay $20 for this bounty"],
+            submission_evidence=SubmissionEvidence(requires_login=True)))
+        self.assertEqual(v.status, model.V_HUMAN_REQUIRED)
+
+    def test_identity_required_submission_forces_human_required(self):
+        v = verification.verify(_draft(
+            opportunity_type=model.TYPE_TASK,
+            evidence=["I will pay $20 for this bounty"],
+            submission_evidence=SubmissionEvidence(requires_identity=True)))
+        self.assertEqual(v.status, model.V_HUMAN_REQUIRED)
+
+    def test_expired_deadline_is_rejected(self):
+        v = verification.verify(_draft(
+            opportunity_type=model.TYPE_TASK,
+            evidence=["I will pay $20 for this bounty"],
+            submission_evidence=SubmissionEvidence(
+                deadline="2000-01-01T00:00:00+00:00")))
+        self.assertEqual(v.status, model.V_REJECTED)
+
+    def test_future_deadline_does_not_block(self):
+        v = verification.verify(_draft(
+            opportunity_type=model.TYPE_TASK,
+            evidence=["I will pay $20 for this bounty"],
+            submission_evidence=SubmissionEvidence(
+                deadline="2999-01-01T00:00:00+00:00")))
+        self.assertEqual(v.status, model.V_QUALIFIED)
+
+    def test_a_high_score_never_overrides_the_job_hard_gate(self):
+        # HARD GATE (spec section 5): even a maximally-evidenced job posting
+        # with a concrete guaranteed amount stays HUMAN_REQUIRED - the score
+        # is advisory, task_kind decides.
+        d = _draft(
+            opportunity_type=model.TYPE_TASK,
+            evidence=["We're hiring a full-time developer, apply now"],
+            payment_evidence=PaymentEvidence(
+                amount=5000, currency="EUR", conditions=model.PAY_GUARANTEED,
+                is_estimate=False),
+            submission_evidence=SubmissionEvidence(
+                submission_url="https://example.com/apply",
+                required_deliverable="a resume"))
+        score = task_signal.score_task_quality(d)
+        self.assertGreater(score.total, 0.3)
+        v = verification.verify(d)
+        self.assertEqual(v.status, model.V_HUMAN_REQUIRED)
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +503,27 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(out2["plan"]["created"], [])
         self.assertEqual(out2["plan"]["reused"],
                          ["PLAN_TASK", "EXECUTE_TASK", "VERIFY_RESULT"])
+
+    def test_task_strategy_falls_back_to_prepared_when_task_kind_is_not_confirmed(self):
+        # HARD GATE (spec section 5): STRAT_TASK recommended, but the
+        # evidence did not classify as an autonomous-candidate task kind
+        # (here: OTHER, no bounty/instant/job/service markers at all) -
+        # plan() must NOT build the real chain.
+        oid = self._one(opportunity_type=model.TYPE_TASK, est_pay_eur=25.0,
+                        demand_hint=0.6,
+                        evidence=["a general discussion thread with no concrete "
+                                  "task or payment stated"])
+        sel = pipeline.select(self.d, oid)
+        if sel["recommended"] != model.STRAT_TASK:
+            self.skipTest("strategy engine did not pick TASK for this fixture")
+        rec = load_opportunities(self.d).get(oid)
+        self.assertEqual(rec["discovery"]["verification"]["checks"]["task_kind"],
+                         model.TASK_OTHER)
+        out = pipeline.plan(self.d, oid)
+        self.assertEqual(out["kind"], "prepared")
+        self.assertEqual(out["next_step_class"], "HUMAN_REQUIRED")
+        from revenue_os.execution import load_tasks
+        self.assertEqual(load_tasks(self.d).by_opportunity(oid), [])
 
 
 # ---------------------------------------------------------------------------
@@ -643,6 +751,248 @@ class EcosystemTaskTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# task_signal - classification, quality score, fingerprint, expiry
+# ---------------------------------------------------------------------------
+
+class TaskSignalTests(unittest.TestCase):
+    # --- classify_task_kind: evidence-based, never the title ------------
+
+    def test_classify_instant_paid(self):
+        d = _draft(evidence=["I will pay $25 for a working script"])
+        self.assertEqual(task_signal.classify_task_kind(d), model.TASK_INSTANT_PAID)
+
+    def test_classify_bounty(self):
+        d = _draft(evidence=["$100 bounty for fixing this bug"])
+        self.assertEqual(task_signal.classify_task_kind(d), model.TASK_BOUNTY)
+
+    def test_classify_microtask(self):
+        d = _draft(evidence=["quick task: label 50 images, a 5 minute job"])
+        self.assertEqual(task_signal.classify_task_kind(d), model.TASK_MICRO)
+
+    def test_classify_job(self):
+        d = _draft(evidence=["We're hiring a full-time backend engineer"])
+        self.assertEqual(task_signal.classify_task_kind(d), model.TASK_JOB)
+
+    def test_classify_service_lead(self):
+        d = _draft(evidence=["Looking for a freelancer to redesign our logo"])
+        self.assertEqual(task_signal.classify_task_kind(d), model.TASK_SERVICE_LEAD)
+
+    def test_classify_weak_demand_signal_is_other(self):
+        d = _draft(evidence=["just thinking out loud about a project idea"])
+        self.assertEqual(task_signal.classify_task_kind(d), model.TASK_OTHER)
+
+    def test_classify_never_uses_the_title(self):
+        # the title screams "hiring"; the evidence is a real, no-application
+        # bounty - evidence wins, never the title (spec: "nicht raten")
+        d = _draft(title="We are hiring right now!!!",
+                   evidence=["$50 bounty for a fix, no application needed"])
+        self.assertEqual(task_signal.classify_task_kind(d), model.TASK_BOUNTY)
+
+    def test_classify_contradictory_evidence_is_other(self):
+        d = _draft(evidence=["We're hiring a freelancer, but also here is a "
+                             "$50 bounty for a contest"])
+        self.assertEqual(task_signal.classify_task_kind(d), model.TASK_OTHER)
+
+    def test_classify_empty_evidence_fails_closed_to_other(self):
+        d = _draft(evidence=[], description="")
+        self.assertEqual(task_signal.classify_task_kind(d), model.TASK_OTHER)
+
+    # --- score_task_quality: explainable, never a substitute for the gate -
+
+    def test_missing_payment_is_flagged_unclear_not_real(self):
+        d = _draft(evidence=["a random Ask HN post"])
+        score = task_signal.score_task_quality(d)
+        self.assertFalse(score.factors["concrete_payment"]["present"])
+        self.assertTrue(score.factors["unclear_payment"]["present"])
+
+    def test_estimated_payment_never_counts_as_guaranteed(self):
+        d = _draft(payment_evidence=PaymentEvidence(
+            amount=20, currency="EUR", conditions=model.PAY_CONDITIONAL,
+            is_estimate=True))
+        self.assertTrue(d.payment_evidence.is_estimate)
+        score = task_signal.score_task_quality(d)
+        self.assertTrue(score.factors["concrete_payment"]["present"])
+        self.assertFalse(score.factors["guaranteed_payment"]["present"])
+
+    def test_captcha_is_a_hard_negative_factor(self):
+        d = _draft(submission_evidence=SubmissionEvidence(requires_captcha=True))
+        score = task_signal.score_task_quality(d)
+        self.assertTrue(score.factors["requires_captcha"]["present"])
+
+    def test_login_is_a_hard_negative_factor(self):
+        d = _draft(submission_evidence=SubmissionEvidence(requires_login=True))
+        score = task_signal.score_task_quality(d)
+        self.assertTrue(score.factors["requires_login"]["present"])
+
+    def test_missing_submission_path_is_a_negative_factor(self):
+        d = _draft()   # default submission_evidence: nothing known
+        score = task_signal.score_task_quality(d)
+        self.assertTrue(score.factors["unclear_submission"]["present"])
+
+    def test_expired_deadline_is_a_hard_negative_factor(self):
+        d = _draft(submission_evidence=SubmissionEvidence(
+            deadline="2000-01-01T00:00:00+00:00"))
+        score = task_signal.score_task_quality(d)
+        self.assertTrue(score.factors["expired"]["present"])
+
+    def test_score_is_deterministic_and_explainable(self):
+        d = _draft(evidence=["$50 bounty for a fix"])
+        s1 = task_signal.score_task_quality(d).to_dict()
+        s2 = task_signal.score_task_quality(d).to_dict()
+        self.assertEqual(s1, s2)
+        self.assertTrue(s1["reasons"])
+        for factor in s1["factors"].values():
+            self.assertIn("weight", factor)
+            self.assertIn("present", factor)
+            self.assertIn("sign", factor)
+
+    def test_score_stays_within_bounds(self):
+        for kw in ({}, {"evidence": ["$999 bounty guaranteed"],
+                        "payment_evidence": PaymentEvidence(
+                            amount=999, conditions=model.PAY_GUARANTEED,
+                            is_estimate=False)}):
+            score = task_signal.score_task_quality(_draft(**kw))
+            self.assertGreaterEqual(score.total, 0.0)
+            self.assertLessEqual(score.total, 1.0)
+
+    def test_autonomous_candidate_flag_matches_task_kind(self):
+        job = task_signal.score_task_quality(
+            _draft(evidence=["We're hiring a developer"]))
+        bounty = task_signal.score_task_quality(
+            _draft(evidence=["$50 bounty for a fix"]))
+        self.assertFalse(job.autonomous_candidate)
+        self.assertTrue(bounty.autonomous_candidate)
+
+    # --- fingerprint: stable dedupe key ----------------------------------
+
+    def test_fingerprint_stable_across_url_timestamp_and_id_changes(self):
+        a = _draft(title="Fix the CSV parser bug 2026-09-04T10:00", source_id="1",
+                  source_url="https://x/1")
+        b = _draft(title="Fix the CSV parser bug 2026-09-04T11:30", source_id="2",
+                  source_url="https://x/2")
+        self.assertEqual(task_signal.task_fingerprint(a), task_signal.task_fingerprint(b))
+
+    def test_fingerprint_differs_for_different_tasks(self):
+        a = _draft(title="Fix the CSV parser bug")
+        b = _draft(title="Build a landing page")
+        self.assertNotEqual(task_signal.task_fingerprint(a),
+                            task_signal.task_fingerprint(b))
+
+    def test_fingerprint_differs_across_sources(self):
+        a = _draft(title="Same title", source_meta=_real_meta(source="s1"))
+        b = _draft(title="Same title", source_meta=_real_meta(source="s2"))
+        self.assertNotEqual(task_signal.task_fingerprint(a),
+                            task_signal.task_fingerprint(b))
+
+    # --- is_expired: fails OPEN on unparseable input, never invents a date
+
+    def test_no_deadline_is_not_expired(self):
+        self.assertFalse(task_signal.is_expired(SubmissionEvidence()))
+
+    def test_unparseable_deadline_is_not_treated_as_expired(self):
+        # we never invent a deadline the source did not clearly state -
+        # an unparseable string is not confirmed evidence of expiry.
+        self.assertFalse(task_signal.is_expired(
+            SubmissionEvidence(deadline="not-a-real-date")))
+
+    def test_past_deadline_is_expired(self):
+        self.assertTrue(task_signal.is_expired(
+            SubmissionEvidence(deadline="2000-01-01T00:00:00+00:00")))
+
+    def test_future_deadline_is_not_expired(self):
+        self.assertFalse(task_signal.is_expired(
+            SubmissionEvidence(deadline="2999-01-01T00:00:00+00:00")))
+
+
+# ---------------------------------------------------------------------------
+# TASK fingerprint dedupe through the real DiscoveryEngine
+# ---------------------------------------------------------------------------
+
+class TaskFingerprintDedupeDiscoveryTests(unittest.TestCase):
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.d = Path(self._d.name)
+
+    def tearDown(self):
+        self._d.cleanup()
+
+    def test_re_scraped_task_with_a_new_url_and_id_does_not_duplicate(self):
+        d1 = _draft(opportunity_type=model.TYPE_TASK, source_id="issue-804",
+                   source_url="https://x/804",
+                   title="[radar] open bounty 2026-09-04T14:15",
+                   evidence=["$100 bounty for a fix"])
+        d2 = _draft(opportunity_type=model.TYPE_TASK, source_id="issue-991",
+                   source_url="https://x/991",
+                   title="[radar] open bounty 2026-09-04T15:47",
+                   evidence=["$100 bounty for a fix"])
+        DiscoveryEngine(self.d, sources=[_StaticSource([d1])]).run()
+        self.assertEqual(len(load_opportunities(self.d).all()), 1)
+        rep2 = DiscoveryEngine(self.d, sources=[_StaticSource([d2])]).run()
+        self.assertEqual(len(load_opportunities(self.d).all()), 1)   # still one
+        self.assertEqual(rep2.new, 0)
+        self.assertEqual(rep2.refreshed, 1)
+
+    def test_different_tasks_from_the_same_source_are_not_merged(self):
+        d1 = _draft(opportunity_type=model.TYPE_TASK, source_id="a",
+                   title="Fix bug A", evidence=["$50 bounty"])
+        d2 = _draft(opportunity_type=model.TYPE_TASK, source_id="b",
+                   title="Fix bug B", evidence=["$50 bounty"])
+        DiscoveryEngine(self.d, sources=[_StaticSource([d1, d2])]).run()
+        self.assertEqual(len(load_opportunities(self.d).all()), 2)
+
+    def test_non_task_types_are_unaffected_by_fingerprint_dedupe(self):
+        # a PRODUCT-type draft never computes/stores a task_fingerprint
+        DiscoveryEngine(self.d, sources=[_StaticSource(
+            [_draft(source_id="p1")])]).run()
+        rec = load_opportunities(self.d).all()[0]
+        self.assertNotIn("task_fingerprint", rec["discovery"])
+
+
+# ---------------------------------------------------------------------------
+# per-source quality metrics (spec section 6)
+# ---------------------------------------------------------------------------
+
+class SourceQualityTests(unittest.TestCase):
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.d = Path(self._d.name)
+
+    def tearDown(self):
+        self._d.cleanup()
+
+    def test_funnel_counts_from_real_discovery(self):
+        DiscoveryEngine(self.d, sources=[_StaticSource([
+            _draft(source_id="1"),                                    # QUALIFIED
+            _draft(source_id="2", opportunity_type=model.TYPE_TASK,
+                  evidence=["We're hiring a developer"]),              # HUMAN_REQUIRED
+        ])]).run()
+        sq = learning.source_quality(self.d)["by_source"]
+        self.assertEqual(sq["unit"]["discovered"], 2)
+        self.assertEqual(sq["unit"]["qualified"], 1)
+
+    def test_settled_outcomes_roll_up_by_source(self):
+        learning.record_outcome(self.d, learning.Outcome(
+            opportunity_id="o1", source="hacker-news", revenue_eur=20.0,
+            success=True))
+        learning.record_outcome(self.d, learning.Outcome(
+            opportunity_id="o2", source="hacker-news", revenue_eur=0.0,
+            success=False, failure_reason="not accepted"))
+        sq = learning.source_quality(self.d)["by_source"]
+        self.assertEqual(sq["hacker-news"]["human_submitted"], 2)
+        self.assertEqual(sq["hacker-news"]["successful"], 1)
+        self.assertEqual(sq["hacker-news"]["paid"], 1)
+        self.assertEqual(sq["hacker-news"]["win_rate"], 0.5)
+        self.assertEqual(sq["hacker-news"]["revenue_eur"], 20.0)
+
+    def test_ecosystem_status_exposes_source_quality(self):
+        DiscoveryEngine(self.d, sources=[_StaticSource([_draft(source_id="1")])]).run()
+        st = intel.ecosystem_status(self.d)
+        self.assertIn("source_quality", st)
+        self.assertIn("unit", st["source_quality"])
+        self.assertEqual(st["source_quality"]["unit"]["discovered"], 1)
+
+
+# ---------------------------------------------------------------------------
 # TASK-strategy vertical slice: PLAN_TASK -> EXECUTE_TASK -> VERIFY_RESULT ->
 # (human submits) -> record_task_outcome -> ledger + FSM + learning
 # ---------------------------------------------------------------------------
@@ -804,6 +1154,36 @@ class TaskExecutionChainTests(unittest.TestCase):
         res = VerifyResultTaskAdapter().run(ctx)
         self.assertFalse(res.ok)
         self.assertFalse(res.retryable)
+
+    def test_verify_result_checklist_includes_not_expired_on_the_happy_path(self):
+        from revenue_os.execution import load_tasks
+
+        oid = self._qualified_task_opportunity()
+        self._drain()
+        vt = [t for t in load_tasks(self.d).by_opportunity(oid)
+              if t.task_type == "VERIFY_RESULT"][0]
+        self.assertTrue(vt.output["checklist"]["not_expired"])
+
+    def test_plan_task_fails_closed_on_an_expired_deadline(self):
+        from revenue_os.ecosystem.task_adapters import PlanTaskAdapter
+        from revenue_os.execution import ExecutionTask
+        from revenue_os.worker import AdapterContext
+
+        rec = {
+            "id": "opp_x", "title": "Fix a bug", "category": "freelancing",
+            "discovery": {
+                "opportunity_type": model.TYPE_TASK, "source": "unit",
+                "evidence": ["$50 bounty"], "source_url": "https://x",
+                "submission_evidence": SubmissionEvidence(
+                    deadline="2000-01-01T00:00:00+00:00").to_dict(),
+            },
+        }
+        task = ExecutionTask(opportunity_id="opp_x", task_type="PLAN_TASK")
+        ctx = AdapterContext(self.d, task, rec, {})
+        res = PlanTaskAdapter().run(ctx)
+        self.assertFalse(res.ok)
+        self.assertFalse(res.retryable)
+        self.assertIn("deadline", res.error)
 
 
 if __name__ == "__main__":

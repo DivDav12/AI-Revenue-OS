@@ -140,11 +140,27 @@ class PlanTaskAdapter(TaskAdapter):
     name = "eco-plan-task"
 
     def run(self, ctx: AdapterContext) -> AdapterResult:
+        from . import task_signal
+
         draft = pipeline.draft_from_record(ctx.opportunity)
         title = (draft.title or "").strip()
         if not title:
             return AdapterResult(ok=False, retryable=False,
                                  error="opportunity has no title - nothing to plan")
+        sub = draft.submission_evidence
+        if task_signal.is_expired(sub):
+            return AdapterResult(
+                ok=False, retryable=False,
+                error=f"submission deadline {sub.deadline!r} has already passed - "
+                      "refusing to plan an expired task")
+        deliverable_requirements = [
+            "addresses every point named in the evidence",
+            "restates the request in the requester's own terms",
+            "is submitted by a human on the source platform - the fleet "
+            "never submits it",
+        ]
+        if sub.required_deliverable:
+            deliverable_requirements.insert(0, sub.required_deliverable)
         spec = {
             "title": title,
             "request": draft.description or title,
@@ -153,12 +169,8 @@ class PlanTaskAdapter(TaskAdapter):
             "source_url": draft.source_url,
             "est_pay_eur": draft.est_pay_eur,
             "est_time_minutes": draft.est_time_minutes,
-            "deliverable_requirements": [
-                "addresses every point named in the evidence",
-                "restates the request in the requester's own terms",
-                "is submitted by a human on the source platform - the fleet "
-                "never submits it",
-            ],
+            "deadline": sub.deadline,
+            "deliverable_requirements": deliverable_requirements,
         }
         return AdapterResult(ok=True, output={"task_spec": spec})
 
@@ -189,6 +201,7 @@ class ExecuteTaskAdapter(TaskAdapter):
             "deliverable_path": f"deliverables/{oid}/task_solution.md",
             "solution_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
             "title": spec["title"],
+            "deadline": spec.get("deadline", ""),
         })
 
 
@@ -205,6 +218,9 @@ class VerifyResultTaskAdapter(TaskAdapter):
     _MIN_CHARS = 200
 
     def run(self, ctx: AdapterContext) -> AdapterResult:
+        from . import model as _model
+        from . import task_signal
+
         exec_out = ctx.dep_outputs.get("EXECUTE_TASK") or {}
         rel_path = str(exec_out.get("deliverable_path") or "")
         if not rel_path:
@@ -216,15 +232,19 @@ class VerifyResultTaskAdapter(TaskAdapter):
                                  error=f"deliverable file missing at {rel_path}")
         content = path.read_text(encoding="utf-8")
         # VERIFY_RESULT depends directly only on EXECUTE_TASK (not PLAN_TASK)
-        # - the title travels forward on EXECUTE_TASK's own output, exactly
-        # like BuildProductTaskAdapter's offer travels through BUILD_PRODUCT.
+        # - the title/deadline travel forward on EXECUTE_TASK's own output,
+        # exactly like BuildProductTaskAdapter's offer travels through
+        # BUILD_PRODUCT.
         title = str(exec_out.get("title") or "").strip()
+        deadline = str(exec_out.get("deadline") or "")
+        sub = _model.SubmissionEvidence(deadline=deadline)
 
         checklist = {
             "file_exists": True,
             "min_length": len(content) >= self._MIN_CHARS,
             "references_title": bool(title) and title.lower() in content.lower(),
             "no_placeholder_left": not any(m in content for m in _PLACEHOLDER_MARKERS),
+            "not_expired": not task_signal.is_expired(sub),
         }
         failed = [k for k, ok in checklist.items() if not ok]
         if failed:

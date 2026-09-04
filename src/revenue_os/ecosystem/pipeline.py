@@ -57,6 +57,8 @@ def draft_from_record(rec: dict) -> OpportunityDraft:
         policy_status=d.get("policy_status", model.POLICY_OK),
     )
     otype = d.get("opportunity_type") or _guess_type(rec.get("category", "other"))
+    pe = d.get("payment_evidence") or {}
+    se = d.get("submission_evidence") or {}
     return OpportunityDraft(
         title=rec.get("title", ""),
         description=rec.get("required_work", ""),
@@ -71,6 +73,22 @@ def draft_from_record(rec: dict) -> OpportunityDraft:
         demand_hint=float(d.get("demand_hint", rec.get("probability", 0.0)) or 0.0),
         category=rec.get("category", "other"),
         raw={"target_customer": rec.get("target_customer", "")},
+        payment_evidence=model.PaymentEvidence(
+            amount=float(pe.get("amount", 0.0) or 0.0),
+            currency=str(pe.get("currency", "")),
+            conditions=str(pe.get("conditions") or model.PAY_UNCLEAR),
+            is_estimate=bool(pe.get("is_estimate", True)),
+            evidence=tuple(pe.get("evidence") or ())) if pe else model.PaymentEvidence(),
+        submission_evidence=model.SubmissionEvidence(
+            submission_url=str(se.get("submission_url", "")),
+            submission_method=str(se.get("submission_method") or model.SUBMIT_UNKNOWN),
+            requires_login=bool(se.get("requires_login", False)),
+            requires_captcha=bool(se.get("requires_captcha", False)),
+            requires_identity=bool(se.get("requires_identity", False)),
+            has_api_submission=bool(se.get("has_api_submission", False)),
+            deadline=str(se.get("deadline", "")),
+            required_deliverable=str(se.get("required_deliverable", ""))
+        ) if se else model.SubmissionEvidence(),
     )
 
 
@@ -178,6 +196,10 @@ def _plan_task_chain(data_dir, oid: str, rec: dict, *, actor: str) -> dict:
 
 
 _PREPARED_STRATEGIES = {
+    model.STRAT_TASK: ("prepare the deliverable/answer for this task, then a "
+                       "human submits it on the source platform (the evidence "
+                       "did not confirm an autonomous-candidate task kind - "
+                       "see discovery.verification.checks.task_kind)"),
     model.STRAT_AFFILIATE: ("prepare comparison/how-to assets; a human joins the "
                             "affiliate program (HUMAN_SETUP_REQUIRED) before any link goes live"),
     model.STRAT_ECOMMERCE: ("prepare listings + margin analysis; a human opens the "
@@ -219,14 +241,25 @@ def plan(data_dir, oid: str, *, actor: str = "ecosystem") -> dict:
                 "kind": "task_chain", "acceptance": result}
 
     if recommended == model.STRAT_TASK:
-        result = _plan_task_chain(data_dir, oid, rec, actor=actor)
-        store2 = load_opportunities(data_dir)
-        s = store2.get(oid).get("strategy") or {}
-        s["plan"] = result
-        store2.record_strategy(oid, s)
-        store2.save()
-        return {"opportunity_id": oid, "strategy": recommended,
-                "kind": "task_chain", "plan": result}
+        # HARD GATE (discovery quality layer): a high TaskQualityScore never
+        # substitutes for this. Only an evidence-classified autonomous task
+        # kind gets the real chain; JOB/SERVICE_LEAD can never even reach
+        # here (verification.py already routes them to HUMAN_REQUIRED, so
+        # plan() would have raised above) - this catches OTHER/unclassified
+        # (e.g. a legacy record verified before this layer existed).
+        checks = (((rec.get("discovery") or {}).get("verification") or {})
+                  .get("checks") or {})
+        task_kind = checks.get("task_kind", "")
+        if task_kind in model.AUTONOMOUS_TASK_KINDS:
+            result = _plan_task_chain(data_dir, oid, rec, actor=actor)
+            store2 = load_opportunities(data_dir)
+            s = store2.get(oid).get("strategy") or {}
+            s["plan"] = result
+            store2.record_strategy(oid, s)
+            store2.save()
+            return {"opportunity_id": oid, "strategy": recommended,
+                    "kind": "task_chain", "plan": result}
+        # falls through to the prepared/human-gated path below
 
     # prepared plan for the remaining strategies (spec 13/14 are later)
     note = _PREPARED_STRATEGIES.get(recommended, _PREPARED_STRATEGIES[model.STRAT_OTHER])

@@ -12,7 +12,7 @@ from pathlib import Path
 from ..opportunity_store import load_opportunities
 from . import model
 from .discovery import latest_discovery
-from .learning import OutcomeStore
+from .learning import OutcomeStore, source_quality
 
 
 def _vstatus(rec: dict) -> str:
@@ -90,4 +90,7 @@ def ecosystem_status(data_dir) -> dict:
                 key=lambda d: -d["profit"])[:5],
         },
         "human_actions": human_actions,
+        # spec: discovery quality layer, section 6 - per-source funnel +
+        # settled-outcome metrics, purely derived from persisted state.
+        "source_quality": source_quality(data_dir)["by_source"],
     }

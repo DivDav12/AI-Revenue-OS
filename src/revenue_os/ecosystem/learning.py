@@ -164,3 +164,65 @@ def record_outcome(data_dir, outcome: Outcome) -> dict:
     row = s.record(outcome)
     s.save()
     return row
+
+
+# ---------------------------------------------------------------------------
+# per-source quality metrics (spec: discovery quality layer, section 6) -
+# purely derived from persisted state, no new stored counters. Deterministic
+# aggregation, not ML. Feeds future discovery/source prioritisation - not
+# wired into scoring yet, this pass only makes the numbers real and visible.
+# ---------------------------------------------------------------------------
+
+def source_quality(data_dir) -> dict:
+    """discovered/qualified/verified/executable come from opportunity_store
+    records (one row per discovered opportunity); human_submitted/
+    successful/paid/revenue/profit/win_rate come from the settled
+    OutcomeStore (today populated by ecosystem.pipeline.record_task_outcome
+    for the TASK strategy - a PRODUCT-path settlement feed is future work)."""
+    from ..opportunity_store import load_opportunities
+    from . import model
+
+    store = load_opportunities(data_dir)
+    outcomes = OutcomeStore.load(data_dir).rows()
+    by_source: dict[str, dict] = {}
+
+    def _row(name: str) -> dict:
+        return by_source.setdefault(name, {
+            "discovered": 0, "qualified": 0, "verified": 0, "executable": 0,
+            "human_submitted": 0, "successful": 0, "paid": 0,
+            "revenue_eur": 0.0, "profit_eur": 0.0,
+        })
+
+    for rec in store.all():
+        d = rec.get("discovery") or {}
+        source = str(d.get("source") or "unknown")
+        r = _row(source)
+        r["discovered"] += 1
+        vstatus = (d.get("verification") or {}).get("status", "")
+        if vstatus == model.V_QUALIFIED:
+            r["qualified"] += 1
+            r["verified"] += 1
+        elif vstatus == model.V_VERIFIED:
+            r["verified"] += 1
+        if (rec.get("execution") or {}).get("accepted"):
+            r["executable"] += 1
+
+    for o in outcomes:
+        source = str(o.get("source") or "unknown")
+        r = _row(source)
+        r["human_submitted"] += 1
+        revenue = float(o.get("revenue_eur") or 0.0)
+        if o.get("success"):
+            r["successful"] += 1
+            if revenue > 0:
+                r["paid"] += 1
+        r["revenue_eur"] += revenue
+        r["profit_eur"] += float(o.get("profit_eur") or 0.0)
+
+    for r in by_source.values():
+        r["win_rate"] = (round(r["successful"] / r["human_submitted"], 3)
+                         if r["human_submitted"] else 0.0)
+        r["revenue_eur"] = round(r["revenue_eur"], 2)
+        r["profit_eur"] = round(r["profit_eur"], 2)
+
+    return {"by_source": by_source}

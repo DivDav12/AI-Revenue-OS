@@ -92,6 +92,97 @@ STRATEGIES = (STRAT_TASK, STRAT_PRODUCT, STRAT_AFFILIATE, STRAT_ECOMMERCE,
 
 
 # ---------------------------------------------------------------------------
+# TASK sub-classification (discovery quality layer) - WHAT KIND of paid-work
+# signal this actually is, decided from evidence (task_signal.py), never
+# guessed from the title. Only INSTANT_PAID_TASK / BOUNTY_OR_CONTEST /
+# MICROTASK are candidates for the autonomous PLAN_TASK/EXECUTE_TASK/
+# VERIFY_RESULT chain; SERVICE_LEAD / JOB always stay HUMAN_REQUIRED - they
+# inherently need an application/negotiation a human must do. A high
+# TaskQualityScore never substitutes for this classification (hard gate).
+# ---------------------------------------------------------------------------
+
+TASK_INSTANT_PAID = "INSTANT_PAID_TASK"   # a discrete task with a stated fixed payment
+TASK_BOUNTY = "BOUNTY_OR_CONTEST"         # a bounty / contest prize for a deliverable
+TASK_MICRO = "MICROTASK"                  # a small, repeatable, low-effort paid task
+TASK_SERVICE_LEAD = "SERVICE_LEAD"        # someone wants a service done - needs a proposal
+TASK_JOB = "JOB"                          # an employment/hiring posting, not a discrete task
+TASK_OTHER = "OTHER"                      # ambiguous / contradictory / insufficient evidence
+TASK_KINDS = (TASK_INSTANT_PAID, TASK_BOUNTY, TASK_MICRO, TASK_SERVICE_LEAD,
+             TASK_JOB, TASK_OTHER)
+
+#: the ONLY task kinds worth even considering for autonomous execution -
+#: everything else (including OTHER) stays on the human-gated path.
+AUTONOMOUS_TASK_KINDS: frozenset[str] = frozenset(
+    {TASK_INSTANT_PAID, TASK_BOUNTY, TASK_MICRO})
+
+# --- payment evidence -------------------------------------------------
+
+PAY_GUARANTEED = "GUARANTEED"     # the source states payment is unconditional
+PAY_CONDITIONAL = "CONDITIONAL"   # payment depends on acceptance/merge/review
+PAY_UNCLEAR = "UNCLEAR"           # the source did not clearly state conditions
+PAYMENT_CONDITIONS = (PAY_GUARANTEED, PAY_CONDITIONAL, PAY_UNCLEAR)
+
+# --- submission evidence -----------------------------------------------
+
+SUBMIT_API = "API"
+SUBMIT_FORM = "FORM"
+SUBMIT_EMAIL = "EMAIL"
+SUBMIT_PLATFORM_UI = "PLATFORM_UI"
+SUBMIT_UNKNOWN = "UNKNOWN"
+SUBMISSION_METHODS = (SUBMIT_API, SUBMIT_FORM, SUBMIT_EMAIL, SUBMIT_PLATFORM_UI,
+                      SUBMIT_UNKNOWN)
+
+
+@dataclass(frozen=True)
+class PaymentEvidence:
+    """What the source actually said about money for a TASK-like
+    opportunity - never a guess dressed up as a fact. Defaults are the
+    "we know nothing" state (`amount=0`, `conditions=UNCLEAR`,
+    `is_estimate=True`); only evidence a source really provided should set
+    a positive amount / GUARANTEED / CONDITIONAL. `is_estimate=False` is
+    reserved for a source-stated, unconditional, verifiable number."""
+    amount: float = 0.0
+    currency: str = ""
+    conditions: str = PAY_UNCLEAR
+    is_estimate: bool = True
+    evidence: tuple = ()
+
+    def to_dict(self) -> dict:
+        return {"amount": round(float(self.amount), 2), "currency": self.currency,
+                "conditions": self.conditions, "is_estimate": bool(self.is_estimate),
+                "evidence": list(self.evidence)}
+
+
+@dataclass(frozen=True)
+class SubmissionEvidence:
+    """What the source said about how the work is actually submitted or
+    claimed. Every blocker defaults to False/"" - an unknown source never
+    silently grants automation; a source must say explicitly that no
+    login/CAPTCHA/identity step exists (in practice: leave the defaults,
+    since we can rarely prove a negative - see task_signal's scoring,
+    which treats UNKNOWN submission info as a quality penalty, not a
+    green light)."""
+    submission_url: str = ""
+    submission_method: str = SUBMIT_UNKNOWN
+    requires_login: bool = False
+    requires_captcha: bool = False
+    requires_identity: bool = False
+    has_api_submission: bool = False
+    deadline: str = ""                 # ISO timestamp, "" = no stated deadline
+    required_deliverable: str = ""
+
+    def to_dict(self) -> dict:
+        return {"submission_url": self.submission_url,
+                "submission_method": self.submission_method,
+                "requires_login": bool(self.requires_login),
+                "requires_captcha": bool(self.requires_captcha),
+                "requires_identity": bool(self.requires_identity),
+                "has_api_submission": bool(self.has_api_submission),
+                "deadline": self.deadline,
+                "required_deliverable": self.required_deliverable}
+
+
+# ---------------------------------------------------------------------------
 # estimate helper - every non-observed number is wrapped so a reader can
 # never mistake it for a fact (spec section 7 + 20).
 # ---------------------------------------------------------------------------
@@ -176,6 +267,11 @@ class OpportunityDraft:
     demand_hint: float = 0.0            # 0..1 - how strong the demand signal is
     category: str = "other"            # opportunity_store CATEGORIES value
     raw: dict = field(default_factory=dict)
+    # discovery quality layer (spec: TASK typing) - default to the "we know
+    # nothing yet" state; only a source that actually parsed this out of the
+    # real listing should populate it.
+    payment_evidence: PaymentEvidence = field(default_factory=PaymentEvidence)
+    submission_evidence: SubmissionEvidence = field(default_factory=SubmissionEvidence)
 
     def dedup_key(self) -> str:
         if self.source_meta and self.source_id:

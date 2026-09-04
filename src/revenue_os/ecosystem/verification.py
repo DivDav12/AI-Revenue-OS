@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from . import model
+from . import model, task_signal
 from .model import OpportunityDraft
 
 #: opportunity types the current execution stack can actually fulfil
@@ -106,6 +106,40 @@ def verify(draft: OpportunityDraft, *, now_iso: str = "",
         return VerificationResult(
             model.V_REJECTED,
             [f"the fleet cannot fulfil an {otype!r} opportunity"], checks)
+
+    # 4b. discovery quality layer (spec: TASK typing) - evidence-based, for
+    # TYPE_TASK only (a job/service opportunity's own TYPE_SERVICE handling
+    # is untouched). A high quality score never substitutes for this: the
+    # kind alone decides HUMAN_REQUIRED / expiry; QUALIFIED still requires
+    # everything below unchanged.
+    if otype == model.TYPE_TASK:
+        task_kind = task_signal.classify_task_kind(draft)
+        quality = task_signal.score_task_quality(draft, task_kind)
+        checks["task_kind"] = task_kind
+        checks["task_quality"] = quality.to_dict()
+
+        sub = draft.submission_evidence
+        if task_signal.is_expired(sub, now_iso):
+            return VerificationResult(
+                model.V_REJECTED,
+                ["the stated submission deadline has already passed"], checks)
+        if sub.requires_login or sub.requires_captcha or sub.requires_identity:
+            blockers = [n for n, v in (("login", sub.requires_login),
+                                       ("CAPTCHA", sub.requires_captcha),
+                                       ("identity verification", sub.requires_identity))
+                       if v]
+            return VerificationResult(
+                model.V_HUMAN_REQUIRED,
+                [f"submission requires {' + '.join(blockers)} - the fleet "
+                 "never bypasses this, a human must act"],
+                checks, requires_human=True)
+        if task_kind in (model.TASK_JOB, model.TASK_SERVICE_LEAD):
+            return VerificationResult(
+                model.V_HUMAN_REQUIRED,
+                [f"evidence classifies this as {task_kind} - it needs an "
+                 "application/negotiation a human must do, not a discrete "
+                 "task the fleet can execute"],
+                checks, requires_human=True)
 
     # 5. compensation realism (only when the source gave a number)
     pay = float(draft.est_pay_eur or 0.0)

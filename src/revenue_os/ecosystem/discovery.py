@@ -20,7 +20,7 @@ from pathlib import Path
 from ..discovery_log import DiscoveryLog
 from ..opportunity_store import Opportunity, load_opportunities
 from ..store import now_iso
-from . import model, verification
+from . import model, task_signal, verification
 from .model import OpportunityDraft
 from .sources import OpportunitySource, default_sources
 
@@ -93,6 +93,12 @@ def _draft_to_opportunity(draft: OpportunityDraft, verdict) -> Opportunity:
         "demand_hint": float(draft.demand_hint or 0.0),
         "est_pay_eur": float(draft.est_pay_eur or 0.0),
         "est_time_minutes": float(draft.est_time_minutes or 0.0),
+        # discovery quality layer - persist the structured evidence itself,
+        # not just the classification derived from it, so pipeline.py's
+        # draft_from_record() can reconstruct it later (PLAN_TASK needs the
+        # real deadline/deliverable facts, not just task_kind).
+        "payment_evidence": draft.payment_evidence.to_dict(),
+        "submission_evidence": draft.submission_evidence.to_dict(),
     }
 
     return Opportunity(
@@ -124,10 +130,17 @@ class DiscoveryEngine:
         seen_keys: set[str] = set()
         # pre-index existing records by (source, source_id) so a re-run refreshes
         existing_by_srcid: dict[str, str] = {}
+        # pre-index existing TASK-type records by their stable fingerprint -
+        # robust to a re-scrape changing the URL/source_id/timestamp (spec:
+        # TASK dedupe). See task_signal.task_fingerprint().
+        existing_by_fingerprint: dict[str, str] = {}
         for rec in store.all():
             d = rec.get("discovery") or {}
             if d.get("source") and d.get("source_id"):
                 existing_by_srcid[f"{d['source']}:{d['source_id']}"] = rec["id"]
+            fp = d.get("task_fingerprint")
+            if fp:
+                existing_by_fingerprint[fp] = rec["id"]
 
         drafts: list[OpportunityDraft] = []
         for src in self.sources:
@@ -149,6 +162,17 @@ class DiscoveryEngine:
 
             verdict = verification.verify(draft)
             opp = _draft_to_opportunity(draft, verdict)
+
+            if draft.opportunity_type == model.TYPE_TASK:
+                fp = task_signal.task_fingerprint(draft)
+                opp.discovery["task_fingerprint"] = fp
+                dup_id = existing_by_fingerprint.get(fp)
+                if dup_id and dup_id != opp.id:
+                    # same underlying task offer re-scraped under a fresh
+                    # url/source_id/timestamp - refresh the EXISTING record
+                    # instead of spawning a duplicate opportunity.
+                    opp.id = dup_id
+                existing_by_fingerprint[fp] = opp.id
 
             srcid = (f"{draft.source_meta.source}:{draft.source_id}"
                      if draft.source_meta and draft.source_id else "")
