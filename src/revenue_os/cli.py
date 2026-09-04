@@ -1453,11 +1453,26 @@ def _cmd_eco_discover(args) -> int:
     `remoteok` hit real, keyless public APIs (read-only). A source that
     needs an account (upwork/fiverr/amazon_associates/shopify) yields
     nothing and is reported HUMAN_SETUP_REQUIRED - the fleet never
-    self-provisions credentials."""
+    self-provisions credentials.
+
+    `--max-age-days` (spec: Demand Validation phase) is a pure RETRIEVAL
+    filter for the demand-* sources - it narrows which candidate posts
+    get fetched (via `since_ts`), nothing about demand_signal.py's
+    scoring. Omitted (the default), retrieval is byte-identical to
+    before: `since_ts` stays None end to end, exactly as it always has.
+    It never deletes or touches any already-persisted opportunity - only
+    what gets FETCHED this run."""
     from .ecosystem.discovery import DiscoveryEngine
     from .ecosystem.sources import build_source
 
     data_dir = _data_dir(args)
+    since_ts = None
+    if args.max_age_days is not None:
+        if args.max_age_days <= 0:
+            raise ValueError("--max-age-days must be > 0")
+        from datetime import datetime, timedelta, timezone
+        since_ts = (datetime.now(timezone.utc)
+                   - timedelta(days=args.max_age_days)).isoformat()
     names = [s.strip() for s in (args.source or "synthetic").split(",") if s.strip()]
     srcs = []
     for n in names:
@@ -1466,6 +1481,8 @@ def _cmd_eco_discover(args) -> int:
             if not args.source_path:
                 raise ValueError("--source file needs --source-path")
             kw["path"] = args.source_path
+        if since_ts is not None:
+            kw["since_ts"] = since_ts
         srcs.append(build_source(n, **kw))
     report = DiscoveryEngine(data_dir, sources=srcs).run(
         limit_per_source=max(1, int(args.limit)))
@@ -2747,6 +2764,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="comma-separated source names (default: synthetic)")
     ed.add_argument("--source-path", default=None, help="for --source file")
     ed.add_argument("--limit", type=int, default=25, help="max items per source")
+    ed.add_argument("--max-age-days", type=int, default=None, metavar="N",
+                    help="demand-* sources only: only fetch posts newer than "
+                         "N days (a pure retrieval filter for validation "
+                         "runs - default: unset, unchanged retrieval)")
     ed.set_defaults(func=_cmd_eco_discover)
 
     ee = sub.add_parser("evaluate", parents=[common],

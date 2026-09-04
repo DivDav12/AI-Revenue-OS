@@ -296,9 +296,22 @@ def default_sources() -> list[OpportunitySource]:
     return [SyntheticSource()]
 
 
+#: demand-signal sources (spec: Demand-to-Revenue plan, Step 3) - each
+#: wraps a REAL, keyless acquisition_sources.py fetcher with buyer-intent
+#: queries via ecosystem.demand_sources. Delegated, not duplicated: the
+#: actual OpportunitySource implementation lives in demand_sources.py
+#: (alongside the AcqRecord->OpportunityDraft mapping it depends on);
+#: build_source() stays the single factory entry point every caller
+#: (CLI, tests) already uses.
+_DEMAND_SOURCE_NAMES = ("demand-hn", "demand-stackexchange",
+                        "demand-lobsters", "demand-lemmy")
+
+
 def build_source(name: str, **kw):
     """Factory. 'synthetic' (default, offline), 'hn'/'hackernews',
-    'remoteok', 'file' (needs path=...), or a HUMAN_SETUP_REQUIRED name."""
+    'remoteok', 'file' (needs path=...), one of the demand-* sources
+    (spec: Step 3 - see _DEMAND_SOURCE_NAMES), or a HUMAN_SETUP_REQUIRED
+    name."""
     n = (name or "synthetic").strip().lower()
     if n in ("synthetic", "test"):
         return SyntheticSource(seed=int(kw.get("seed", 0)))
@@ -310,9 +323,13 @@ def build_source(name: str, **kw):
         if not kw.get("path"):
             raise ValueError("source 'file' requires path=")
         return LocalSignalSource(kw["path"], source=kw.get("source", "curated"))
+    if n in _DEMAND_SOURCE_NAMES:
+        from .demand_sources import build_demand_source
+        return build_demand_source(n, **kw)
     if n in _HUMAN_SETUP:
         what, env = _HUMAN_SETUP[n]
         return HumanSetupRequiredSource(n, what, env)
     raise ValueError(
         f"unknown source {name!r} - one of: synthetic, hn, remoteok, file, "
+        + ", ".join(_DEMAND_SOURCE_NAMES) + ", "
         + ", ".join(sorted(_HUMAN_SETUP)))
