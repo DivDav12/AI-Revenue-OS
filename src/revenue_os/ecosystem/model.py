@@ -53,11 +53,22 @@ V_QUALIFIED = "QUALIFIED"
 V_REJECTED = "REJECTED"
 V_HUMAN_REQUIRED = "HUMAN_REQUIRED"
 V_BLOCKED = "BLOCKED"
+#: the ceiling for a human-fed opportunity (spec: Human-Fed Task Source).
+#: The underlying facts came from a person typing them in, not a live
+#: system - `verify()` can only confirm internal CONSISTENCY (the claimed
+#: amount matches the quoted evidence, no vague-payment markers, no
+#: personal/identity content, ...), never independently confirm the claim
+#: against the source. This status says exactly that: consistency-checked,
+#: human-attested - never conflated with V_QUALIFIED's "an automated
+#: source's own claim passed every gate".
+V_HUMAN_ATTESTED = "HUMAN_ATTESTED"
 VERIFICATION_STATUSES = (V_DISCOVERED, V_VERIFYING, V_VERIFIED, V_QUALIFIED,
-                         V_REJECTED, V_HUMAN_REQUIRED, V_BLOCKED)
+                         V_REJECTED, V_HUMAN_REQUIRED, V_BLOCKED,
+                         V_HUMAN_ATTESTED)
 
-#: only a QUALIFIED opportunity may be planned into a real task chain
-PLANNABLE = frozenset({V_QUALIFIED})
+#: a QUALIFIED (automated-source) or HUMAN_ATTESTED (human-fed, consistency-
+#: checked) opportunity may be planned into a real task chain.
+PLANNABLE = frozenset({V_QUALIFIED, V_HUMAN_ATTESTED})
 
 # ---------------------------------------------------------------------------
 # opportunity types - WHAT kind of money-making thing this is

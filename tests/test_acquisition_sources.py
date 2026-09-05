@@ -189,6 +189,18 @@ class LobstersTests(unittest.TestCase):
 
 
 # --- Lemmy --------------------------------------------------
+#
+# LemmySource fetches a curated community's recent-post feed once (like
+# Lobsters), so every fixture below must supply BOTH:
+#   - a `/api/v3/community` response resolving a community name -> id
+#   - a `/api/v3/post/list` response for that community's feed
+# (spec: Demand Ranking validation step - Lemmy noise fix, see the class
+# docstring in acquisition_sources.py for WHY this changed from a single
+# federation-wide `/search` call.)
+
+def _lemmy_community(cid=42):
+    return {"community_view": {"community": {"id": cid}}}
+
 
 def _lemmy_row(pid=1, name="How do I find my first clients as a freelancer?",
                published="2026-08-26T09:00:00.500000",
@@ -203,8 +215,11 @@ def _lemmy_row(pid=1, name="How do I find my first clients as a freelancer?",
 
 class LemmyTests(unittest.TestCase):
     def test_parses_a_post_into_a_record(self):
-        with _FakeHTTP({"lemmy.world/api/v3/search": {"posts": [_lemmy_row()]}}):
-            recs = LemmySource().search("first clients", 10)
+        with _FakeHTTP({
+            "api/v3/community": _lemmy_community(),
+            "api/v3/post/list": {"posts": [_lemmy_row()]},
+        }):
+            recs = LemmySource(communities=("selfhosted",)).search("first clients", 10)
         self.assertEqual(len(recs), 1)
         r = recs[0]
         self.assertEqual(r.source, "lemmy")
@@ -214,24 +229,91 @@ class LemmyTests(unittest.TestCase):
         self.assertTrue(r.posted_at.startswith("2026-08-26"))
         self.assertTrue(score_lead(r))
 
+    def test_feed_is_fetched_once_and_reused_across_queries(self):
+        with _FakeHTTP({
+            "api/v3/community": _lemmy_community(),
+            "api/v3/post/list": {"posts": [_lemmy_row()]},
+        }) as http:
+            src = LemmySource(communities=("selfhosted",))
+            src.search("first clients", 10)
+            src.search("paying customers", 10)
+        # 1 community-resolve call + 1 post/list call, regardless of query count
+        self.assertEqual(len(http.calls), 2)
+
+    def test_multiple_communities_are_resolved_and_merged(self):
+        with _FakeHTTP({
+            "api/v3/community": _lemmy_community(cid=7),
+            "api/v3/post/list": {"posts": [_lemmy_row(1)]},
+        }) as http:
+            recs = LemmySource(communities=("selfhosted", "opensource")).search("clients", 10)
+        self.assertEqual(len(recs), 2)   # same feed content resolved twice, merged
+        self.assertEqual(len(http.calls), 4)   # 2 communities x (resolve + list)
+
+    def test_a_renamed_community_with_no_community_view_is_skipped_not_a_crash(self):
+        # a normal (non-exceptional) "not found" JSON shape - as opposed
+        # to an HTTP/network failure, see the next test - must not crash
+        # and must not stop the other configured communities.
+        def fake(url, *, headers=None):
+            if "opensource" in url:
+                return {"community_view": None}
+            if "api/v3/community" in url:
+                return _lemmy_community(cid=1)
+            return {"posts": [_lemmy_row()]}
+
+        with mock.patch.object(S, "_http_json", fake):
+            recs = LemmySource(communities=("selfhosted", "opensource")).search("clients", 10)
+        self.assertEqual(len(recs), 1)   # selfhosted's post still comes through
+
+    def test_query_filters_the_cached_feed_by_keyword_overlap(self):
+        keep = _lemmy_row(pid=1, name="How do I find my first clients as a freelancer?")
+        drop = _lemmy_row(pid=2, name="A new Rust web framework", body="benchmarks inside")
+        with _FakeHTTP({
+            "api/v3/community": _lemmy_community(),
+            "api/v3/post/list": {"posts": [keep, drop]},
+        }):
+            recs = LemmySource(communities=("selfhosted",)).search("first clients", 10)
+        self.assertEqual([r.url for r in recs], ["https://lemmy.world/post/1"])
+
+    def test_default_communities_are_the_curated_tool_relevant_set(self):
+        # no network - just the configuration, matching the validation
+        # finding that these communities are genuinely on-topic (see
+        # class docstring), unlike a federation-wide "All"/"Local" search.
+        self.assertEqual(
+            LemmySource().communities,
+            ("selfhosted", "opensource", "webdev", "sysadmin", "software"))
+
     def test_since_ts_filters_old_posts(self):
-        with _FakeHTTP({"lemmy.world": {"posts": [
-            _lemmy_row(1, published="2019-01-01T00:00:00"),
-            _lemmy_row(2, published="2026-08-27T00:00:00"),
-        ]}}):
-            recs = LemmySource().search("q", 10, since_ts=1_760_000_000)
+        with _FakeHTTP({
+            "api/v3/community": _lemmy_community(),
+            "api/v3/post/list": {"posts": [
+                _lemmy_row(1, published="2019-01-01T00:00:00"),
+                _lemmy_row(2, published="2026-08-27T00:00:00"),
+            ]},
+        }):
+            recs = LemmySource(communities=("selfhosted",)).search(
+                "q", 10, since_ts=1_760_000_000)
         self.assertEqual([r.url for r in recs], ["https://lemmy.world/post/2"])
 
     def test_empty_or_malformed_rows_are_skipped(self):
-        with _FakeHTTP({"lemmy.world": {"posts": [
-            {"post": {"id": 3, "name": ""}}, {"creator": {"name": "x"}},
-        ]}}):
-            self.assertEqual(LemmySource().search("q", 5), [])
+        with _FakeHTTP({
+            "api/v3/community": _lemmy_community(),
+            "api/v3/post/list": {"posts": [
+                {"post": {"id": 3, "name": ""}}, {"creator": {"name": "x"}},
+            ]},
+        }):
+            self.assertEqual(LemmySource(communities=("selfhosted",)).search("q", 5), [])
 
     def test_http_error_propagates_for_isolation(self):
-        with _FakeHTTP({"lemmy.world": urllib.error.URLError("down")}):
+        # a genuine network/HTTP failure propagates (same convention as
+        # StackExchangeSource's per-site loop, which does not swallow a
+        # single dead site either) - discover_demand_signals' per-query
+        # try/except is the isolation layer that catches this.
+        with _FakeHTTP({
+            "api/v3/community": _lemmy_community(),
+            "api/v3/post/list": urllib.error.URLError("down"),
+        }):
             with self.assertRaises(urllib.error.URLError):
-                LemmySource().search("q", 5)
+                LemmySource(communities=("selfhosted",)).search("q", 5)
 
 
 # --- Bluesky -------------------------------------------------

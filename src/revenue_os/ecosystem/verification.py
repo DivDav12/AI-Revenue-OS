@@ -157,6 +157,35 @@ def verify(draft: OpportunityDraft, *, now_iso: str = "",
             return VerificationResult(model.V_HUMAN_REQUIRED, reasons, checks,
                                       requires_human=True)
 
+    # 6b. human-fed content gates (spec: Human-Fed Task Source) - scoped
+    # strictly to source_type == "human_fed" so every other source's
+    # behaviour is byte-identical to before. A person typed this in;
+    # ingestion (human_fed.py) already ran its own payment-evidence
+    # consistency check and personal-content scan and recorded the verdict
+    # on `draft.raw` - verify() only routes on it, it never re-derives it
+    # (single source of truth, no duplicated logic).
+    if meta.source_type == "human_fed":
+        insufficient = (draft.raw or {}).get("payment_evidence_insufficient")
+        if insufficient:
+            return VerificationResult(
+                model.V_HUMAN_REQUIRED,
+                [f"payment evidence did not meet the consistency bar: "
+                 f"{insufficient} - a human must confirm or complete it"],
+                checks, requires_human=True)
+        personal = (draft.raw or {}).get("requires_personal_judgment")
+        if personal:
+            return VerificationResult(
+                model.V_HUMAN_REQUIRED,
+                [f"content requires the account holder's own judgement/"
+                 f"identity/senses: {personal} - not autonomously preparable"],
+                checks, requires_human=True)
+        return VerificationResult(
+            model.V_HUMAN_ATTESTED,
+            ["consistency-checked, human-attested: a person captured this "
+             "listing - the fleet cannot independently confirm it against "
+             "the source"],
+            checks)
+
     # passed every gate
     status = model.V_QUALIFIED if (can_deliver or prepares) else model.V_VERIFIED
     reasons.append("verified: real source, evidence present, policy OK, "

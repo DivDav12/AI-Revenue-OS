@@ -101,6 +101,29 @@ def _draft_to_opportunity(draft: OpportunityDraft, verdict) -> Opportunity:
         "submission_evidence": draft.submission_evidence.to_dict(),
     }
 
+    # Demand Quality Layer (spec: Demand-to-Revenue plan, Step 3) - only
+    # present for drafts built by ecosystem.demand_sources; every other
+    # source's `draft.raw` never carries these keys, so this is a no-op
+    # for HN/RemoteOK/synthetic/curated/TASK sources. Without this, the
+    # evidence/score/provenance ecosystem.demand_sources computed would be
+    # silently dropped at persistence time - demand_hint alone (below)
+    # does not carry the FACT/ESTIMATED/UNKNOWN breakdown or the reasons.
+    _raw = draft.raw or {}
+    if "demand_evidence" in _raw:
+        discovery_ns["demand_evidence"] = _raw["demand_evidence"]
+        discovery_ns["demand_quality"] = _raw.get("demand_quality")
+        discovery_ns["demand_provenance"] = _raw.get("demand_provenance")
+        # Demand Ranking Layer (spec: Decision-/Ranking-Design step,
+        # additive Read-Model integration) - advisory-only buyer/problem
+        # confidence scores, `.get()`-guarded so a draft built before this
+        # field existed (or by anything other than ecosystem.demand_sources)
+        # never breaks this read-model assembly. Display-only: nothing in
+        # this file, or anywhere downstream of it (verification already ran
+        # BEFORE this function is even called - see DiscoveryEngine.run()),
+        # reads these two keys to accept/reject/prioritize anything.
+        discovery_ns["buyer_confidence"] = _raw.get("buyer_confidence")
+        discovery_ns["problem_confidence"] = _raw.get("problem_confidence")
+
     return Opportunity(
         title=draft.title[:200] or "untitled opportunity",
         category=category,
@@ -151,6 +174,13 @@ class DiscoveryEngine:
                 report.errors.append(f"{meta.source if meta else '?'}: {exc!r}")
                 continue
             drafts.extend(found)
+            # a source may have swallowed non-fatal, per-query failures of
+            # its own (e.g. DemandDiscoverySource - one bad query out of
+            # several) - surface those too instead of silently losing them.
+            # `getattr(..., None) or []` is a no-op for every existing
+            # source, which has no `last_errors` attribute at all.
+            for err in getattr(src, "last_errors", None) or []:
+                report.errors.append(f"{meta.source if meta else '?'}: {err}")
         report.raw = len(drafts)
 
         for draft in drafts:
@@ -163,7 +193,18 @@ class DiscoveryEngine:
             verdict = verification.verify(draft)
             opp = _draft_to_opportunity(draft, verdict)
 
-            if draft.opportunity_type == model.TYPE_TASK:
+            # TASK dedupe (existing) + demand-signal dedupe (Step 3, spec:
+            # "bestehende Fingerprints/Dedupe respektiert werden") - the
+            # SAME fingerprint utility, only widened to also cover
+            # TYPE_DIGITAL_PRODUCT drafts that came from a demand_signal
+            # source (never for a synthetic/curated/other-sourced
+            # DIGITAL_PRODUCT - those keep today's title-hash dedupe
+            # unchanged).
+            is_demand_product = (
+                draft.opportunity_type == model.TYPE_DIGITAL_PRODUCT
+                and draft.source_meta is not None
+                and draft.source_meta.source_type == "demand_signal")
+            if draft.opportunity_type == model.TYPE_TASK or is_demand_product:
                 fp = task_signal.task_fingerprint(draft)
                 opp.discovery["task_fingerprint"] = fp
                 dup_id = existing_by_fingerprint.get(fp)
