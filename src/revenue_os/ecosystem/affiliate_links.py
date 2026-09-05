@@ -56,7 +56,14 @@ def create_link(data_dir, *, opportunity_id: str, asset: AffiliateAsset,
     tracking_id = new_id("trk")
     target = offer.product_url
     if offer.tracking_param:
-        target = _append_tracking(target, offer.tracking_param, tracking_id)
+        # a real, static, pre-registered value (e.g. Amazon's own `tag=`)
+        # MUST be used verbatim - a program's tracking id is not something
+        # the fleet may invent a fresh one of per link/click. Only when
+        # the offer has no static value does a network's own per-link
+        # subid convention apply, and our own internal id is a reasonable
+        # value for that.
+        target = _append_tracking(target, offer.tracking_param,
+                                  offer.tracking_value or tracking_id)
     else:
         target = _append_tracking(target, "subid", tracking_id)
 

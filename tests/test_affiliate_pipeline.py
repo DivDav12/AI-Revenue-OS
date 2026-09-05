@@ -823,5 +823,228 @@ class CliSmokeTests(unittest.TestCase):
         self.assertEqual(self._run(d, "affiliate-scale"), 0)
 
 
+# ---------------------------------------------------------------------------
+# 15. real Amazon Affiliate Loop (first live integration) - schema, partner
+# id handling, URL/ASIN fail-closed checks, observed/timestamped price,
+# no self-purchase/fake-click path, no URL obfuscation.
+# ---------------------------------------------------------------------------
+
+def _amazon_offer_json(**overrides) -> dict:
+    base = {
+        "schema_version": 1,
+        "network": "amazon_associates",
+        "program_name": "Amazon.de PartnerNet",
+        "product_name": "JBL Quantum Stream Talk",
+        "product_url": "https://www.amazon.de/JBL-Quantum-Stream-Talk-super-kardioidem/dp/B0CQP5NL72",
+        "product_asin": "B0CQP5NL72",
+        "product_price": 39.99,
+        "currency": "EUR",
+        "price_is_estimate": True,
+        "price_observed_at": "2026-09-05",
+        "price_source_note": "Corroborated via third-party price comparison, not live-scraped from Amazon.",
+        "commission_kind": "percent",
+        "commission_rate": 0.03,
+        "commission_evidence": [
+            "Amazon PartnerNet standard fee schedule, retrieved 2026-09-05: "
+            "catch-all 'Alle anderen Kategorien' rate is 3.0%."
+        ],
+        "cookie_duration_days": 1,
+        "category": "usb-microphone-streaming",
+        "keywords": ["microphone", "mikrofon", "usb-mikrofon", "streaming", "discord",
+                    "gaming", "podcast", "creator", "home-office"],
+        "evidence": [
+            "Amazon.de product page (verified 2026-09-05): super-cardioid pickup "
+            "pattern for single-voice recording, multi-function mute/gain control knob",
+            "Product listing: includes JBL QuantumENGINE PC software (EQ, noise "
+            "reduction, mic test), 3.5mm headphone monitoring jack",
+        ],
+        "human_confirmed_joined": True,
+        "tracking_param": "tag",
+        "tracking_value": "airevenue-21",
+    }
+    base.update(overrides)
+    return base
+
+
+class AmazonAffiliateLoopTests(unittest.TestCase):
+    def test_real_amazon_offer_ingests_and_is_usable(self):
+        d = _tmp()
+        out = affiliate_sources.ingest_affiliate_offer(d, _amazon_offer_json())
+        self.assertEqual(out["status"], model.POLICY_OK)
+        self.assertTrue(out["usable"])
+        offer = affiliate_model.AffiliateOfferStore.load(d).get(out["offer_id"])
+        self.assertEqual(offer.product_asin, "B0CQP5NL72")
+        self.assertEqual(offer.price_observed_at, "2026-09-05")
+
+    def test_non_amazon_domain_url_fails_closed(self):
+        d = _tmp()
+        with self.assertRaises(affiliate_sources.IngestionError):
+            affiliate_sources.ingest_affiliate_offer(
+                d, _amazon_offer_json(product_url="https://bit.ly/xyz123"))
+
+    def test_shortener_style_redirector_fails_closed(self):
+        d = _tmp()
+        with self.assertRaises(affiliate_sources.IngestionError):
+            affiliate_sources.ingest_affiliate_offer(
+                d, _amazon_offer_json(product_url="https://amzn.to/abc123"))
+
+    def test_wrong_asin_format_fails_closed(self):
+        d = _tmp()
+        with self.assertRaises(affiliate_sources.IngestionError):
+            affiliate_sources.ingest_affiliate_offer(
+                d, _amazon_offer_json(product_asin="not-a-real-asin"))
+
+    def test_asin_not_matching_url_fails_closed(self):
+        d = _tmp()
+        with self.assertRaises(affiliate_sources.IngestionError):
+            affiliate_sources.ingest_affiliate_offer(
+                d, _amazon_offer_json(product_asin="B0000000ZZ"))
+
+    def test_missing_product_url_fails_closed(self):
+        d = _tmp()
+        payload = _amazon_offer_json()
+        payload["product_url"] = ""
+        with self.assertRaises(affiliate_sources.IngestionError):
+            affiliate_sources.ingest_affiliate_offer(d, payload)
+
+    def test_price_is_never_stored_as_a_hard_fact(self):
+        # spec: "Preis nicht als dauerhaft/fest speichern" - the price
+        # must always carry is_estimate + an observation timestamp, never
+        # look like a durable, source-guaranteed number.
+        d = _tmp()
+        out = affiliate_sources.ingest_affiliate_offer(d, _amazon_offer_json())
+        offer = affiliate_model.AffiliateOfferStore.load(d).get(out["offer_id"])
+        self.assertTrue(offer.price_is_estimate)
+        self.assertTrue(offer.price_observed_at)
+        self.assertTrue(offer.price_source_note)
+
+    def test_link_uses_the_real_static_partner_tag_not_an_internal_id(self):
+        # THE core correctness property for a real Amazon link: the tag=
+        # value must be the human's actual, pre-registered Associates id -
+        # never a fresh per-link id we invented (Amazon does not support
+        # inventing tag values on the fly, and the spec explicitly forbids
+        # "personenbezogene dynamische Subtag-Zuweisung").
+        d = _tmp()
+        out = affiliate_sources.ingest_affiliate_offer(d, _amazon_offer_json())
+        offer = affiliate_model.AffiliateOfferStore.load(d).get(out["offer_id"])
+        match = affiliate_matching.AffiliateMatch(offer=offer, match_score=0.8, demand_strength=0.6)
+        draft = _demand_draft(category="usb-microphone-streaming",
+                              title="Good affordable USB microphone for streaming and Discord")
+        asset, ok, _ = affiliate_assets.build_asset(d, opportunity_id="op-amz", draft=draft,
+                                                    match=match, cta_url="")
+        self.assertTrue(ok)
+        link = affiliate_links.create_link(d, opportunity_id="op-amz", asset=asset,
+                                           match=match, source="own_site")
+        self.assertEqual(link.target_url,
+                         "https://www.amazon.de/JBL-Quantum-Stream-Talk-super-kardioidem/"
+                         "dp/B0CQP5NL72?tag=airevenue-21")
+        self.assertNotIn(link.tracking_id, link.target_url)
+
+    def test_link_target_stays_on_amazon_no_obfuscation(self):
+        from urllib.parse import urlparse
+        d = _tmp()
+        out = affiliate_sources.ingest_affiliate_offer(d, _amazon_offer_json())
+        offer = affiliate_model.AffiliateOfferStore.load(d).get(out["offer_id"])
+        match = affiliate_matching.AffiliateMatch(offer=offer, match_score=0.8, demand_strength=0.6)
+        draft = _demand_draft(category="usb-microphone-streaming")
+        asset, _, _ = affiliate_assets.build_asset(d, opportunity_id="op-amz2", draft=draft,
+                                                   match=match, cta_url="")
+        link = affiliate_links.create_link(d, opportunity_id="op-amz2", asset=asset,
+                                           match=match, source="own_site")
+        host = urlparse(link.target_url).netloc.lower()
+        self.assertIn(host, ("www.amazon.de", "amazon.de"))
+
+    def test_matches_streaming_discord_demand_by_keyword_overlap(self):
+        d = _tmp()
+        out = affiliate_sources.ingest_affiliate_offer(d, _amazon_offer_json())
+        offer = affiliate_model.AffiliateOfferStore.load(d).get(out["offer_id"])
+        draft = _demand_draft(
+            title="Is there a good USB microphone for Discord and streaming?",
+            description="Looking for something plug-and-play for home-office calls.",
+            category="usb-microphone-streaming", evidence=[])
+        best = affiliate_matching.best_usable_match(draft, [offer])
+        self.assertIsNotNone(best)
+        self.assertEqual(best.offer.offer_id, offer.offer_id)
+
+    def test_unrelated_demand_does_not_match_the_microphone_offer(self):
+        d = _tmp()
+        out = affiliate_sources.ingest_affiliate_offer(d, _amazon_offer_json())
+        offer = affiliate_model.AffiliateOfferStore.load(d).get(out["offer_id"])
+        draft = _demand_draft(title="Is there a tool for managing Kubernetes clusters?",
+                              description="Need something for cluster ops.",
+                              category="devops", evidence=[])
+        self.assertIsNone(affiliate_matching.best_usable_match(draft, [offer]))
+
+    def test_full_attribution_chain_for_the_real_offer(self):
+        d = _tmp()
+        out = affiliate_sources.ingest_affiliate_offer(d, _amazon_offer_json())
+        offer = affiliate_model.AffiliateOfferStore.load(d).get(out["offer_id"])
+        match = affiliate_matching.AffiliateMatch(offer=offer, match_score=0.7, demand_strength=0.5)
+        draft = _demand_draft(category="usb-microphone-streaming",
+                              title="Good affordable USB microphone for streaming and Discord",
+                              evidence=[])
+        asset, ok, _ = affiliate_assets.build_asset(
+            d, opportunity_id="op-chain", draft=draft, match=match, cta_url="",
+            guide_title="Bestes USB-Mikrofon fuer Streaming & Discord")
+        self.assertTrue(ok)
+        link = affiliate_links.create_link(d, opportunity_id="op-chain", asset=asset,
+                                           match=match, source="own_site")
+        click = affiliate_links.record_click(d, tracking_id=link.tracking_id,
+                                             channel="own_site", now_iso="2026-09-05T12:00:00")
+        self.assertTrue(click["recorded"])
+        self.assertEqual(click["target_url"], link.target_url)
+
+        commission = affiliate_revenue.record_pending_commission(
+            d, link_id=link.link_id, opportunity_id="op-chain", offer_id=offer.offer_id,
+            amount=1.20, is_estimate=True, now_iso="2026-09-05T12:05:00")
+        summary = affiliate_revenue.opportunity_commission_summary(d, "op-chain")
+        self.assertEqual(summary["pending_estimated_eur"], 1.20)
+        self.assertEqual(summary["confirmed_or_paid_eur"], 0.0)
+        # full chain is joinable end to end
+        self.assertEqual(link.opportunity_id, "op-chain")
+        self.assertEqual(link.asset_id, asset.asset_id)
+        self.assertEqual(link.offer_id, offer.offer_id)
+        self.assertEqual(commission.link_id, link.link_id)
+
+    def test_no_self_purchase_or_fake_click_mechanism_exists(self):
+        # there is no function anywhere in the affiliate module surface
+        # that simulates/injects a click or a purchase without going
+        # through the real, explicit record_click (a real HTTP hit) or a
+        # human-supplied confirm_commission call with a real --ref.
+        import inspect
+        for mod in (affiliate_links, affiliate_revenue):
+            names = {n for n, _ in inspect.getmembers(mod, inspect.isfunction)}
+            for forbidden in ("simulate_click", "fake_click", "auto_click",
+                             "simulate_purchase", "fake_purchase", "auto_convert"):
+                self.assertNotIn(forbidden, names)
+
+    def test_confirm_commission_requires_a_stable_ref_not_a_guess(self):
+        # guards against a "just mark it paid" shortcut that could be
+        # used to fabricate revenue without a real network reference.
+        d = _tmp()
+        out = affiliate_sources.ingest_affiliate_offer(d, _amazon_offer_json())
+        offer = affiliate_model.AffiliateOfferStore.load(d).get(out["offer_id"])
+        rec = affiliate_revenue.record_pending_commission(
+            d, link_id="l1", opportunity_id="op1", offer_id=offer.offer_id,
+            amount=1.20, now_iso="t")
+        with self.assertRaises(TypeError):
+            affiliate_revenue.confirm_commission(d, rec.commission_id, now_iso="t")  # missing ref=
+
+    def test_asset_content_has_no_fabricated_reviews_or_star_ratings(self):
+        d = _tmp()
+        out = affiliate_sources.ingest_affiliate_offer(d, _amazon_offer_json())
+        offer = affiliate_model.AffiliateOfferStore.load(d).get(out["offer_id"])
+        match = affiliate_matching.AffiliateMatch(offer=offer, match_score=0.7, demand_strength=0.5)
+        draft = _demand_draft(category="usb-microphone-streaming", evidence=[])
+        page, _ = affiliate_assets.render_comparison_page(
+            draft=draft, match=match, cta_url="https://www.amazon.de/dp/B0CQP5NL72?tag=airevenue-21",
+            guide_title="Bestes USB-Mikrofon fuer Streaming & Discord")
+        low = page.lower()
+        for forbidden in ("★", "5 stars", "5/5", "customers say", "verified purchase",
+                         "amazing sound quality", "best mic i've ever"):
+            self.assertNotIn(forbidden, low)
+        self.assertIn("have not tested it ourselves", low)
+
+
 if __name__ == "__main__":
     unittest.main()

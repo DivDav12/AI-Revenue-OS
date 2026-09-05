@@ -198,9 +198,19 @@ class AffiliateOffer:
     program_name: str
     product_name: str
     product_url: str = ""
+    product_asin: str = ""            # marketplace-specific product id, if verified (e.g. Amazon ASIN)
     product_price: float = 0.0
     currency: str = "EUR"
     price_is_estimate: bool = True
+    #: WHEN the price above was actually observed (ISO timestamp) - a
+    #: marketplace price is a snapshot, never a durable fact (spec:
+    #: "Preis nicht als dauerhaft/fest speichern"). "" = unknown/unset.
+    price_observed_at: str = ""
+    #: how the price was obtained (a direct scrape, a human's own
+    #: observation, a third-party price-comparison corroboration, ...) -
+    #: never silently implies "verified live from the marketplace" when
+    #: it was not.
+    price_source_note: str = ""
     commission: CommissionModel = field(default_factory=CommissionModel)
     category: str = "other"           # matched against demand category/keywords
     keywords: tuple = ()              # human-supplied match keywords
@@ -211,6 +221,19 @@ class AffiliateOffer:
     status: str = model.POLICY_HUMAN_SETUP_REQUIRED
     tracking_param: str = ""          # e.g. "tag" (Amazon), "subid" - if the
                                        # network supports one; "" = unknown
+    #: the REAL, static value to put in `tracking_param` (e.g. a real,
+    #: pre-registered Amazon Associates tag like "airevenue-21"). Amazon's
+    #: own program rules do not allow inventing a new `tag=` value per
+    #: click/link - it must be one the human actually registered. When
+    #: set, `affiliate_links.create_link()` uses THIS static value for the
+    #: outbound URL (never a per-link random id) - our own internal
+    #: `tracking_id`/`redirect_path` still exists separately, purely for
+    #: OUR OWN click counting on our own domain, one hop before the
+    #: visitor reaches this URL. Empty (the default) preserves the older,
+    #: generic behaviour: `tracking_id` itself is used as the network
+    #: query-param value (fine for a network whose subid IS meant to be a
+    #: fresh value per link, e.g. ShareASale's afftrack/CJ's sid).
+    tracking_value: str = ""
     added_at: str = ""
     added_by: str = "human"
     active: bool = True
@@ -219,13 +242,17 @@ class AffiliateOffer:
         return {
             "offer_id": self.offer_id, "network": self.network,
             "program_name": self.program_name, "product_name": self.product_name,
-            "product_url": self.product_url, "product_price": round(float(self.product_price), 2),
+            "product_url": self.product_url, "product_asin": self.product_asin,
+            "product_price": round(float(self.product_price), 2),
             "currency": self.currency, "price_is_estimate": bool(self.price_is_estimate),
+            "price_observed_at": self.price_observed_at,
+            "price_source_note": self.price_source_note,
             "commission": self.commission.to_dict(), "category": self.category,
             "keywords": list(self.keywords), "terms_url": self.terms_url,
             "join_url": self.join_url, "eligibility_note": self.eligibility_note,
             "evidence": list(self.evidence), "status": self.status,
-            "tracking_param": self.tracking_param, "added_at": self.added_at,
+            "tracking_param": self.tracking_param, "tracking_value": self.tracking_value,
+            "added_at": self.added_at,
             "added_by": self.added_by, "active": bool(self.active),
         }
 
@@ -321,6 +348,12 @@ class AffiliateAsset:
     offer_id: str
     asset_type: str = "comparison_page"
     title: str = ""
+    #: the rendered page's actual <h1>/<title> override, if any (spec:
+    #: Amazon Affiliate Loop - a caller-specified roundup-style headline
+    #: like "Best USB microphone for streaming & Discord"). Persisted so
+    #: `deploy_asset()` re-renders byte-identical content to what
+    #: `build_asset()` quality-gated, not the generic default headline.
+    guide_title: str = ""
     slug: str = ""
     file_path: str = ""               # relative path within the deploy artifact
     live_url: str = ""
@@ -331,7 +364,8 @@ class AffiliateAsset:
     def to_dict(self) -> dict:
         return {"asset_id": self.asset_id, "opportunity_id": self.opportunity_id,
                 "offer_id": self.offer_id, "asset_type": self.asset_type,
-                "title": self.title, "slug": self.slug, "file_path": self.file_path,
+                "title": self.title, "guide_title": self.guide_title,
+                "slug": self.slug, "file_path": self.file_path,
                 "live_url": self.live_url, "disclosure_included": self.disclosure_included,
                 "quality_checks": dict(self.quality_checks), "created_at": self.created_at}
 

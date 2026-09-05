@@ -84,7 +84,7 @@ def run_affiliate_tick(data_dir, *, limit: int = 20, now_iso: str = "") -> dict:
 
 def run_affiliate_chain(data_dir, *, opportunity_id: str, draft: OpportunityDraft,
                         now_iso: str = "", source: str = "own_site",
-                        deployment_adapter=None) -> dict:
+                        deployment_adapter=None, guide_title: str = "") -> dict:
     """Idempotent: safe to call again for the same opportunity - offer
     matching is deterministic, `build_asset`/`create_link` reuse existing
     rows, and `deploy_asset` only re-publishes when the rendered content
@@ -115,7 +115,8 @@ def run_affiliate_chain(data_dir, *, opportunity_id: str, draft: OpportunityDraf
 
     asset, quality_ok, quality_reasons = affiliate_assets.build_asset(
         data_dir, opportunity_id=opportunity_id, draft=draft, match=usable,
-        cta_url="", now_iso=now_iso)   # cta_url resolved below, after the link exists
+        cta_url="", now_iso=now_iso,   # cta_url resolved below, after the link exists
+        guide_title=guide_title)
     if not quality_ok:
         return {"kind": "affiliate_chain", "status": "human_required",
                "step": "build_asset", "reason": "; ".join(quality_reasons),

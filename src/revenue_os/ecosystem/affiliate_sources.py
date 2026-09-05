@@ -37,12 +37,56 @@ _REQUIRED_FIELDS = frozenset({
     "commission_kind", "human_confirmed_joined",
 })
 _OPTIONAL_FIELDS = frozenset({
-    "product_url", "product_price", "currency", "price_is_estimate",
+    "product_url", "product_asin", "product_price", "currency", "price_is_estimate",
+    "price_observed_at", "price_source_note",
     "commission_rate", "commission_fixed_amount", "cookie_duration_days",
     "commission_evidence", "category", "keywords", "terms_url", "join_url",
-    "eligibility_note", "evidence", "tracking_param",
+    "eligibility_note", "evidence", "tracking_param", "tracking_value",
 })
 _ALL_FIELDS = _REQUIRED_FIELDS | _OPTIONAL_FIELDS
+
+import re as _re
+
+#: standard 10-character alphanumeric Amazon Standard Identification Number.
+_ASIN_RE = _re.compile(r"^[A-Z0-9]{10}$")
+#: real Amazon marketplace hosts only - never a redirector/shortener that
+#: could hide where a "verified" link actually goes.
+_AMAZON_HOSTS = frozenset({
+    "amazon.de", "www.amazon.de", "amazon.com", "www.amazon.com",
+    "amazon.co.uk", "www.amazon.co.uk", "amazon.fr", "www.amazon.fr",
+    "amazon.it", "www.amazon.it", "amazon.es", "www.amazon.es",
+})
+
+
+def _validate_amazon_fields(raw: dict) -> None:
+    """Amazon-specific fail-closed checks (spec: real Amazon Affiliate
+    Loop). Only runs when network == 'amazon_associates' - every other
+    network is unaffected."""
+    from urllib.parse import urlparse
+
+    url = str(raw.get("product_url") or "").strip()
+    if not url:
+        raise IngestionError(
+            "amazon_associates offers require product_url - a direct, "
+            "real Amazon product page")
+    host = urlparse(url).netloc.lower()
+    if host not in _AMAZON_HOSTS:
+        raise IngestionError(
+            f"product_url host {host!r} is not a recognised Amazon "
+            "marketplace domain - refusing a URL that could hide where "
+            "the link actually goes (no shorteners/redirectors)")
+
+    asin = str(raw.get("product_asin") or "").strip()
+    if asin:
+        if not _ASIN_RE.match(asin):
+            raise IngestionError(
+                f"product_asin {asin!r} does not look like a real ASIN "
+                "(10 uppercase letters/digits)")
+        if asin not in url:
+            raise IngestionError(
+                f"product_asin {asin!r} does not appear in product_url "
+                f"{url!r} - ASIN/URL mismatch, refusing to guess which is "
+                "correct")
 
 
 class IngestionError(ValueError):
@@ -117,6 +161,9 @@ def parse_offer_json(raw: dict) -> dict:
     if price < 0:
         raise IngestionError("product_price cannot be negative")
 
+    if network == "amazon_associates":
+        _validate_amazon_fields(raw)
+
     return dict(raw)
 
 
@@ -164,15 +211,19 @@ def ingest_affiliate_offer(data_dir, payload: dict, *, actor: str = "human") -> 
     offer = AffiliateOffer(
         offer_id=offer_id, network=parsed["network"], program_name=parsed["program_name"],
         product_name=parsed["product_name"], product_url=str(parsed.get("product_url", "")),
+        product_asin=str(parsed.get("product_asin", "")),
         product_price=float(parsed.get("product_price", 0.0) or 0.0),
         currency=str(parsed.get("currency", "EUR")),
         price_is_estimate=bool(parsed.get("price_is_estimate", True)),
+        price_observed_at=str(parsed.get("price_observed_at", "")),
+        price_source_note=str(parsed.get("price_source_note", "")),
         commission=commission, category=str(parsed.get("category", "other")),
         keywords=tuple(parsed.get("keywords") or ()),
         terms_url=str(parsed.get("terms_url", "")), join_url=str(parsed.get("join_url", "")),
         eligibility_note=str(parsed.get("eligibility_note", "")),
         evidence=tuple(parsed.get("evidence") or ()), status=status,
         tracking_param=str(parsed.get("tracking_param", "")),
+        tracking_value=str(parsed.get("tracking_value", "")),
         added_at=now_iso(), added_by=actor, active=True)
 
     store.upsert(offer)

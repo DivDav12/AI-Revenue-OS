@@ -45,14 +45,22 @@ def _esc(text: str) -> str:
 
 
 def render_comparison_page(*, draft: OpportunityDraft, match: AffiliateMatch,
-                           cta_url: str) -> tuple[str, dict]:
+                           cta_url: str, guide_title: str = "") -> tuple[str, dict]:
     """Render one self-contained HTML "problem -> solution" page. Returns
     (html, quality_checks) - the checks are computed against the RENDERED
     content, not guessed, so `check_quality()` and the renderer can never
-    silently disagree."""
+    silently disagree. `guide_title=` overrides the default "<product>:
+    does it solve ...?" headline (e.g. for a roundup-style buying guide) -
+    every other section stays evidence-grounded regardless."""
     offer = match.offer
     problem = _esc(draft.title)
-    need_quote = _esc((draft.evidence or [draft.title])[0])
+    # a "people have said, in their own words" framing is only honest when
+    # a REAL evidence quote exists (spec: no fabricated demand quotes) -
+    # an opportunity with no evidence at all gets a neutral problem
+    # statement instead, never a quote dressed up as verbatim.
+    real_evidence = [e for e in (draft.evidence or []) if str(e).strip()]
+    has_real_quote = bool(real_evidence)
+    need_quote = _esc(real_evidence[0]) if has_real_quote else _esc(draft.title)
     product = _esc(offer.product_name)
     program = _esc(offer.program_name)
     price_line = (f"Listed price: {_esc(offer.currency)} {offer.product_price:.2f}"
@@ -65,19 +73,75 @@ def render_comparison_page(*, draft: OpportunityDraft, match: AffiliateMatch,
         f"<dt>Is this sponsored?</dt><dd>{_esc(DISCLOSURE_TEXT)}</dd>"
         f"<dt>What problem does this solve?</dt><dd>{need_quote}</dd>"
     )
+    problem_statement = (
+        f'People looking for a solution have said, in their own words: &quot;{need_quote}&quot;'
+        if has_real_quote else
+        f"This is a common need: {need_quote}"
+    )
+    headline = _esc(guide_title) if guide_title else f"{product}: does it solve &quot;{problem}&quot;?"
+
+    # "What to look for" / "who it's for" / recommendation are generic,
+    # category-level buying guidance - never a specific performance claim
+    # ("great sound", a star rating, a review quote) that was not actually
+    # sourced. Only rendered when the offer has real evidence to ground
+    # them in (spec: no invented reviews/testimonials).
+    criteria_html = pros_html = who_html = budget_html = reco_html = ""
+    if offer.evidence:
+        criteria_html = """<section>
+<h2>What to look for</h2>
+<ul>
+<li>Pickup pattern and how well it isolates your voice from room/keyboard noise</li>
+<li>Plug-and-play compatibility with your OS and streaming/call software</li>
+<li>Physical controls (mute, gain) you can reach without opening software</li>
+<li>Price relative to what you actually need it for</li>
+</ul>
+</section>"""
+        pros_html = f"""<section>
+<h2>What the program/listing states</h2>
+<ul>{evidence_items}</ul>
+<p class="note">These are the program's own stated facts, not a first-hand
+test result - we have not independently benchmarked audio quality.</p>
+</section>"""
+        who_html = f"""<section>
+<h2>Who this is for</h2>
+<p>Someone who wants a straightforward, single-microphone setup for voice
+chat, streaming, or recording - not someone who already needs a
+multi-microphone studio setup or is chasing a specific, verified
+audio-quality benchmark we have not tested ourselves.</p>
+</section>"""
+        price_ts = (f" as of {_esc(offer.price_observed_at)}" if offer.price_observed_at else "")
+        price_note = f" {_esc(offer.price_source_note)}" if offer.price_source_note else ""
+        budget_html = f"""<section>
+<h2>Budget context</h2>
+<p>The price shown above was last checked{price_ts}.{price_note} Marketplace
+prices change - always check the current price on the product page before
+buying.</p>
+</section>"""
+        reco_html = f"""<section>
+<h2>Our take</h2>
+<p>Based on the program's own stated facts above (not a first-hand review),
+{product} is a reasonable option if those facts match what you need. We
+have not tested it ourselves and are not claiming it is the objectively
+"best" option - only that it is a real, currently-available product from a
+program we have actually joined.</p>
+</section>"""
 
     body_html = f"""<article>
-<h1>{product}: does it solve &quot;{problem}&quot;?</h1>
+<h1>{headline}</h1>
 <p class="disclosure">{_esc(DISCLOSURE_TEXT)}</p>
 <section>
 <h2>The problem</h2>
-<p>People looking for a solution have said, in their own words: &quot;{need_quote}&quot;</p>
+<p>{problem_statement}</p>
 </section>
+{criteria_html}
 <section>
 <h2>{product} ({program})</h2>
 <p>{price_line}</p>
-<ul>{evidence_items}</ul>
 </section>
+{pros_html}
+{who_html}
+{budget_html}
+{reco_html}
 <section>
 <h2>FAQ</h2>
 <dl>{faq_items}</dl>
@@ -87,7 +151,7 @@ def render_comparison_page(*, draft: OpportunityDraft, match: AffiliateMatch,
 
     page = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<title>{product} review &amp; comparison for: {problem}</title>
+<title>{headline}</title>
 <meta name="description" content="{product} evaluated against a real, stated need: {need_quote}">
 </head><body>
 {body_html}
@@ -121,7 +185,8 @@ def check_quality(checks: dict) -> tuple[bool, list]:
 
 
 def build_asset(data_dir, *, opportunity_id: str, draft: OpportunityDraft,
-                match: AffiliateMatch, cta_url: str, now_iso: str = "") -> tuple[AffiliateAsset, bool, list]:
+                match: AffiliateMatch, cta_url: str, now_iso: str = "",
+                guide_title: str = "") -> tuple[AffiliateAsset, bool, list]:
     """Render + quality-gate one asset and persist its record (NOT yet
     deployed - `deploy_asset()` is the separate, explicit publish step, so
     a failed quality gate never reaches deployment). Idempotent per
@@ -134,13 +199,14 @@ def build_asset(data_dir, *, opportunity_id: str, draft: OpportunityDraft,
             ok, reasons = check_quality(checks)
             return existing, ok, reasons
 
-    page, checks = render_comparison_page(draft=draft, match=match, cta_url=cta_url)
+    page, checks = render_comparison_page(draft=draft, match=match, cta_url=cta_url,
+                                          guide_title=guide_title)
     ok, reasons = check_quality(checks)
     slug = _slugify(f"{draft.title}-{match.offer.product_name}")
     asset = AffiliateAsset(
         asset_id=new_id("asset"), opportunity_id=opportunity_id,
         offer_id=match.offer.offer_id, asset_type="comparison_page",
-        title=draft.title[:200], slug=slug, file_path="index.html",
+        title=draft.title[:200], guide_title=guide_title, slug=slug, file_path="index.html",
         disclosure_included=checks["has_disclosure"], quality_checks=checks,
         created_at=now_iso)
     store.upsert(asset)
@@ -159,7 +225,8 @@ def deploy_asset(*, asset: AffiliateAsset, draft: OpportunityDraft,
     offer's evidence can change between build and deploy). `adapter=` lets
     a test/caller inject `deployment.FakeDeploymentAdapter()`; the default
     is the real, credential-gated GitHub Pages adapter."""
-    page, checks = render_comparison_page(draft=draft, match=match, cta_url=cta_url)
+    page, checks = render_comparison_page(draft=draft, match=match, cta_url=cta_url,
+                                          guide_title=asset.guide_title)
     ok, reasons = check_quality(checks)
     if not ok:
         return {"deployed": False, "blocked": True, "reasons": reasons}
