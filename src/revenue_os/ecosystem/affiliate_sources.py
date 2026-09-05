@@ -251,6 +251,59 @@ def ingest_affiliate_offer_file(data_dir, path: str, *, actor: str = "human") ->
     return ingest_affiliate_offer(data_dir, raw, actor=actor)
 
 
+def offer_candidate_to_payload(candidate) -> dict:
+    """Translate an `offer_sources.OfferCandidate`'s REAL, discovery-time
+    fields into the subset of `parse_offer_json()`'s schema they
+    legitimately support - and NOTHING else.
+
+    Deliberately NEVER includes `program_name`, `commission_kind`,
+    `commission_rate`, `commission_fixed_amount`, `commission_evidence`,
+    or `human_confirmed_joined` - none of those are things a product
+    search result could ever tell us (a search returns what a product
+    IS, never what OUR commission on it is, or whether a human has
+    joined that program). Passing this payload straight to
+    `parse_offer_json()`/`ingest_affiliate_offer()` UNCHANGED will
+    therefore always raise `IngestionError` ("missing required fields")
+    until a human (or a separate, later, explicitly-approved step)
+    supplies those - the exact same fail-closed gate a hand-typed offer
+    already goes through, not a new or weaker one.
+
+    `product_price`/`price_observed_at` are only ever set from a REAL,
+    positive, source-provided price - never a guessed or zero value -
+    and `price_is_estimate=False`, because a direct search-result price
+    with a real timestamp is a fact the source stated, not a guess (same
+    bar as `demand_signal.py`'s FACT/ESTIMATED distinction elsewhere)."""
+    payload: dict = {
+        "schema_version": SCHEMA_VERSION,
+        "network": candidate.network,
+        "product_name": candidate.title,
+    }
+    if candidate.url:
+        payload["product_url"] = candidate.url
+    if candidate.product_id:
+        payload["product_asin"] = candidate.product_id
+    if candidate.price > 0:
+        payload["product_price"] = candidate.price
+        payload["price_is_estimate"] = False
+    if candidate.currency:
+        payload["currency"] = candidate.currency
+    if candidate.observed_at:
+        payload["price_observed_at"] = candidate.observed_at
+
+    evidence = []
+    if candidate.availability:
+        evidence.append(f"availability at discovery: {candidate.availability}")
+    if candidate.provenance:
+        evidence.append(
+            f"discovered via {candidate.provenance} "
+            f"(source confidence {candidate.confidence:.2f})")
+    if evidence:
+        payload["evidence"] = evidence
+        payload["price_source_note"] = "; ".join(evidence)
+
+    return payload
+
+
 def setup_required_networks(data_dir) -> list[dict]:
     """Every configured network that is not yet usable, with its exact
     remaining setup steps (spec section 20/26: "Setup required: X Y Z").
