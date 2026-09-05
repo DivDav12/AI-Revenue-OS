@@ -3137,22 +3137,24 @@ def build_parser() -> argparse.ArgumentParser:
     payment.set_defaults(func=_cmd_payment)
 
     pv = sub.add_parser(
-        "paypal-verify", parents=[common, actor_only],
+        "paypal-verify", parents=[common],
         help="verify one PayPal order and book it into the revenue ledger",
     )
     pv.add_argument("name", help="candidate the payment belongs to")
     pv.add_argument("order_id", help="the PayPal order ID")
     pv.add_argument("--force", action="store_true",
                     help="book even if the order's custom_id names a different candidate")
-    pv.set_defaults(func=_cmd_paypal_verify, actor="paypal")
+    pv.add_argument("--actor", default="paypal", help="who is acting")
+    pv.set_defaults(func=_cmd_paypal_verify)
 
     ps = sub.add_parser(
-        "paypal-sync", parents=[common, actor_only],
+        "paypal-sync", parents=[common],
         help="book recent PayPal payments (matched to candidates by custom_id)",
     )
     ps.add_argument("--days", type=int, default=31, help="lookback window (max 31)")
     ps.add_argument("--dry-run", action="store_true", help="report only, book nothing")
-    ps.set_defaults(func=_cmd_paypal_sync, actor="paypal")
+    ps.add_argument("--actor", default="paypal", help="who is acting")
+    ps.set_defaults(func=_cmd_paypal_sync)
 
     bc = sub.add_parser(
         "build-checkout", parents=[common],
