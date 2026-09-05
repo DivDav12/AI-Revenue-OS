@@ -127,6 +127,29 @@ class DiscoveryIntegrationTests(unittest.TestCase):
         self.assertIn("factors", pc)
         self.assertIn("reasons", pc)
 
+    def test_product_intent_survives_persistence(self):
+        src = self._demand_source(
+            [_record(title="what BT earbuds would you recommend?",
+                     text="my current pair stopped pairing.")])
+        DiscoveryEngine(self.d, sources=[src]).run()
+        rec = load_opportunities(self.d).all()[0]
+        pin = rec["discovery"].get("product_intent")
+        self.assertIsNotNone(pin)
+        self.assertEqual(pin["category_phrase"], "bt earbuds")
+        self.assertEqual(pin["intent"], "purchase_recommendation")
+        self.assertNotEqual(pin["provenance"], demand_signal.FACT)
+
+    def test_missing_product_intent_on_an_old_style_draft_does_not_crash(self):
+        from revenue_os.ecosystem import demand_sources, verification
+        from revenue_os.ecosystem.discovery import _draft_to_opportunity
+
+        draft = demand_sources.acq_record_to_draft(_record())
+        del draft.raw["product_intent"]
+        verdict = verification.verify(draft)
+        opp = _draft_to_opportunity(draft, verdict)   # must not raise
+        self.assertIsNone(opp.discovery["product_intent"])
+        self.assertIn("demand_evidence", opp.discovery)
+
     def test_ranking_fields_do_not_change_existing_discovery_fields(self):
         # same fixture/assertions as test_demand_evidence_survives_persistence
         # and test_acquisition_record_is_correctly_integrated_into_discovery -
@@ -177,6 +200,7 @@ class DiscoveryIntegrationTests(unittest.TestCase):
         opp = _draft_to_opportunity(draft, verdict)
         self.assertNotIn("buyer_confidence", opp.discovery)
         self.assertNotIn("problem_confidence", opp.discovery)
+        self.assertNotIn("product_intent", opp.discovery)
         self.assertNotIn("demand_evidence", opp.discovery)
 
     def test_canonical_url_survives_persistence(self):

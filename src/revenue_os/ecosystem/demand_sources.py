@@ -45,7 +45,7 @@ from typing import Protocol
 
 from ..acquisition import canonical_url
 from ..acquisition_sources import AcqRecord
-from . import demand_ranking, demand_signal, model, task_signal
+from . import demand_ranking, demand_signal, model, product_intent, task_signal
 from .demand_signal import DemandEvidence, DemandQualityScore
 from .model import OpportunityDraft, SourceMeta
 
@@ -262,6 +262,14 @@ def acq_record_to_draft(record: AcqRecord, *, repeat_signal_count: int = 0,
     buyer = demand_ranking.buyer_confidence(evidence)
     problem = demand_ranking.problem_confidence(evidence)
 
+    # Product Intent (Demand-First Affiliate architecture, Step 1) - a
+    # THIRD, INDEPENDENT, additive-only extraction from the SAME evidence
+    # object. Never reads, never touches, and is never consulted by
+    # `score`, `otype`, `buyer`, `problem`, or anything above this line -
+    # see product_intent.py's module docstring. Runs off `record.title`
+    # only (the one raw-text field this step's contract covers).
+    intent = product_intent.extract_product_intent(evidence, title=record.title)
+
     # a stated budget only ever becomes est_pay_eur when it is EUR - no
     # invented FX conversion (same rule as ecosystem/human_fed.py).
     est_pay = (evidence.budget.amount
@@ -293,6 +301,8 @@ def acq_record_to_draft(record: AcqRecord, *, repeat_signal_count: int = 0,
             # this function's `score = ...` line.
             "buyer_confidence": buyer.to_dict(),
             "problem_confidence": problem.to_dict(),
+            # additive only - see the `intent = ...` comment above.
+            "product_intent": intent.to_dict(),
         },
     )
     # attach AFTER construction - the fingerprint is computed FROM the

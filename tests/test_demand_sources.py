@@ -372,6 +372,47 @@ class RankingLayerReadModelTests(unittest.TestCase):
         self.assertNotIn("problem_confidence", draft.raw["demand_quality"]["factors"])
 
 
+class ProductIntentReadModelTests(unittest.TestCase):
+    """Demand-First Affiliate architecture, Step 1: `acq_record_to_draft`
+    must expose `product_intent` in `draft.raw` WITHOUT changing anything
+    that was already there - same additive-only contract already proven
+    for buyer_confidence/problem_confidence above."""
+
+    def test_product_intent_is_present_and_matches_a_direct_call(self):
+        from revenue_os.ecosystem import product_intent as pi
+
+        rec = _record(title="what BT earbuds would you recommend?",
+                      text="my current pair stopped pairing.")
+        draft = demand_sources.acq_record_to_draft(rec)
+        self.assertIn("product_intent", draft.raw)
+        evidence = demand_signal.build_demand_evidence(
+            f"{rec.title} {rec.text}".strip(), title=rec.title,
+            discovered_at=rec.posted_at, source_type=rec.source or "")
+        expected = pi.extract_product_intent(evidence, title=rec.title).to_dict()
+        self.assertEqual(draft.raw["product_intent"], expected)
+        self.assertEqual(draft.raw["product_intent"]["category_phrase"], "bt earbuds")
+
+    def test_no_category_stays_empty_not_fabricated(self):
+        rec = _record(title="Is there a tool that categorizes my Stripe transactions?",
+                      text="I would pay $20/month for this.")
+        draft = demand_sources.acq_record_to_draft(rec)
+        self.assertEqual(draft.raw["product_intent"]["category_phrase"], "")
+        self.assertEqual(draft.raw["product_intent"]["intent"], "")
+
+    def test_existing_fields_are_completely_unaffected_by_product_intent(self):
+        rec = _record()
+        draft = demand_sources.acq_record_to_draft(rec, now_iso="2026-09-04T00:00:00+00:00")
+        evidence = demand_signal.build_demand_evidence(
+            f"{rec.title} {rec.text}".strip(), title=rec.title,
+            discovered_at=rec.posted_at, now_iso="2026-09-04T00:00:00+00:00",
+            source_type=rec.source or "")
+        expected_score = demand_signal.score_demand_quality(evidence)
+        self.assertEqual(draft.raw["demand_quality"], expected_score.to_dict())
+        self.assertEqual(draft.demand_hint, expected_score.total)
+        self.assertEqual(draft.opportunity_type, model.TYPE_DIGITAL_PRODUCT)
+        self.assertNotIn("product_intent", draft.raw["demand_quality"])
+
+
 class DedupeAndRepeatSignalTests(unittest.TestCase):
     def test_duplicate_records_within_a_batch_are_deduped(self):
         rec = _record()

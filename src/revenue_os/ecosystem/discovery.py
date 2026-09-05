@@ -123,6 +123,12 @@ def _draft_to_opportunity(draft: OpportunityDraft, verdict) -> Opportunity:
         # reads these two keys to accept/reject/prioritize anything.
         discovery_ns["buyer_confidence"] = _raw.get("buyer_confidence")
         discovery_ns["problem_confidence"] = _raw.get("problem_confidence")
+        # Product Intent (Demand-First Affiliate architecture, Step 1,
+        # additive Read-Model integration) - same `.get()`-guarded,
+        # display-only pattern as buyer/problem confidence above: nothing
+        # here or downstream reads this to accept/reject/prioritize
+        # anything, and it is a no-op for any draft that never carried it.
+        discovery_ns["product_intent"] = _raw.get("product_intent")
 
     return Opportunity(
         title=draft.title[:200] or "untitled opportunity",
