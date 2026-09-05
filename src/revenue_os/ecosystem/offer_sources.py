@@ -150,13 +150,24 @@ def build_offer_source(network: str, **kw) -> OfferSource:
     """Factory mirroring `sources.build_source()`/
     `demand_sources.build_demand_source()`. Every currently-known network
     (amazon_associates, shareasale, cj_affiliate, impact, awin,
-    generic_saas_program) returns a `HumanSetupRequiredOfferSource` - no
-    real connector exists for any of them yet (this step's explicit
-    scope). A real, credentialed `OfferSource` for a specific network is
-    a separate, later, explicitly-approved step."""
+    generic_saas_program) returns a `HumanSetupRequiredOfferSource` UNLESS
+    a real, credentialed connector exists AND is actually authorized
+    right now (env vars resolve cleanly, no network call made to check) -
+    today that is `cj_affiliate` only, via `cj_offer_source.CjOfferSource`
+    (spec: Real Offer Discovery step - see that module for the full
+    access model). Every other network stays exactly as before: a
+    real connector for it is a separate, later, explicitly-approved
+    step. `environ=` (optional) overrides `os.environ` for the
+    credential check - used by tests, never by real callers."""
     n = (network or "").strip().lower()
     known = _offer_source_networks()
-    if n in known:
-        return HumanSetupRequiredOfferSource(n)
-    raise ValueError(
-        f"unknown offer source network {network!r} - one of: " + ", ".join(sorted(known)))
+    if n not in known:
+        raise ValueError(
+            f"unknown offer source network {network!r} - one of: " + ", ".join(sorted(known)))
+    if n == "cj_affiliate":
+        from .cj_offer_source import CjOfferSource
+
+        src = CjOfferSource(environ=kw.get("environ"))
+        if src.authorized:
+            return src
+    return HumanSetupRequiredOfferSource(n)
