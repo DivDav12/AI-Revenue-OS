@@ -31,7 +31,7 @@ from pathlib import Path
 from ..opportunity_store import load_opportunities
 from ..store import now_iso
 from . import model, verification
-from .model import OpportunityDraft, SourceMeta
+from .model import OpportunityDraft, SourceMeta, estimate_value
 from .profitability import evaluate as _evaluate_profitability
 from .strategy import select_strategy
 
@@ -117,6 +117,42 @@ def evaluate(data_dir, oid: str, *, weights: dict | None = None) -> dict:
     return payload
 
 
+def _prefer_affiliate_if_matched(data_dir, draft: OpportunityDraft, selection):
+    """spec section 2: the generic `strategy.py` heuristic has no
+    visibility into real, human-joined affiliate offer economics - it
+    scores TYPE_AFFILIATE opportunities on the same capital/speed/
+    automation profile as everything else, which often makes PRODUCT win
+    even when a genuinely profitable affiliate match already exists. If a
+    real, USABLE offer matches this demand AND its dedicated affiliate
+    profitability projection (affiliate_profitability.py, not the generic
+    per-type table) is positive, that concrete path overrides the generic
+    pick - additive, and scoped strictly to TYPE_AFFILIATE drafts, so
+    every other opportunity type's selection is completely untouched."""
+    if draft.opportunity_type != model.TYPE_AFFILIATE or not selection.recommended:
+        return selection
+    if selection.recommended == model.STRAT_AFFILIATE:
+        return selection
+    from .affiliate_matching import best_usable_match
+    from .affiliate_model import AffiliateOfferStore
+    from .affiliate_profitability import evaluate as eval_affiliate
+
+    offers = AffiliateOfferStore.load(data_dir).all()
+    match = best_usable_match(draft, offers)
+    if match is None:
+        return selection
+    aff_profit = estimate_value(eval_affiliate(match).expected_profit)
+    if aff_profit <= 0:
+        return selection
+    previous = selection.recommended
+    selection.recommended = model.STRAT_AFFILIATE
+    selection.reason = (
+        f"overridden: a real, already-joined affiliate offer "
+        f"({match.offer.program_name!r}) matches this demand with positive "
+        f"projected economics (EUR {aff_profit:.2f} expected profit) - "
+        f"preferred over the generic strategy heuristic's {previous!r} pick")
+    return selection
+
+
 def select(data_dir, oid: str, *, priority_weights: dict | None = None,
            weights: dict | None = None) -> dict:
     """Score every viable strategy and record the recommendation."""
@@ -124,6 +160,7 @@ def select(data_dir, oid: str, *, priority_weights: dict | None = None,
     draft = draft_from_record(rec)
     prof = _evaluate_profitability(draft, weights=weights)
     selection = select_strategy(draft, prof, priority_weights=priority_weights)
+    selection = _prefer_affiliate_if_matched(data_dir, draft, selection)
     payload = {**selection.to_dict(), "selected_at": now_iso()}
     store.record_strategy(oid, payload)
     # keep evaluation fresh alongside the selection it was based on
@@ -260,6 +297,29 @@ def plan(data_dir, oid: str, *, actor: str = "ecosystem") -> dict:
             return {"opportunity_id": oid, "strategy": recommended,
                     "kind": "task_chain", "plan": result}
         # falls through to the prepared/human-gated path below
+
+    if recommended == model.STRAT_AFFILIATE:
+        # Affiliate Revenue Pipeline: a real MATCH->EVALUATE->BUILD ASSET->
+        # CREATE LINK->DEPLOY->DISTRIBUTE chain, synchronous (template
+        # asset generation, no LLM/worker step needed) - see
+        # affiliate_pipeline.run_affiliate_chain for the fail-closed
+        # per-step HUMAN_REQUIRED gates (no usable offer / quality gate /
+        # deploy credentials).
+        from .affiliate_pipeline import run_affiliate_chain
+        result = run_affiliate_chain(data_dir, opportunity_id=oid,
+                                     draft=draft_from_record(rec), now_iso=now_iso())
+        strat_ns["plan"] = result
+        store.record_strategy(oid, strat_ns)
+        store.add_experiment(
+            oid, "strategy_plan",
+            f"AFFILIATE: {result['status']}"
+            + (f" ({result.get('step', '')}: {result.get('reason', '')})"
+               if result["status"] != "completed" else
+               f" - asset live at {result.get('asset_live_url', '')}"))
+        store.save()
+        return {"opportunity_id": oid, "strategy": recommended,
+                "kind": result["kind"], "plan": result,
+                "next_step_class": result["next_step_class"]}
 
     # prepared plan for the remaining strategies (spec 13/14 are later)
     note = _PREPARED_STRATEGIES.get(recommended, _PREPARED_STRATEGIES[model.STRAT_OTHER])

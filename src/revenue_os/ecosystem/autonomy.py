@@ -64,6 +64,13 @@ _ACTIVITY = {
     "run_paid_ads":        (ADVERTISE, "launch_paid_ad_campaign"),
     "join_affiliate_program": (CONTACT, "register_on_platform"),
     "open_store_account":  (CONTACT, "create_service_account"),
+    # Affiliate Revenue Pipeline (spec section 15) - each real chain step
+    "match_offer":          (RESEARCH, "match_affiliate_offer"),
+    "build_affiliate_asset": (BUILD, "build_landing_page"),
+    "create_affiliate_link": (BUILD, "create_affiliate_link"),
+    "deploy_affiliate_asset": (PUBLISH, "deploy_page"),
+    "distribute_affiliate": (RESEARCH, "research_distribution"),
+    "record_click":         (READ_ONLY, "record_click"),
 }
 
 

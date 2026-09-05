@@ -1584,6 +1584,153 @@ def _cmd_eco_status(args) -> int:
     return 0
 
 
+def _cmd_affiliate_ingest_offer(args) -> int:
+    """Affiliate Revenue Pipeline: validate + ingest one real, already-
+    joined affiliate offer (see ecosystem.affiliate_sources for the schema)."""
+    from .ecosystem.affiliate_sources import IngestionError, ingest_affiliate_offer_file
+
+    try:
+        out = ingest_affiliate_offer_file(_data_dir(args), args.file, actor=args.actor)
+    except IngestionError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(out, indent=2))
+    return 0
+
+
+def _cmd_affiliate_match(args) -> int:
+    """Affiliate Revenue Pipeline: preview which offers match one demand
+    opportunity, without planning/deploying anything."""
+    from .ecosystem.affiliate_matching import match_offers
+    from .ecosystem.affiliate_model import AffiliateOfferStore
+    from .ecosystem.pipeline import _load, draft_from_record
+
+    data_dir = _data_dir(args)
+    _, rec = _load(data_dir, args.opportunity_id)
+    draft = draft_from_record(rec)
+    offers = AffiliateOfferStore.load(data_dir).all()
+    matches = match_offers(draft, offers)
+    print(json.dumps({"opportunity_id": args.opportunity_id,
+                      "matches": [m.to_dict() for m in matches]}, indent=2))
+    return 0
+
+
+def _cmd_affiliate_deploy(args) -> int:
+    """Affiliate Revenue Pipeline: run the real MATCH->BUILD ASSET->CREATE
+    LINK->DEPLOY->DISTRIBUTE chain directly (equivalent to plan-strategy
+    once AFFILIATE is the selected strategy)."""
+    from .ecosystem.affiliate_pipeline import run_affiliate_chain
+    from .ecosystem.pipeline import _load, draft_from_record
+    from .store import now_iso
+
+    data_dir = _data_dir(args)
+    _, rec = _load(data_dir, args.opportunity_id)
+    draft = draft_from_record(rec)
+    result = run_affiliate_chain(data_dir, opportunity_id=args.opportunity_id,
+                                 draft=draft, now_iso=now_iso())
+    print(json.dumps(result, indent=2, default=str))
+    return 0 if result["status"] != "human_required" else 0
+
+
+def _cmd_affiliate_clicks(args) -> int:
+    """Affiliate Revenue Pipeline: click/economics rollup for one link."""
+    from .ecosystem.affiliate_links import link_economics
+    out = link_economics(_data_dir(args), args.link_id)
+    if not out:
+        print(f"error: unknown link {args.link_id!r}", file=sys.stderr)
+        return 1
+    print(json.dumps(out, indent=2))
+    return 0
+
+
+def _cmd_affiliate_record_commission(args) -> int:
+    """Affiliate Revenue Pipeline: record what an affiliate network's own
+    dashboard reports for one link - CONFIRMED books the real revenue
+    ledger (idempotent by --ref); REVERSED records a settled loss."""
+    from .ecosystem import affiliate_revenue as ar
+    from .store import now_iso
+
+    data_dir = _data_dir(args)
+    try:
+        if args.confirm:
+            if not args.ref:
+                print("error: --ref is required for --confirm", file=sys.stderr)
+                return 1
+            commission_id = args.commission_id
+            if commission_id is None:
+                rec = ar.record_pending_commission(
+                    data_dir, link_id=args.link_id, opportunity_id=args.opportunity_id,
+                    offer_id=args.offer_id, amount=float(args.amount or 0.0),
+                    currency=args.currency, is_estimate=True, note=args.note,
+                    now_iso=now_iso())
+                commission_id = rec.commission_id
+            out = ar.confirm_commission(data_dir, commission_id, ref=args.ref,
+                                        amount=float(args.amount) if args.amount else None,
+                                        actor=args.actor, now_iso=now_iso())
+        else:
+            if not args.commission_id:
+                print("error: --commission-id is required for --reverse", file=sys.stderr)
+                return 1
+            out = ar.reverse_commission(data_dir, args.commission_id, note=args.note,
+                                        now_iso=now_iso())
+    except ar.AffiliateRevenueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(out, indent=2))
+    return 0
+
+
+def _cmd_affiliate_revenue(args) -> int:
+    """Affiliate Revenue Pipeline: pending vs. confirmed/paid commission
+    summary for one opportunity - never conflates the two."""
+    from .ecosystem.affiliate_revenue import opportunity_commission_summary
+    print(json.dumps(opportunity_commission_summary(_data_dir(args), args.opportunity_id),
+                     indent=2))
+    return 0
+
+
+def _cmd_affiliate_optimize(args) -> int:
+    """Affiliate Revenue Pipeline: profitability-first ranking of every
+    live link, with scale/hold/stop verdicts."""
+    from .ecosystem.affiliate_scaling import optimization_report
+    print(json.dumps(optimization_report(_data_dir(args)), indent=2))
+    return 0
+
+
+def _cmd_affiliate_scale(args) -> int:
+    """Affiliate Revenue Pipeline: the winners - profitable, sufficiently-
+    proven combinations to promote."""
+    from .ecosystem.affiliate_scaling import optimization_report
+    print(json.dumps(optimization_report(_data_dir(args))["scale"], indent=2))
+    return 0
+
+
+def _cmd_affiliate_status(args) -> int:
+    """Affiliate Revenue Pipeline: read-only JARVIS-style status - every
+    number counted from real persisted state, no secrets."""
+    from .ecosystem.affiliate_intel import affiliate_status
+    print(json.dumps(affiliate_status(_data_dir(args)), indent=2))
+    return 0
+
+
+def _cmd_affiliate_pending(args) -> int:
+    """Affiliate Revenue Pipeline: everything currently blocked on a human
+    (network setup, quality-gate fixes, deploy credentials)."""
+    from .ecosystem.affiliate_sources import setup_required_networks
+    print(json.dumps({"setup_required": setup_required_networks(_data_dir(args))}, indent=2))
+    return 0
+
+
+def _cmd_affiliate_tick(args) -> int:
+    """Affiliate Revenue Pipeline: the autonomous-loop entry point."""
+    from .ecosystem.affiliate_pipeline import run_affiliate_tick
+    from .store import now_iso
+
+    out = run_affiliate_tick(_data_dir(args), limit=max(1, int(args.limit)), now_iso=now_iso())
+    print(json.dumps(out, indent=2))
+    return 0
+
+
 def _cmd_release_task(args) -> int:
     """Phase 11-real P1-10: thin CLI wrapper around the existing, already-
     tested `acceptance.release_task()` - the exact same function JARVIS's
@@ -2815,6 +2962,96 @@ def build_parser() -> argparse.ArgumentParser:
     ing.add_argument("--json", action="store_true",
                      help="machine-readable output for the command center")
     ing.set_defaults(func=_cmd_ingest_task)
+
+    afi = sub.add_parser(
+        "affiliate-ingest-offer", parents=[common, actor_only],
+        help="Affiliate Revenue Pipeline: ingest one real, already-joined "
+             "affiliate offer/program (JSON file) into the offer catalog")
+    afi.add_argument("--file", required=True, metavar="PATH")
+    afi.set_defaults(func=_cmd_affiliate_ingest_offer)
+
+    afm = sub.add_parser(
+        "affiliate-match", parents=[common],
+        help="Affiliate Revenue Pipeline: rank affiliate offers against "
+             "one discovered demand opportunity")
+    afm.add_argument("opportunity_id", metavar="OPPORTUNITY_ID")
+    afm.set_defaults(func=_cmd_affiliate_match)
+
+    afd = sub.add_parser(
+        "affiliate-deploy", parents=[common, actor_only],
+        help="Affiliate Revenue Pipeline: run the full MATCH->BUILD ASSET->"
+             "CREATE LINK->DEPLOY->DISTRIBUTE chain for one opportunity "
+             "already selected for the AFFILIATE strategy (same as "
+             "plan-strategy, but affiliate-specific and callable directly)")
+    afd.add_argument("opportunity_id", metavar="OPPORTUNITY_ID")
+    afd.set_defaults(func=_cmd_affiliate_deploy)
+
+    afc = sub.add_parser(
+        "affiliate-clicks", parents=[common],
+        help="Affiliate Revenue Pipeline: click/economics rollup for one link")
+    afc.add_argument("link_id", metavar="LINK_ID")
+    afc.set_defaults(func=_cmd_affiliate_clicks)
+
+    afr = sub.add_parser(
+        "affiliate-record-commission", parents=[common, actor_only],
+        help="Affiliate Revenue Pipeline: record a commission confirmation/"
+             "reversal reported by the affiliate network - CONFIRMED books "
+             "the real revenue ledger, idempotent by --ref")
+    afr.add_argument("link_id", metavar="LINK_ID")
+    afr.add_argument("--opportunity-id", required=True)
+    afr.add_argument("--offer-id", required=True)
+    afr_grp = afr.add_mutually_exclusive_group(required=True)
+    afr_grp.add_argument("--confirm", action="store_true")
+    afr_grp.add_argument("--reverse", action="store_true")
+    afr.add_argument("--commission-id", default=None,
+                     help="required for --reverse; created fresh for --confirm "
+                          "unless given (then confirms that pending record)")
+    afr.add_argument("--amount", type=float, default=0.0, metavar="EUR")
+    afr.add_argument("--currency", default="EUR")
+    afr.add_argument("--ref", default=None, help="required for --confirm")
+    afr.add_argument("--note", default="")
+    afr.set_defaults(func=_cmd_affiliate_record_commission)
+
+    afo = sub.add_parser(
+        "affiliate-revenue", parents=[common],
+        help="Affiliate Revenue Pipeline: commission summary for one opportunity")
+    afo.add_argument("opportunity_id", metavar="OPPORTUNITY_ID")
+    afo.set_defaults(func=_cmd_affiliate_revenue)
+
+    afopt = sub.add_parser(
+        "affiliate-optimize", parents=[common],
+        help="Affiliate Revenue Pipeline: profitability-first ranking of "
+             "every live link (scale/hold/stop verdicts)")
+    afopt.set_defaults(func=_cmd_affiliate_optimize)
+
+    afsc = sub.add_parser(
+        "affiliate-scale", parents=[common],
+        help="Affiliate Revenue Pipeline: alias for affiliate-optimize's "
+             "'scale' list only - the winners to promote")
+    afsc.set_defaults(func=_cmd_affiliate_scale)
+
+    afst = sub.add_parser(
+        "affiliate-status", parents=[common],
+        help="Affiliate Revenue Pipeline: read-only JARVIS-style status "
+             "(offers, assets, links, clicks, commissions, revenue, "
+             "human setup required)")
+    afst.set_defaults(func=_cmd_affiliate_status)
+
+    afp = sub.add_parser(
+        "affiliate-pending", parents=[common],
+        help="Affiliate Revenue Pipeline: everything currently blocked on "
+             "a human (network setup, quality-gate fixes, deploy credentials)")
+    afp.set_defaults(func=_cmd_affiliate_pending)
+
+    aft = sub.add_parser(
+        "affiliate-tick", parents=[common],
+        help="Affiliate Revenue Pipeline: the autonomous-loop entry point - "
+             "evaluate+select+plan every not-yet-attempted PLANNABLE "
+             "opportunity, running the real chain for every AFFILIATE-"
+             "selected one (idempotent, one bad opportunity never stops "
+             "the rest)")
+    aft.add_argument("--limit", type=int, default=20)
+    aft.set_defaults(func=_cmd_affiliate_tick)
 
     esim = sub.add_parser("simulate", parents=[common],
                           help="ecosystem: full-loop revenue simulation, no side effects")

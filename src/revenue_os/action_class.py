@@ -72,6 +72,11 @@ _SAFE = frozenset({
     "commission_analysis", "supplier_research", "margin_analysis",
     "traffic_strategy", "prepare_task_solution", "prepare_store_listing",
     "ad_strategy_analysis", "learn_from_outcomes",
+    # affiliate revenue pipeline - matching/asset/link creation is
+    # non-financial, non-identity administrative + content work (spec:
+    # Affiliate Revenue Pipeline section 15); joining a program itself
+    # stays a CONTACT/HUMAN_REQUIRED activity - see ecosystem/autonomy.py
+    "match_affiliate_offer", "create_affiliate_link", "record_click",
     # build (assets, code, design, copy) - nothing is shipped that binds money
     "write_code", "build_website", "build_landing_page", "build_product_page",
     "create_digital_product", "create_design", "write_copy", "seo_work",
