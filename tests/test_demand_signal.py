@@ -46,6 +46,121 @@ class PurchaseIntentTests(unittest.TestCase):
         self.assertEqual(level, ds.INTENT_EXPLICIT)
 
 
+class ProductAgnosticBuyRecommendationMarkerTests(unittest.TestCase):
+    """Demand Discovery expansion: `_PROBLEM_INTEREST_MARKERS` was
+    extended ADDITIVELY with product-agnostic (no "tool"/"app"/"software"
+    anchor) buy-recommendation phrasing, so a genuine physical-product
+    purchase-recommendation question (e.g. a USB microphone) is
+    recognised exactly like a software "is there a tool" question always
+    was - nothing existing was removed or reordered."""
+
+    def test_which_product_should_i_buy_is_problem_interest(self):
+        text = "Which USB microphone should I buy for streaming under 50 euros?"
+        level, quote = ds.classify_purchase_intent(text)
+        self.assertEqual(level, ds.INTENT_PROBLEM)
+        self.assertEqual(quote, "should i buy")
+
+    def test_current_product_is_bad_what_should_i_replace_it_with(self):
+        text = ("My current microphone is really noisy on calls - what "
+                "would you recommend for a replacement?")
+        level, _ = ds.classify_purchase_intent(text)
+        self.assertEqual(level, ds.INTENT_PROBLEM)
+
+    def test_worth_buying_and_before_you_buy_are_recognised(self):
+        for text in ("Is this microphone worth buying for podcasting?",
+                     "Anything to know before you buy a USB mic?"):
+            level, _ = ds.classify_purchase_intent(text)
+            self.assertEqual(level, ds.INTENT_PROBLEM, text)
+
+    def test_new_markers_never_outrank_explicit_intent(self):
+        text = "Should I buy this? I would pay for it right now."
+        level, _ = ds.classify_purchase_intent(text)
+        self.assertEqual(level, ds.INTENT_EXPLICIT)
+
+    def test_new_markers_are_product_agnostic_no_hardcoded_product_name(self):
+        for marker in ("should i buy", "should i get", "worth buying",
+                       "before you buy", "in the market for", "looking to buy"):
+            self.assertNotIn("microphone", marker)
+            self.assertNotIn("mic", marker)
+            self.assertNotIn("jbl", marker)
+
+    def test_bare_would_you_recommend_needs_a_topic_anchor(self):
+        # THE target case from the spec: a concrete product noun ("BT
+        # earbuds") immediately precedes the phrase -> anchored -> still
+        # classified as genuine problem-interest.
+        text = "what BT earbuds would you recommend?"
+        level, quote = ds.classify_purchase_intent(text)
+        self.assertEqual(level, ds.INTENT_PROBLEM)
+        self.assertEqual(quote, "would you recommend")
+
+    def test_unanchored_would_you_recommend_is_not_a_product_problem(self):
+        # THE real false positive found on a live 'demand-lemmy-buying'
+        # run: a free-time/mental-health question that happens to contain
+        # "would you recommend" with nothing named right before it.
+        text = ("I want to try out some things and meet new people. My "
+                "ideas are hiking, volunteering and reading. What would "
+                "you recommend? Any good ideas?")
+        level, quote = ds.classify_purchase_intent(text)
+        self.assertEqual(level, ds.INTENT_NONE)
+        self.assertEqual(quote, "")
+
+    def test_bare_would_you_recommend_with_nothing_before_it_is_not_anchored(self):
+        text = "Would you recommend this brand?"
+        level, _ = ds.classify_purchase_intent(text)
+        self.assertEqual(level, ds.INTENT_NONE)
+
+    def test_qualified_recommend_markers_are_unaffected_by_the_anchor_guard(self):
+        # every OTHER marker (including the ones from the same additive
+        # batch) already names its own qualifier/anchor and must keep
+        # working exactly as before, with no topic-anchor requirement.
+        cases = {
+            "What would you recommend for a replacement?": "what would you recommend for",
+            "Any recommendations for a good budget mic?": "any recommendations for",
+            "Can you recommend a good one?": "can you recommend a",
+        }
+        for text, expected_quote in cases.items():
+            level, quote = ds.classify_purchase_intent(text)
+            self.assertEqual(level, ds.INTENT_PROBLEM, text)
+            self.assertEqual(quote, expected_quote, text)
+
+    def test_unanchored_hit_still_falls_through_to_help_request(self):
+        text = "I need help - what would you recommend?"
+        level, _ = ds.classify_purchase_intent(text)
+        self.assertEqual(level, ds.INTENT_HELP)
+
+    def test_unanchored_hit_never_escalates_to_explicit(self):
+        text = "What would you recommend? Any good ideas?"
+        level, _ = ds.classify_purchase_intent(text)
+        self.assertNotEqual(level, ds.INTENT_EXPLICIT)
+
+    def test_anchor_filler_word_immediately_before_the_phrase_does_not_count(self):
+        for filler in ("so", "and", "but", "now"):
+            text = f"Great, {filler} would you recommend one?"
+            level, _ = ds.classify_purchase_intent(text)
+            self.assertEqual(level, ds.INTENT_NONE, text)
+
+    def test_a_real_noun_right_before_any_recommendations_is_anchored(self):
+        text = "I have a €50 budget, headphones any recommendations?"
+        level, quote = ds.classify_purchase_intent(text)
+        self.assertEqual(level, ds.INTENT_PROBLEM)
+        self.assertEqual(quote, "any recommendations")
+
+    def test_existing_tool_markers_and_their_exact_quotes_are_unchanged(self):
+        # regression: the additive extension must not shift which marker
+        # _first_match() picks, nor its exact quote, for any pre-existing
+        # phrasing.
+        cases = {
+            "Is there a tool that categorizes my Stripe transactions?": "is there a tool that",
+            "Does anyone know a tool for this?": "does anyone know a tool",
+            "Recommend a tool for CSV dedupe.": "recommend a tool for",
+            "Any recommendations for a tool like this?": "any recommendations for a tool",
+        }
+        for text, expected_quote in cases.items():
+            level, quote = ds.classify_purchase_intent(text)
+            self.assertEqual(level, ds.INTENT_PROBLEM, text)
+            self.assertEqual(quote, expected_quote, text)
+
+
 class BudgetExtractionTests(unittest.TestCase):
     def test_explicit_budget_is_extracted(self):
         text = "I'd pay $20 a month for something like this."

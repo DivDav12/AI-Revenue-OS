@@ -81,6 +81,31 @@ DEFAULT_QUERIES: tuple[str, ...] = (
     "is too expensive",
 )
 
+#: search terms for the two buy-recommendation-focused demand sources
+#: ('demand-stackexchange-recs' / 'demand-lemmy-buying' - see
+#: build_demand_source()). Kept SEPARATE from DEFAULT_QUERIES (not merged
+#: in) so the four existing demand sources' query count/request volume
+#: stays byte-for-byte unchanged - only the two new sources use this list.
+#: Deliberately PRODUCT-AGNOSTIC (no product name, no product category)
+#: per spec section 8 ("nicht auf ein einzelnes Produkt hartcodiert") -
+#: these must work for the JBL microphone offer exactly as well as any
+#: future affiliate offer in any category.
+BUYING_ADVICE_QUERIES: tuple[str, ...] = (
+    "what should i buy",
+    "which one should i buy",
+    "which one should i get",
+    "should i buy",
+    "should i get",
+    "worth buying",
+    "before you buy",
+    "any recommendations for",
+    "in the market for",
+    "looking to buy",
+    "can you recommend a",
+    "what would you recommend for",
+    "recommend a good",
+)
+
 
 class AcqSearchable(Protocol):
     """The uniform interface every acquisition_sources.py fetcher already
@@ -91,6 +116,57 @@ class AcqSearchable(Protocol):
 
     def search(self, query: str, limit: int, *, since_ts=None) -> list[AcqRecord]:
         ...
+
+
+class IntentFilteredSource:
+    """Wraps another `AcqSearchable` and drops any record that carries no
+    genuine purchase-intent or stated-problem evidence (as `demand_signal.
+    classify_purchase_intent()` - the SAME, unmodified classifier used
+    everywhere else - already independently decides), BEFORE the record
+    ever reaches `acq_record_to_draft()`/the normal ranking process.
+
+    Why this exists (spec: Demand Discovery expansion, "lieber 50
+    hochwertige Signale als 10000 Noise-Signale"): a source whose own
+    community/API is not already narrowly scoped to on-topic
+    recommendation content (e.g. a general Q&A community that ALSO
+    carries plain discussion, news, or meme content) can return far more
+    raw records than are worth scoring. This is a PURE PRE-FILTER, not a
+    new scoring/marker system - it reuses the exact same
+    `classify_purchase_intent()` call every downstream draft is scored
+    with, so a record that passes this filter is scored identically to
+    one that reached `acq_record_to_draft()` directly (no double
+    standard, no new intent vocabulary introduced here).
+
+    A record with no title/text (HELP_REQUEST/NONE) is dropped; EXPLICIT
+    or PROBLEM level survives. One failing inner `.search()` call
+    propagates unchanged - the caller's existing per-query try/except
+    (`discover_demand_signals`) already isolates that, exactly like every
+    other source."""
+
+    def __init__(self, inner: AcqSearchable) -> None:
+        self._inner = inner
+
+    def search(self, query: str, limit: int, *, since_ts=None) -> list[AcqRecord]:
+        out: list[AcqRecord] = []
+        for rec in self._inner.search(query, limit, since_ts=since_ts):
+            blob = f"{rec.title} {rec.text}".strip()
+            level, _ = demand_signal.classify_purchase_intent(blob)
+            if level in (demand_signal.INTENT_EXPLICIT, demand_signal.INTENT_PROBLEM):
+                out.append(rec)
+        return out
+
+
+#: additional curated Lemmy communities for consumer buy-recommendation
+#: demand (spec: physical/hardware product demand, e.g. "which USB mic
+#: should I buy") - kept SEPARATE from LemmySource's own default
+#: tool/software-relevant set (sources.py's default `LemmySource()` /
+#: 'demand-lemmy' are completely untouched). AskLemmy is a general Q&A
+#: community (not single-topic like c/selfhosted), so it is only ever
+#: used behind `IntentFilteredSource` above - never bare. A community
+#: that does not exist (or was renamed) simply yields nothing
+#: (LemmySource._resolve_community_id already fails soft for that - see
+#: acquisition_sources.py) - never an error.
+LEMMY_BUYING_COMMUNITIES: tuple[str, ...] = ("asklemmy", "buildapc", "hardware", "frugal")
 
 
 # ---------------------------------------------------------------------------
@@ -362,12 +438,32 @@ _DEMAND_FETCHERS: dict[str, str] = {
     "demand-lemmy": "lemmy",
 }
 
+#: the two buy-recommendation demand sources (spec: Demand Discovery
+#: expansion) - each needs non-default constructor args (a specific SE
+#: site / a specific curated Lemmy community set) plus the
+#: IntentFilteredSource pre-filter, so they are built explicitly in
+#: build_demand_source() rather than through the plain `classes` dict the
+#: original four use. Registered here (not in `_DEMAND_FETCHERS`, which
+#: only ever mapped a name to an unconfigured class) purely so
+#: `sources.py`'s error message / name check can list them too.
+_NEW_DEMAND_SOURCE_LABELS: dict[str, str] = {
+    "demand-stackexchange-recs": "stackexchange-recs",
+    "demand-lemmy-buying": "lemmy-buying",
+}
+
 
 def build_demand_source(name: str, **kw) -> DemandDiscoverySource:
     """Factory mirroring `sources.build_source()`. One of 'demand-hn',
     'demand-stackexchange', 'demand-lobsters', 'demand-lemmy' - each
     wraps the corresponding REAL, keyless `acquisition_sources.py`
-    fetcher. `queries=`/`since_ts=`/`now_iso=` override the defaults."""
+    fetcher - or one of the two buy-recommendation sources,
+    'demand-stackexchange-recs' (softwarerecs.stackexchange.com - a real
+    SE site whose ENTIRE on-topic charter is "recommend a tool/product
+    for X") and 'demand-lemmy-buying' (curated consumer-recommendation
+    Lemmy communities, filtered through IntentFilteredSource since,
+    unlike the single-topic communities `demand-lemmy` uses, they are not
+    already narrowly on-topic). `queries=`/`since_ts=`/`now_iso=` override
+    the defaults; 'demand-lemmy-buying' also accepts `communities=`."""
     from ..acquisition_sources import (
         HNAlgoliaSource, LemmySource, LobstersSource, StackExchangeSource,
     )
@@ -379,11 +475,23 @@ def build_demand_source(name: str, **kw) -> DemandDiscoverySource:
         "demand-lobsters": LobstersSource,
         "demand-lemmy": LemmySource,
     }
-    if n not in classes:
-        raise ValueError(
-            f"unknown demand source {name!r} - one of: "
-            + ", ".join(sorted(classes)))
-    return DemandDiscoverySource(
-        _DEMAND_FETCHERS[n], classes[n](),
-        queries=kw.get("queries", DEFAULT_QUERIES), since_ts=kw.get("since_ts"),
-        now_iso=kw.get("now_iso", ""))
+    if n in classes:
+        return DemandDiscoverySource(
+            _DEMAND_FETCHERS[n], classes[n](),
+            queries=kw.get("queries", DEFAULT_QUERIES), since_ts=kw.get("since_ts"),
+            now_iso=kw.get("now_iso", ""))
+    if n == "demand-stackexchange-recs":
+        inner = StackExchangeSource(sites=("softwarerecs",))
+        return DemandDiscoverySource(
+            _NEW_DEMAND_SOURCE_LABELS[n], IntentFilteredSource(inner),
+            queries=kw.get("queries", DEFAULT_QUERIES), since_ts=kw.get("since_ts"),
+            now_iso=kw.get("now_iso", ""))
+    if n == "demand-lemmy-buying":
+        inner = LemmySource(communities=kw.get("communities", LEMMY_BUYING_COMMUNITIES))
+        return DemandDiscoverySource(
+            _NEW_DEMAND_SOURCE_LABELS[n], IntentFilteredSource(inner),
+            queries=kw.get("queries", BUYING_ADVICE_QUERIES), since_ts=kw.get("since_ts"),
+            now_iso=kw.get("now_iso", ""))
+    raise ValueError(
+        f"unknown demand source {name!r} - one of: "
+        + ", ".join(sorted(list(classes) + list(_NEW_DEMAND_SOURCE_LABELS))))

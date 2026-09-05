@@ -80,12 +80,77 @@ _PROBLEM_INTEREST_MARKERS = (
     "any tool for", "any tool that", "any recommendations for a tool",
     "what tool do you use for", "what's the best tool for",
     "whats the best tool for", "anyone know a good tool",
+    # Additive extension (Demand Discovery expansion - real, physical-
+    # product buy-recommendation demand, e.g. "which USB mic should I buy
+    # under EUR 50?"): every marker above is scoped to
+    # tool/service/software/app wording, so it never fires on a genuine
+    # product-recommendation question that names no digital category at
+    # all. These markers are deliberately PRODUCT-AGNOSTIC (no "tool"/
+    # "app"/"software" anchor) so they work for hardware/consumer-product
+    # demand exactly like the software case, without touching a single
+    # existing marker/order/quote (kept ADDITIVE, nothing removed - same
+    # rule as DEFAULT_QUERIES's own expansion in demand_sources.py).
+    "should i buy", "should i get", "what should i buy",
+    "which one should i buy", "which one should i get", "worth buying",
+    "before you buy", "any recommendations for", "in the market for",
+    "looking to buy", "can you recommend a", "can anyone recommend",
+    "what would you recommend for", "recommend a good",
+    # found on a real 'demand-lemmy-buying' live-validation run (2026-09):
+    # a genuine buy-recommendation question ("what BT earbuds would you
+    # recommend?") carries NEITHER a "for" clause nor a tool/software
+    # anchor - bare "would you recommend"/"any recommendations" (no
+    # trailing qualifier) close that gap. UNLIKE every other marker in
+    # this tuple, these two name no product/category of their own, so
+    # they additionally require a topic anchor - see _UNANCHORED_MARKERS
+    # / _has_topic_anchor() below - before classify_purchase_intent()
+    # accepts them. Kept HERE, unmodified, not removed: the anchor
+    # requirement is an extra guard applied at classification time, not a
+    # change to this marker list.
+    "would you recommend", "any recommendations",
 )
 _HELP_REQUEST_MARKERS = (
     "i need help", "we need help", "can someone help", "could someone help",
     "how do i", "how can i", "how would i", "need advice", "need some advice",
     "any advice", "please help",
 )
+
+#: the two _PROBLEM_INTEREST_MARKERS entries with no product/category
+#: anchor of their own (every other marker either names "tool"/"service"/
+#: "app"/"software", or a commerce verb like "buy"/"buying"). A live
+#: 'demand-lemmy-buying' validation run (2026-09) found a bare "would you
+#: recommend" firing on a topically unrelated free-time/mental-health
+#: question ("I want to try some things... What would you recommend? Any
+#: good ideas?") purely because the phrase appears somewhere in the text -
+#: the same class of topic-blindness already documented for
+#: classify_purchase_intent() elsewhere (see
+#: test_demand_ranking_live_validation.py's KnownFailureModeRegressionTests),
+#: just newly observable because these two markers have no qualifier to
+#: fall back on. classify_purchase_intent() only accepts a hit on one of
+#: these two when _has_topic_anchor() finds a concrete word immediately
+#: before the phrase (e.g. "BT earbuds would you recommend") - every other
+#: marker is completely unaffected by this check.
+_UNANCHORED_MARKERS = frozenset({"would you recommend", "any recommendations"})
+
+#: question/filler words that do NOT count as a topic anchor - a bare
+#: "What would you recommend?" (nothing named) must still fail the check.
+#: Small, generic, closed-class function words - not a topic/category
+#: classifier and not specific to any one product.
+_ANCHOR_FILLER_WORDS = frozenset({
+    "what", "so", "and", "or", "but", "then", "now", "just", "really",
+    "also", "still", "please", "you", "i", "we", "there", "else",
+})
+#: the single word immediately before an unanchored marker, if any -
+#: deliberately just ONE adjacent word (not a full noun-phrase parse):
+#: enough to tell "BT earbuds would you recommend" (anchored - "earbuds")
+#: apart from "What would you recommend" (not anchored - "what"), without
+#: any new NLP/topic machinery.
+_ANCHOR_WORD_RE = re.compile(
+    r"([a-z][a-z\-']{2,})\s+(?:would you recommend|any recommendations)\b")
+
+
+def _has_topic_anchor(blob: str) -> bool:
+    m = _ANCHOR_WORD_RE.search(blob)
+    return bool(m) and m.group(1) not in _ANCHOR_FILLER_WORDS
 
 
 def _first_match(blob: str, markers: tuple[str, ...]) -> str:
@@ -95,13 +160,20 @@ def _first_match(blob: str, markers: tuple[str, ...]) -> str:
 def classify_purchase_intent(text: str) -> tuple[str, str]:
     """(level, matched_marker). Priority EXPLICIT > PROBLEM > HELP > NONE -
     a stronger signal, if present, always wins; weaker markers elsewhere in
-    the same text do not dilute it."""
+    the same text do not dilute it.
+
+    One extra, narrowly-scoped guard: a PROBLEM match on one of the two
+    _UNANCHORED_MARKERS (see there) is only accepted when
+    _has_topic_anchor() confirms a concrete word precedes it in the same
+    text - otherwise classification falls through to HELP/NONE exactly as
+    if that marker had not matched at all. Every other marker in
+    _PROBLEM_INTEREST_MARKERS is completely unaffected."""
     blob = (text or "").lower()
     hit = _first_match(blob, _EXPLICIT_INTENT_MARKERS)
     if hit:
         return INTENT_EXPLICIT, hit
     hit = _first_match(blob, _PROBLEM_INTEREST_MARKERS)
-    if hit:
+    if hit and (hit not in _UNANCHORED_MARKERS or _has_topic_anchor(blob)):
         return INTENT_PROBLEM, hit
     hit = _first_match(blob, _HELP_REQUEST_MARKERS)
     if hit:

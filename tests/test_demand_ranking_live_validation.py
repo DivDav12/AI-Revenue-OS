@@ -186,6 +186,59 @@ class LiveValidationSmokeTests(unittest.TestCase):
               f"{len(sources_seen)}/4 sources ({sorted(sources_seen)}) - "
               f"all structurally valid.")
 
+    @unittest.skipUnless(
+        os.environ.get("REVENUE_OS_NET_TESTS"), "network tests disabled")
+    def test_buy_recommendation_sources_produce_structurally_valid_ranked_evidence(self):
+        """Demand Discovery expansion - the two new buy-recommendation
+        sources ('demand-stackexchange-recs' / 'demand-lemmy-buying').
+        Read-only GET only, a small query subset, no login/posting/
+        account-creation. Reports how many raw records were found, how
+        many survived IntentFilteredSource + dedup, and how many carry a
+        meaningful buyer/problem signal - manual inspection only, since
+        live content is not deterministic."""
+        from revenue_os.ecosystem import demand_sources
+        from revenue_os.ecosystem.sources import build_source
+
+        sources = {
+            "demand-stackexchange-recs": build_source("demand-stackexchange-recs"),
+            "demand-lemmy-buying": build_source("demand-lemmy-buying"),
+        }
+
+        summary = {}
+        all_drafts = []
+        for name, src in sources.items():
+            drafts = src.discover(10)
+            all_drafts.extend(drafts)
+            buyer_hits = sum(1 for d in drafts if d.raw["buyer_confidence"]["total"] > 0.3)
+            problem_hits = sum(1 for d in drafts if d.raw["problem_confidence"]["total"] > 0.3)
+            summary[name] = {
+                "after_filter_and_dedup": len(drafts),
+                "buyer_signal_count": buyer_hits,
+                "problem_signal_count": problem_hits,
+                "errors": list(src.last_errors),
+            }
+
+        for d in all_drafts:
+            bc = d.raw.get("buyer_confidence")
+            pc = d.raw.get("problem_confidence")
+            self.assertIsNotNone(bc)
+            self.assertIsNotNone(pc)
+            for score in (bc, pc):
+                self.assertGreaterEqual(score["total"], 0.0)
+                self.assertLessEqual(score["total"], 1.0)
+            level = d.raw["demand_evidence"]["intent_level"]
+            # IntentFilteredSource guarantees only these two levels survive
+            self.assertIn(level, (ds.INTENT_EXPLICIT, ds.INTENT_PROBLEM))
+
+        print("\n[buy-recommendation live smoke]")
+        for name, s in summary.items():
+            print(f"  {name}: {s['after_filter_and_dedup']} signals after "
+                  f"filter+dedup, {s['buyer_signal_count']} buyer / "
+                  f"{s['problem_signal_count']} problem hits (>0.3), "
+                  f"errors={s['errors']}")
+        titles = [d.title for d in all_drafts]
+        print(f"  sample titles: {titles[:5]}")
+
 
 if __name__ == "__main__":
     unittest.main()

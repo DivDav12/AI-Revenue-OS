@@ -304,7 +304,8 @@ def default_sources() -> list[OpportunitySource]:
 #: build_source() stays the single factory entry point every caller
 #: (CLI, tests) already uses.
 _DEMAND_SOURCE_NAMES = ("demand-hn", "demand-stackexchange",
-                        "demand-lobsters", "demand-lemmy")
+                        "demand-lobsters", "demand-lemmy",
+                        "demand-stackexchange-recs", "demand-lemmy-buying")
 
 
 def build_source(name: str, **kw):

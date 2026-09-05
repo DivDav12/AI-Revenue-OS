@@ -506,5 +506,276 @@ class NoInterferenceWithTaskLogicTests(unittest.TestCase):
         self.assertNotIn("verification", imported_names)
 
 
+# ---------------------------------------------------------------------------
+# Demand Discovery expansion - buy-recommendation sources (spec: real
+# purchase/demand-intent for existing affiliate offers, e.g. the JBL
+# Quantum Stream Talk microphone offer). Two new demand-* sources:
+#   'demand-stackexchange-recs' - softwarerecs.stackexchange.com, wraps the
+#     EXISTING StackExchangeSource with a different `sites=`.
+#   'demand-lemmy-buying' - a NEW curated Lemmy community set, wraps the
+#     EXISTING LemmySource with a different `communities=`.
+# Both are wrapped in IntentFilteredSource (see its own docstring) - a
+# pure pre-filter, not a new scoring/marker system.
+# ---------------------------------------------------------------------------
+
+def _buy_record(**kw) -> AcqRecord:
+    base = dict(
+        title="Which USB microphone should I buy for streaming under 50 euros?",
+        url="https://lemmy.world/post/555",
+        text="My current mic is really noisy on Discord calls - what would "
+             "you recommend for a replacement?",
+        author="streamer_a",
+        posted_at="2026-09-01T00:00:00+00:00",
+        platform="Lemmy (c/buildapc)",
+        source="lemmy-buying",
+        query="what should i buy",
+    )
+    base.update(kw)
+    return AcqRecord(**base)
+
+
+class IntentFilteredSourceTests(unittest.TestCase):
+    """Structural + behavioural coverage of the new pre-filter wrapper -
+    fully offline, deterministic fixture sources only."""
+
+    def test_explicit_purchase_intent_passes(self):
+        class _Src:
+            def search(self, query, limit, *, since_ts=None):
+                return [_buy_record(title="I would pay for a good USB mic right now")]
+
+        out = demand_sources.IntentFilteredSource(_Src()).search("q", 5)
+        self.assertEqual(len(out), 1)
+
+    def test_problem_intent_passes(self):
+        out = demand_sources.IntentFilteredSource(
+            _FixtureSource([_buy_record()])).search("what should i buy", 5)
+        self.assertEqual(len(out), 1)
+
+    def test_help_request_only_is_dropped(self):
+        class _Src:
+            def search(self, query, limit, *, since_ts=None):
+                return [_buy_record(title="How do I clean my USB microphone?",
+                                    text="Any advice on maintenance?")]
+
+        out = demand_sources.IntentFilteredSource(_Src()).search("q", 5)
+        self.assertEqual(out, [])
+
+    def test_neutral_discussion_with_no_intent_marker_is_dropped(self):
+        class _Src:
+            def search(self, query, limit, *, since_ts=None):
+                return [_buy_record(title="A history of the USB standard",
+                                    text="USB was introduced in 1996.")]
+
+        out = demand_sources.IntentFilteredSource(_Src()).search("q", 5)
+        self.assertEqual(out, [])
+
+    def test_politics_news_noise_without_a_marker_is_dropped(self):
+        class _Src:
+            def search(self, query, limit, *, since_ts=None):
+                return [_buy_record(title="Election results announced tonight",
+                                    text="Turnout was higher than expected.")]
+
+        out = demand_sources.IntentFilteredSource(_Src()).search("q", 5)
+        self.assertEqual(out, [])
+
+    def test_malformed_record_with_no_title_or_text_is_dropped_not_crashed(self):
+        class _Src:
+            def search(self, query, limit, *, since_ts=None):
+                return [AcqRecord(title="", text="", url="", source="lemmy-buying", query=query)]
+
+        out = demand_sources.IntentFilteredSource(_Src()).search("q", 5)
+        self.assertEqual(out, [])
+
+    def test_record_with_missing_url_is_not_dropped_by_the_filter(self):
+        # the filter only ever looks at title/text - a missing URL is a
+        # concern for acq_record_to_draft/dedup, not for intent filtering.
+        class _Src:
+            def search(self, query, limit, *, since_ts=None):
+                return [_buy_record(url="")]
+
+        out = demand_sources.IntentFilteredSource(_Src()).search("q", 5)
+        self.assertEqual(len(out), 1)
+
+    def test_empty_response_yields_empty_list(self):
+        out = demand_sources.IntentFilteredSource(_FixtureSource([])).search("q", 5)
+        self.assertEqual(out, [])
+
+    def test_duplicate_records_are_not_deduped_here_only_filtered(self):
+        # dedupe is discover_demand_signals()'s job, not this wrapper's -
+        # two identical buy-intent records both survive the filter.
+        rec = _buy_record()
+
+        class _Src:
+            def search(self, query, limit, *, since_ts=None):
+                return [rec, rec]
+
+        out = demand_sources.IntentFilteredSource(_Src()).search("q", 5)
+        self.assertEqual(len(out), 2)
+
+    def test_source_failure_or_timeout_propagates_for_isolation(self):
+        class _Src:
+            def search(self, query, limit, *, since_ts=None):
+                raise TimeoutError("simulated timeout")
+
+        with self.assertRaises(TimeoutError):
+            demand_sources.IntentFilteredSource(_Src()).search("q", 5)
+
+    def test_query_metadata_is_preserved_across_the_filter(self):
+        class _Src:
+            def search(self, query, limit, *, since_ts=None):
+                return [_buy_record(query=query)]
+
+        out = demand_sources.IntentFilteredSource(_FixtureSource(
+            [_buy_record(query="worth buying")])).search("worth buying", 5)
+        self.assertEqual(out[0].query, "worth buying")
+        self.assertEqual(out[0].author, "streamer_a")
+        self.assertEqual(out[0].platform, "Lemmy (c/buildapc)")
+
+
+class BuyingAdviceQueriesTests(unittest.TestCase):
+    def test_queries_are_non_empty_strings(self):
+        for q in demand_sources.BUYING_ADVICE_QUERIES:
+            self.assertIsInstance(q, str)
+            self.assertTrue(q.strip())
+
+    def test_queries_are_product_agnostic(self):
+        # spec section 8: never hardcoded to one product/category.
+        banned = ("microphone", "mic", "jbl", "usb")
+        for q in demand_sources.BUYING_ADVICE_QUERIES:
+            low = q.lower()
+            for b in banned:
+                self.assertNotIn(b, low, f"{q!r} is not product-agnostic")
+
+    def test_separate_from_default_queries_existing_sources_are_unaffected(self):
+        # the four original demand sources must keep using DEFAULT_QUERIES
+        # unchanged - BUYING_ADVICE_QUERIES is additive infrastructure for
+        # the two NEW sources only.
+        for name in ("demand-hn", "demand-stackexchange", "demand-lobsters",
+                    "demand-lemmy"):
+            src = demand_sources.build_demand_source(name)
+            self.assertEqual(src._queries, demand_sources.DEFAULT_QUERIES)
+
+
+class NewSourceRegistryTests(unittest.TestCase):
+    def test_stackexchange_recs_uses_the_softwarerecs_site(self):
+        from revenue_os.acquisition_sources import StackExchangeSource
+
+        src = demand_sources.build_demand_source("demand-stackexchange-recs")
+        self.assertEqual(src.name, "stackexchange-recs")
+        self.assertEqual(src.meta.source, "stackexchange-recs")
+        self.assertIsInstance(src._fetcher, demand_sources.IntentFilteredSource)
+        self.assertIsInstance(src._fetcher._inner, StackExchangeSource)
+        self.assertEqual(src._fetcher._inner.sites, ("softwarerecs",))
+        self.assertEqual(src._queries, demand_sources.DEFAULT_QUERIES)
+
+    def test_lemmy_buying_uses_the_curated_buying_community_set(self):
+        from revenue_os.acquisition_sources import LemmySource
+
+        src = demand_sources.build_demand_source("demand-lemmy-buying")
+        self.assertEqual(src.name, "lemmy-buying")
+        self.assertIsInstance(src._fetcher, demand_sources.IntentFilteredSource)
+        self.assertIsInstance(src._fetcher._inner, LemmySource)
+        self.assertEqual(src._fetcher._inner.communities,
+                         demand_sources.LEMMY_BUYING_COMMUNITIES)
+        self.assertEqual(src._queries, demand_sources.BUYING_ADVICE_QUERIES)
+
+    def test_lemmy_buying_communities_are_distinct_from_the_default_lemmy_set(self):
+        from revenue_os.acquisition_sources import LemmySource
+
+        default_communities = LemmySource().communities
+        self.assertEqual(
+            set(demand_sources.LEMMY_BUYING_COMMUNITIES) & set(default_communities),
+            set())
+
+    def test_default_lemmy_source_communities_are_unaffected(self):
+        # sanity: adding LEMMY_BUYING_COMMUNITIES must not change
+        # 'demand-lemmy''s own default community set.
+        from revenue_os.acquisition_sources import LemmySource
+
+        src = demand_sources.build_demand_source("demand-lemmy")
+        self.assertEqual(src._fetcher.communities, LemmySource._DEFAULT_COMMUNITIES)
+
+    def test_custom_communities_override_the_default_for_lemmy_buying(self):
+        src = demand_sources.build_demand_source(
+            "demand-lemmy-buying", communities=("frugal",))
+        self.assertEqual(src._fetcher._inner.communities, ("frugal",))
+
+    def test_unknown_demand_source_still_raises_a_clear_error(self):
+        with self.assertRaises(ValueError):
+            demand_sources.build_demand_source("demand-nonexistent")
+
+    def test_sources_py_registers_both_new_names(self):
+        from revenue_os.ecosystem import sources as eco_sources
+
+        for name in ("demand-stackexchange-recs", "demand-lemmy-buying"):
+            self.assertIn(name, eco_sources._DEMAND_SOURCE_NAMES)
+            # build_source() must actually dispatch it, not just list it
+            src = eco_sources.build_source(name)
+            self.assertTrue(hasattr(src, "discover"))
+
+
+class BuyIntentEndToEndTests(unittest.TestCase):
+    """AcqRecord -> OpportunityDraft for a real physical-product
+    buy-recommendation signal, through the filtered source end-to-end -
+    the exact shape of demand the JBL microphone offer needs matched
+    against (the offer itself is never touched here)."""
+
+    def test_a_genuine_buy_signal_gets_meaningful_problem_confidence(self):
+        rec = _buy_record()
+        draft = demand_sources.acq_record_to_draft(rec, now_iso="2026-09-05T00:00:00+00:00")
+        self.assertEqual(draft.raw["demand_evidence"]["intent_level"],
+                         demand_signal.INTENT_PROBLEM)
+        self.assertGreater(draft.raw["problem_confidence"]["total"], 0.5)
+        self.assertEqual(draft.source_meta.source, "lemmy-buying")
+
+    def test_explicit_buy_intent_gets_meaningful_buyer_confidence(self):
+        rec = _buy_record(
+            title="I would pay for a decent USB microphone right now",
+            text="Sick of my current one crackling on every call.")
+        draft = demand_sources.acq_record_to_draft(rec, now_iso="2026-09-05T00:00:00+00:00")
+        self.assertEqual(draft.raw["demand_evidence"]["intent_level"],
+                         demand_signal.INTENT_EXPLICIT)
+        self.assertGreater(draft.raw["buyer_confidence"]["total"], 0.3)
+
+    def test_end_to_end_through_discover_demand_signals_filters_noise(self):
+        good = _buy_record(query="what should i buy")
+        noise = _buy_record(
+            title="Election night coverage begins", text="Polls just closed.",
+            url="https://lemmy.world/post/999", query="what should i buy")
+
+        class _Src:
+            def search(self, query, limit, *, since_ts=None):
+                return [good, noise]
+
+        filtered = demand_sources.IntentFilteredSource(_Src())
+        drafts = demand_sources.discover_demand_signals(
+            filtered, queries=("what should i buy",), now_iso="2026-09-05T00:00:00+00:00")
+        self.assertEqual(len(drafts), 1)
+        self.assertIn("microphone", drafts[0].title.lower())
+
+    def test_metadata_and_canonical_url_are_preserved(self):
+        rec = _buy_record(url="https://lemmy.world/post/555?utm_source=foo")
+        draft = demand_sources.acq_record_to_draft(rec)
+        self.assertEqual(draft.raw["author"], "streamer_a")
+        self.assertEqual(draft.raw["platform"], "Lemmy (c/buildapc)")
+        self.assertEqual(draft.raw["query"], "what should i buy")
+        self.assertNotIn("utm_source", draft.source_url)
+
+    def test_deduplication_still_applies_to_buy_signals(self):
+        rec_a = _buy_record()
+        rec_b = _buy_record(url="https://lemmy.world/post/556")
+
+        class _Src:
+            def search(self, query, limit, *, since_ts=None):
+                return [rec_a, rec_b]
+
+        filtered = demand_sources.IntentFilteredSource(_Src())
+        drafts = demand_sources.discover_demand_signals(
+            filtered, queries=("what should i buy",))
+        # same title -> same norm_title fingerprint -> collapses to one
+        self.assertEqual(len(drafts), 1)
+        self.assertEqual(drafts[0].raw["demand_evidence"]["repeat_signal_count"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
