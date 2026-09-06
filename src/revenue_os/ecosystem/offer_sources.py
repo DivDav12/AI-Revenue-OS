@@ -182,6 +182,17 @@ def build_offer_source(network: str, **kw) -> OfferSource:
         src = AwinOfferSource(environ=kw.get("environ"))
         if src.authorized:
             return src
+        # link-only fallback: a single, verified Awin deep link for one
+        # advertiser (Wondershare DE / PDFelement, advertiser 20202) - the
+        # datafeed connector above needs an approved AWIN_DATAFEED_API_KEY;
+        # this curated source needs only the real tracking link Awin
+        # issued (same shape as systeme_io below). See
+        # wondershare_offer_source.py.
+        from .wondershare_offer_source import WondershareOfferSource
+
+        wsrc = WondershareOfferSource(environ=kw.get("environ"))
+        if wsrc.authorized:
+            return wsrc
     if n == "systeme_io":
         from .systeme_offer_source import SystemeIoOfferSource
 
