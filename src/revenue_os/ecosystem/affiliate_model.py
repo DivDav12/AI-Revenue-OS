@@ -110,7 +110,12 @@ NETWORK_POLICY: dict[str, dict] = {
         ],
         "note": "No fake PA-API connector is built - product data and "
                 "commission rates are program-defined and require a live, "
-                "authenticated API call.",
+                "authenticated API call. As of 2026, Amazon's Product "
+                "Advertising API (PA-API 5.0) is deprecated in favour of "
+                "the Creators API, which itself requires 10 qualifying "
+                "affiliate sales in the trailing 30 days before API access "
+                "is granted - not realistically reachable before real "
+                "sales already exist through some other channel.",
     },
     NETWORK_SHAREASALE: {
         "status": model.POLICY_HUMAN_SETUP_REQUIRED,
@@ -146,12 +151,25 @@ NETWORK_POLICY: dict[str, dict] = {
     NETWORK_AWIN: {
         "status": model.POLICY_HUMAN_SETUP_REQUIRED,
         "setup_steps": [
-            "Register as an Awin publisher and get approved into the "
-            "target advertiser program.",
-            "Generate an Awin API OAuth token from the Awin account.",
-            "Provide the token via an environment variable.",
+            "Register as an Awin publisher (real compliance review; a "
+            "refundable deposit applies) and get approved into the target "
+            "advertiser program(s) - many EU/DE consumer-electronics and "
+            "home-office retailers run on Awin.",
+            "In the Awin dashboard, use Create-a-Feed to configure and "
+            "generate a product data feed for each approved advertiser, "
+            "and copy the resulting datafeed API key.",
+            "Provide the datafeed API key and the approved advertiser "
+            "id(s) via AWIN_DATAFEED_API_KEY / AWIN_ADVERTISER_IDS "
+            "environment variables (never guessed - the fleet only ever "
+            "reads feeds for advertiser ids a human has already been "
+            "approved for).",
         ],
-        "note": "Per-advertiser approval is required per program.",
+        "note": "Awin has no live keyword-search API for products - "
+                "publishers get official, documented BULK product data "
+                "feeds (https://productdata.awin.com) per approved "
+                "advertiser; see awin_offer_source.py, which downloads and "
+                "searches the real feed content locally rather than "
+                "fabricating a search endpoint that does not exist.",
     },
     NETWORK_GENERIC_SAAS: {
         "status": model.POLICY_HUMAN_SETUP_REQUIRED,

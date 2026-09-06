@@ -153,14 +153,17 @@ def build_offer_source(network: str, **kw) -> OfferSource:
     generic_saas_program) returns a `HumanSetupRequiredOfferSource` UNLESS
     a real, credentialed connector exists AND is actually authorized
     right now (env vars resolve cleanly, no network call made to check) -
-    today that is `cj_affiliate` (a real search API, via
-    `cj_offer_source.CjOfferSource`) and `systeme_io` (a curated,
-    single-offer source with no search API to call, via
-    `systeme_offer_source.SystemeIoOfferSource` - see that module for why)
-    (spec: Real Offer Discovery step - see each module for its full
-    access model). Every other network stays exactly as before: a
-    real connector for it is a separate, later, explicitly-approved
-    step. `environ=` (optional) overrides `os.environ` for the
+    today that is `cj_affiliate` (a real, live keyword-search API, via
+    `cj_offer_source.CjOfferSource`), `awin` (a real, official product
+    DATA FEED - no live search endpoint exists, so
+    `awin_offer_source.AwinOfferSource` downloads and searches real feed
+    rows locally - the strongest real EU/DE physical-goods catalog of the
+    three), and `systeme_io` (a curated, single-offer source with no
+    search API to call, via `systeme_offer_source.SystemeIoOfferSource` -
+    see that module for why) (spec: Real Offer Discovery step - see each
+    module for its full access model). Every other network stays exactly
+    as before: a real connector for it is a separate, later, explicitly-
+    approved step. `environ=` (optional) overrides `os.environ` for the
     credential check - used by tests, never by real callers."""
     n = (network or "").strip().lower()
     known = _offer_source_networks()
@@ -171,6 +174,12 @@ def build_offer_source(network: str, **kw) -> OfferSource:
         from .cj_offer_source import CjOfferSource
 
         src = CjOfferSource(environ=kw.get("environ"))
+        if src.authorized:
+            return src
+    if n == "awin":
+        from .awin_offer_source import AwinOfferSource
+
+        src = AwinOfferSource(environ=kw.get("environ"))
         if src.authorized:
             return src
     if n == "systeme_io":
