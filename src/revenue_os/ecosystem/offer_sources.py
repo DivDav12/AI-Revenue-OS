@@ -153,8 +153,11 @@ def build_offer_source(network: str, **kw) -> OfferSource:
     generic_saas_program) returns a `HumanSetupRequiredOfferSource` UNLESS
     a real, credentialed connector exists AND is actually authorized
     right now (env vars resolve cleanly, no network call made to check) -
-    today that is `cj_affiliate` only, via `cj_offer_source.CjOfferSource`
-    (spec: Real Offer Discovery step - see that module for the full
+    today that is `cj_affiliate` (a real search API, via
+    `cj_offer_source.CjOfferSource`) and `systeme_io` (a curated,
+    single-offer source with no search API to call, via
+    `systeme_offer_source.SystemeIoOfferSource` - see that module for why)
+    (spec: Real Offer Discovery step - see each module for its full
     access model). Every other network stays exactly as before: a
     real connector for it is a separate, later, explicitly-approved
     step. `environ=` (optional) overrides `os.environ` for the
@@ -168,6 +171,12 @@ def build_offer_source(network: str, **kw) -> OfferSource:
         from .cj_offer_source import CjOfferSource
 
         src = CjOfferSource(environ=kw.get("environ"))
+        if src.authorized:
+            return src
+    if n == "systeme_io":
+        from .systeme_offer_source import SystemeIoOfferSource
+
+        src = SystemeIoOfferSource(environ=kw.get("environ"))
         if src.authorized:
             return src
     return HumanSetupRequiredOfferSource(n)

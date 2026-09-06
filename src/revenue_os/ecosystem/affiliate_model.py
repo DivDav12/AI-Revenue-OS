@@ -93,6 +93,7 @@ NETWORK_CJ_AFFILIATE = "cj_affiliate"
 NETWORK_IMPACT = "impact"
 NETWORK_AWIN = "awin"
 NETWORK_GENERIC_SAAS = "generic_saas_program"
+NETWORK_SYSTEME_IO = "systeme_io"
 NETWORK_HUMAN_FED = "human_fed"
 
 NETWORK_POLICY: dict[str, dict] = {
@@ -162,6 +163,23 @@ NETWORK_POLICY: dict[str, dict] = {
         ],
         "note": "Covers standalone software/tool/hosting affiliate "
                 "programs not on a large network - always vendor-specific.",
+    },
+    NETWORK_SYSTEME_IO: {
+        "status": model.POLICY_HUMAN_SETUP_REQUIRED,
+        "setup_steps": [
+            "Sign up for the systeme.io affiliate program (public - no "
+            "advertiser-specific approval step) and obtain your unique "
+            "affiliate link (contains a `sa=<affiliate_id>` query "
+            "parameter).",
+            "Provide the affiliate id and the exact affiliate link via "
+            "SYSTEME_IO_AFFILIATE_ID / SYSTEME_IO_AFFILIATE_URL environment "
+            "variables (never commit them).",
+        ],
+        "note": "systeme.io has no official public product-search API or "
+                "catalog for affiliates (verified against its own public "
+                "affiliate/help pages) - this is a single-product, curated "
+                "offer source (see systeme_offer_source.py), not an "
+                "automated marketplace connector.",
     },
     NETWORK_HUMAN_FED: {
         "status": model.POLICY_OK,
