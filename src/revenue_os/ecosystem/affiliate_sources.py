@@ -42,6 +42,7 @@ _OPTIONAL_FIELDS = frozenset({
     "commission_rate", "commission_fixed_amount", "cookie_duration_days",
     "commission_evidence", "category", "keywords", "terms_url", "join_url",
     "eligibility_note", "evidence", "tracking_param", "tracking_value",
+    "preserve_exact_url",
 })
 _ALL_FIELDS = _REQUIRED_FIELDS | _OPTIONAL_FIELDS
 
@@ -130,6 +131,9 @@ def parse_offer_json(raw: dict) -> dict:
         raise IngestionError(
             "human_confirmed_joined must be a boolean - true only if a "
             "human has ALREADY been accepted into this real program")
+
+    if "preserve_exact_url" in raw and not isinstance(raw["preserve_exact_url"], bool):
+        raise IngestionError("preserve_exact_url must be a boolean")
 
     rate = raw.get("commission_rate", 0.0)
     fixed = raw.get("commission_fixed_amount", 0.0)
@@ -224,6 +228,7 @@ def ingest_affiliate_offer(data_dir, payload: dict, *, actor: str = "human") -> 
         evidence=tuple(parsed.get("evidence") or ()), status=status,
         tracking_param=str(parsed.get("tracking_param", "")),
         tracking_value=str(parsed.get("tracking_value", "")),
+        preserve_exact_url=bool(parsed.get("preserve_exact_url", False)),
         added_at=now_iso(), added_by=actor, active=True)
 
     store.upsert(offer)

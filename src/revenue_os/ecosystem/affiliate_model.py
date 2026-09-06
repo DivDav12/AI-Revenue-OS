@@ -270,6 +270,17 @@ class AffiliateOffer:
     #: query-param value (fine for a network whose subid IS meant to be a
     #: fresh value per link, e.g. ShareASale's afftrack/CJ's sid).
     tracking_value: str = ""
+    #: when True, `affiliate_links.create_link()` NEVER appends any query
+    #: parameter to `product_url` - not even the generic `subid=` fallback
+    #: it otherwise uses for a network with no `tracking_param` configured.
+    #: Set this for a real, human-verified affiliate URL whose exact query
+    #: string must never be modified (e.g. systeme.io's `sa=<id>` link,
+    #: which is not a redirector - see systeme_offer_source.py). Click
+    #: counting still works via our OWN separate `/go/<tracking_id>`
+    #: redirect hop (affiliate_tracking_server.py); only the FINAL,
+    #: outbound URL the visitor lands on stays byte-for-byte untouched.
+    #: Defaults to False - every existing offer's behaviour is unchanged.
+    preserve_exact_url: bool = False
     added_at: str = ""
     added_by: str = "human"
     active: bool = True
@@ -288,6 +299,7 @@ class AffiliateOffer:
             "join_url": self.join_url, "eligibility_note": self.eligibility_note,
             "evidence": list(self.evidence), "status": self.status,
             "tracking_param": self.tracking_param, "tracking_value": self.tracking_value,
+            "preserve_exact_url": bool(self.preserve_exact_url),
             "added_at": self.added_at,
             "added_by": self.added_by, "active": bool(self.active),
         }

@@ -1550,6 +1550,23 @@ def _cmd_ingest_task(args) -> int:
     return 0
 
 
+def _cmd_ingest_editorial_pick(args) -> int:
+    """Editorial Pick: validate + ingest one human-authorized, proactive
+    affiliate guide topic - NOT a discovered demand signal (see
+    ecosystem.editorial for why this is kept structurally distinct)."""
+    from .ecosystem.editorial import EditorialError, ingest_editorial_pick
+
+    try:
+        out = ingest_editorial_pick(
+            _data_dir(args), title=args.title, description=args.description,
+            note=args.note, category=args.category, actor=args.actor)
+    except EditorialError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(out, indent=2))
+    return 0
+
+
 def _cmd_eco_record_task_outcome(args) -> int:
     """Human, out-of-band confirmation of a TASK-strategy real-world outcome
     (spec 11): the human already submitted the VERIFY_RESULT-approved
@@ -1618,16 +1635,32 @@ def _cmd_affiliate_match(args) -> int:
 def _cmd_affiliate_deploy(args) -> int:
     """Affiliate Revenue Pipeline: run the real MATCH->BUILD ASSET->CREATE
     LINK->DEPLOY->DISTRIBUTE chain directly (equivalent to plan-strategy
-    once AFFILIATE is the selected strategy)."""
+    once AFFILIATE is the selected strategy - but does not require
+    select-strategy to have already picked AFFILIATE, e.g. a human who has
+    already decided this opportunity's strategy). Persists the result onto
+    `strategy.plan` exactly like `pipeline.plan()`'s own AFFILIATE branch
+    does, so this direct path shows up identically everywhere else
+    (affiliate-funnel, affiliate-status, a later re-run) - not just printed
+    and forgotten."""
     from .ecosystem.affiliate_pipeline import run_affiliate_chain
     from .ecosystem.pipeline import _load, draft_from_record
     from .store import now_iso
 
     data_dir = _data_dir(args)
-    _, rec = _load(data_dir, args.opportunity_id)
+    store, rec = _load(data_dir, args.opportunity_id)
     draft = draft_from_record(rec)
     result = run_affiliate_chain(data_dir, opportunity_id=args.opportunity_id,
                                  draft=draft, now_iso=now_iso())
+    strat_ns = rec.get("strategy") or {}
+    strat_ns["plan"] = result
+    store.record_strategy(args.opportunity_id, strat_ns)
+    store.add_experiment(
+        args.opportunity_id, "strategy_plan",
+        f"AFFILIATE: {result['status']}"
+        + (f" ({result.get('step', '')}: {result.get('reason', '')})"
+           if result["status"] != "completed" else
+           f" - asset live at {result.get('asset_live_url', '')}"))
+    store.save()
     print(json.dumps(result, indent=2, default=str))
     return 0 if result["status"] != "human_required" else 0
 
@@ -1718,6 +1751,20 @@ def _cmd_affiliate_pending(args) -> int:
     (network setup, quality-gate fixes, deploy credentials)."""
     from .ecosystem.affiliate_sources import setup_required_networks
     print(json.dumps({"setup_required": setup_required_networks(_data_dir(args))}, indent=2))
+    return 0
+
+
+def _cmd_affiliate_funnel(args) -> int:
+    """Affiliate Revenue Pipeline: one opportunity's funnel, READY vs
+    WAITING - never claims revenue/conversion until a real event confirms it."""
+    from .ecosystem.affiliate_intel import FunnelStatusError, affiliate_funnel_status
+
+    try:
+        out = affiliate_funnel_status(_data_dir(args), args.opportunity_id)
+    except FunnelStatusError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(out, indent=2))
     return 0
 
 
@@ -2951,6 +2998,20 @@ def build_parser() -> argparse.ArgumentParser:
     eto.add_argument("--note", default=None, help="why it failed, if it did")
     eto.set_defaults(func=_cmd_eco_record_task_outcome)
 
+    edp = sub.add_parser(
+        "ingest-editorial-pick", parents=[common, actor_only],
+        help="Editorial Pick: human-authorized, proactive affiliate guide "
+             "topic for a real, already-joined offer - NOT a discovered "
+             "demand signal (see ecosystem.editorial); reuses the same "
+             "discovery/verification pipeline as every other source")
+    edp.add_argument("--title", required=True)
+    edp.add_argument("--description", required=True)
+    edp.add_argument("--note", required=True,
+                     help="OUR OWN stated reason for picking this topic - "
+                          "never a quote attributed to anyone else")
+    edp.add_argument("--category", default="other")
+    edp.set_defaults(func=_cmd_ingest_editorial_pick)
+
     ing = sub.add_parser(
         "ingest-task", parents=[common, actor_only],
         help="Human-Fed Task Source: validate + ingest one real, "
@@ -3042,6 +3103,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Affiliate Revenue Pipeline: everything currently blocked on "
              "a human (network setup, quality-gate fixes, deploy credentials)")
     afp.set_defaults(func=_cmd_affiliate_pending)
+
+    aff_fun = sub.add_parser(
+        "affiliate-funnel", parents=[common],
+        help="Affiliate Revenue Pipeline: one opportunity's funnel, split "
+             "into READY (our own verified setup) vs WAITING (real "
+             "traffic/conversion/commission - never fabricated)")
+    aff_fun.add_argument("opportunity_id", metavar="OPPORTUNITY_ID")
+    aff_fun.set_defaults(func=_cmd_affiliate_funnel)
 
     aft = sub.add_parser(
         "affiliate-tick", parents=[common],

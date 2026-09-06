@@ -68,25 +68,29 @@ _SYSTEME_IO_HOSTS = frozenset({"systeme.io", "www.systeme.io"})
 _OFFER_TITLE = "systeme.io - all-in-one funnel, email & online business platform"
 
 #: static, transparent stand-in for what a real per-network search API
-#: would filter server-side (see module docstring, gate 1 of 2). Every
-#: token here is a genuine systeme.io product area (funnels, funnel
-#: builder, funnel software, marketing automation, email marketing,
-#: website/landing-page builder, membership/course platform, CRM,
-#: creator/online-business software) - deliberately NOT generic hardware/
-#: consumer-product words, so an unrelated demand (microphones,
-#: headphones, gaming gear, VPNs, ...) never matches.
-_RELEVANT_TOKENS = frozenset({
-    "funnel", "funnels", "automation", "website", "builder", "crm",
-    "landing", "membership", "course", "marketing", "creator", "business",
-    "platform",
-})
+#: would filter server-side (see module docstring, gate 1 of 2). PHRASES,
+#: not bare single words - a real live-discovery run against genuine
+#: demand (opp_80128ad91d4d, "Looking for open source food delivery
+#: platform") found that a bare "platform"/"business" token alone is far
+#: too generic and produces false positives against real, unrelated
+#: demand. Every phrase here is a genuine, specific systeme.io product
+#: area (funnels, funnel builder, marketing/email automation, website/
+#: landing-page building, membership/course platforms, CRM, creator
+#: business software) - deliberately never a single generic noun a
+#: totally unrelated product category could also use.
+_RELEVANT_PHRASES: tuple[str, ...] = (
+    "funnel", "funnels", "sales funnel", "funnel builder", "funnel software",
+    "marketing automation", "email marketing", "website builder",
+    "landing page", "membership site", "course platform",
+    "online business platform", "creator platform", "business software", "crm",
+)
 
 
 def _is_relevant_category(category_phrase: str) -> bool:
-    import re
-
-    tokens = set(re.findall(r"[a-z0-9]+", (category_phrase or "").lower()))
-    return bool(tokens & _RELEVANT_TOKENS)
+    phrase = (category_phrase or "").lower()
+    if not phrase:
+        return False
+    return any(p in phrase for p in _RELEVANT_PHRASES)
 
 
 class ConfigError(ValueError):

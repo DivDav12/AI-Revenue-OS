@@ -132,6 +132,11 @@ class SearchGatingTests(unittest.TestCase):
     _IRRELEVANT_PHRASES = (
         "usb microphone", "bluetooth headphones", "gaming headset",
         "vpn service", "mechanical keyboard", "wireless earbuds",
+        # real false positive found via a live discovery run against
+        # genuine demand (opp_80128ad91d4d) before the bare "platform"/
+        # "business" tokens were replaced with anchored phrases - kept as
+        # a permanent regression guard.
+        "open source food delivery platform",
     )
 
     def test_relevant_categories_return_the_one_offer(self):

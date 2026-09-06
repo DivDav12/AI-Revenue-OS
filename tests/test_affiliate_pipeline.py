@@ -138,6 +138,23 @@ class IngestionTests(unittest.TestCase):
         self.assertEqual(out["status"], model.POLICY_OK)
         self.assertTrue(out["usable"])
 
+    def test_preserve_exact_url_defaults_false(self):
+        d = _tmp()
+        affiliate_sources.ingest_affiliate_offer(d, _offer_json())
+        offer = affiliate_model.AffiliateOfferStore.load(d).all()[0]
+        self.assertFalse(offer.preserve_exact_url)
+
+    def test_preserve_exact_url_true_is_ingested(self):
+        d = _tmp()
+        affiliate_sources.ingest_affiliate_offer(d, _offer_json(preserve_exact_url=True))
+        offer = affiliate_model.AffiliateOfferStore.load(d).all()[0]
+        self.assertTrue(offer.preserve_exact_url)
+
+    def test_preserve_exact_url_must_be_boolean(self):
+        with self.assertRaises(affiliate_sources.IngestionError):
+            affiliate_sources.ingest_affiliate_offer(
+                _tmp(), _offer_json(preserve_exact_url="yes"))
+
     def test_not_yet_joined_stays_human_setup_required(self):
         d = _tmp()
         out = affiliate_sources.ingest_affiliate_offer(
@@ -384,6 +401,52 @@ class LinkTests(unittest.TestCase):
         self.assertEqual(link.opportunity_id, "opX")
         self.assertEqual(link.asset_id, asset.asset_id)
         self.assertEqual(link.offer_id, match.offer.offer_id)
+
+    def _preserve_exact_asset_and_match(self, d, *, url: str):
+        match = affiliate_matching.AffiliateMatch(
+            offer=affiliate_model.AffiliateOffer(
+                offer_id="o-systeme", network="systeme_io", program_name="P",
+                product_name="X", product_url=url, preserve_exact_url=True,
+                status=model.POLICY_OK),
+            match_score=0.5, demand_strength=0.5)
+        asset, _, _ = affiliate_assets.build_asset(
+            d, opportunity_id="opPreserve", draft=_demand_draft(), match=match, cta_url="")
+        return asset, match
+
+    def test_preserve_exact_url_never_appends_subid(self):
+        d = _tmp()
+        url = "https://systeme.io/de?sa=sa0280859903879bd9c30e8335e36983c5a1ffb0de"
+        asset, match = self._preserve_exact_asset_and_match(d, url=url)
+        link = affiliate_links.create_link(d, opportunity_id="opPreserve", asset=asset,
+                                           match=match, source="own_blog")
+        self.assertEqual(link.target_url, url)
+
+    def test_preserve_exact_url_wins_even_if_tracking_param_were_set(self):
+        # belt-and-braces: preserve_exact_url must win over tracking_param
+        # too, not just the bare subid fallback.
+        d = _tmp()
+        url = "https://systeme.io/de?sa=real-id"
+        match = affiliate_matching.AffiliateMatch(
+            offer=affiliate_model.AffiliateOffer(
+                offer_id="o-systeme2", network="systeme_io", program_name="P",
+                product_name="X", product_url=url, preserve_exact_url=True,
+                tracking_param="ref", status=model.POLICY_OK),
+            match_score=0.5, demand_strength=0.5)
+        asset, _, _ = affiliate_assets.build_asset(
+            d, opportunity_id="opPreserve2", draft=_demand_draft(), match=match, cta_url="")
+        link = affiliate_links.create_link(d, opportunity_id="opPreserve2", asset=asset,
+                                           match=match, source="own_blog")
+        self.assertEqual(link.target_url, url)
+
+    def test_default_offer_without_tracking_param_still_appends_subid(self):
+        # regression guard: preserve_exact_url defaults to False - every
+        # existing offer's behaviour is byte-identical to before this field
+        # existed.
+        d = _tmp()
+        asset, match = self._asset_and_match(d)   # tracking_param="ref" already set
+        link = affiliate_links.create_link(d, opportunity_id="opX2", asset=asset,
+                                           match=match, source="own_blog")
+        self.assertIn("ref=", link.target_url)
 
 
 # ---------------------------------------------------------------------------
@@ -786,6 +849,114 @@ class IntelTests(unittest.TestCase):
         status = affiliate_intel.affiliate_status(d)
         networks = {row["network"] for row in status["human_setup_required"]}
         self.assertIn(affiliate_model.NETWORK_AMAZON_ASSOCIATES, networks)
+
+
+# ---------------------------------------------------------------------------
+# 13b. per-opportunity funnel status - READY vs WAITING, never fabricated
+# ---------------------------------------------------------------------------
+
+class AffiliateFunnelStatusTests(unittest.TestCase):
+    def _seed(self, d) -> str:
+        draft = _demand_draft()
+        DiscoveryEngine(d, sources=[_OneDraftSource(draft)]).run(limit_per_source=5)
+        rec = next(r for r in load_opportunities(d).all()
+                  if r["discovery"]["opportunity_type"] == model.TYPE_AFFILIATE)
+        return rec["id"]
+
+    def test_unknown_opportunity_raises(self):
+        d = _tmp()
+        with self.assertRaises(affiliate_intel.FunnelStatusError):
+            affiliate_intel.affiliate_funnel_status(d, "does-not-exist")
+
+    def test_before_any_plan_everything_not_ready(self):
+        d = _tmp()
+        oid = self._seed(d)
+        status = affiliate_intel.affiliate_funnel_status(d, oid)
+        self.assertFalse(status["ready"]["offer_selected"])
+        self.assertFalse(status["ready"]["asset_generated"])
+        self.assertFalse(status["ready"]["page_deployed"])
+        self.assertIn("no AFFILIATE chain", status["next_action"])
+
+    def test_after_full_chain_ready_true_and_waiting_zero_no_fabricated_revenue(self):
+        d = _tmp()
+        oid = self._seed(d)
+        affiliate_sources.ingest_affiliate_offer(d, _offer_json())
+        eco_pipeline.evaluate(d, oid)
+        eco_pipeline.select(d, oid)
+        from unittest import mock
+        with mock.patch("revenue_os.ecosystem.affiliate_assets.default_deployment_adapter",
+                       return_value=FakeDeploymentAdapter()):
+            eco_pipeline.plan(d, oid)
+
+        status = affiliate_intel.affiliate_funnel_status(d, oid)
+        self.assertTrue(status["ready"]["demand_source_real"])
+        self.assertTrue(status["ready"]["offer_selected"])
+        self.assertTrue(status["ready"]["offer_usable"])
+        self.assertTrue(status["ready"]["asset_generated"])
+        self.assertTrue(status["ready"]["page_deployed"])
+        self.assertTrue(status["ready"]["affiliate_url_configured"])
+        self.assertEqual(status["waiting_on"]["real_traffic"], 0)
+        self.assertEqual(status["waiting_on"]["real_affiliate_conversion"], 0)
+        self.assertEqual(status["waiting_on"]["commission_confirmation_eur"], 0)
+        self.assertIn("waiting for a real visitor", status["next_action"])
+        self.assertTrue(status["asset_live_url"])
+        self.assertEqual(status["offer"]["affiliate_url"], "https://acme.example/hosting?ref=base")
+
+    def test_synthetic_demand_never_reported_as_real(self):
+        d = _tmp()
+        from revenue_os.ecosystem.sources import SyntheticSource
+        DiscoveryEngine(d, sources=[SyntheticSource(seed=1)]).run(limit_per_source=3)
+        rec = load_opportunities(d).all()[0]
+        status = affiliate_intel.affiliate_funnel_status(d, rec["id"])
+        self.assertFalse(status["ready"]["demand_source_real"])
+
+    def test_a_real_click_and_confirmed_commission_show_up_as_waiting_resolved(self):
+        d = _tmp()
+        oid = self._seed(d)
+        affiliate_sources.ingest_affiliate_offer(d, _offer_json())
+        eco_pipeline.evaluate(d, oid)
+        eco_pipeline.select(d, oid)
+        from unittest import mock
+        with mock.patch("revenue_os.ecosystem.affiliate_assets.default_deployment_adapter",
+                       return_value=FakeDeploymentAdapter()):
+            eco_pipeline.plan(d, oid)
+
+        rec = load_opportunities(d).get(oid)
+        plan = rec["strategy"]["plan"]
+        link_id = plan["link_id"]
+        offer_id = plan["match"]["offer_id"]
+
+        affiliate_links.record_click(d, link_id=link_id, channel="own_blog", now_iso="t")
+        status_after_click = affiliate_intel.affiliate_funnel_status(d, oid)
+        self.assertEqual(status_after_click["waiting_on"]["real_traffic"], 1)
+        self.assertIn("waiting for a real conversion", status_after_click["next_action"])
+
+        link_store = affiliate_model.AffiliateLinkStore.load(d)
+        link = link_store.get(link_id)
+        link.conversion_count += 1
+        link_store.upsert(link)
+        link_store.save()
+        status_after_conv = affiliate_intel.affiliate_funnel_status(d, oid)
+        self.assertEqual(status_after_conv["waiting_on"]["real_affiliate_conversion"], 1)
+        self.assertIn("confirm it via the affiliate network", status_after_conv["next_action"])
+
+        pending = affiliate_revenue.record_pending_commission(
+            d, link_id=link_id, opportunity_id=oid, offer_id=offer_id, amount=60.0, now_iso="t")
+        affiliate_revenue.confirm_commission(d, pending.commission_id, ref="REF1", now_iso="t")
+        status_after_commission = affiliate_intel.affiliate_funnel_status(d, oid)
+        self.assertEqual(status_after_commission["waiting_on"]["commission_confirmation_eur"], 60.0)
+        self.assertEqual(status_after_commission["next_action"], "commission confirmed - nothing pending")
+
+    def test_cli_affiliate_funnel_runs(self):
+        from revenue_os.cli import main
+        d = _tmp()
+        oid = self._seed(d)
+        self.assertEqual(main(["--data-dir", str(d), "affiliate-funnel", oid]), 0)
+
+    def test_cli_affiliate_funnel_unknown_id_fails_closed(self):
+        from revenue_os.cli import main
+        d = _tmp()
+        self.assertEqual(main(["--data-dir", str(d), "affiliate-funnel", "nope"]), 1)
 
 
 # ---------------------------------------------------------------------------

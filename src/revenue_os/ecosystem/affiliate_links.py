@@ -55,7 +55,13 @@ def create_link(data_dir, *, opportunity_id: str, asset: AffiliateAsset,
     link_id = new_id("link")
     tracking_id = new_id("trk")
     target = offer.product_url
-    if offer.tracking_param:
+    if offer.preserve_exact_url:
+        # a real, human-verified affiliate URL whose query string must
+        # never be modified (spec: e.g. systeme.io's sa=<id> link is not a
+        # redirector) - not even the generic subid= fallback below. Click
+        # counting still works via our own separate redirect_path hop.
+        pass
+    elif offer.tracking_param:
         # a real, static, pre-registered value (e.g. Amazon's own `tag=`)
         # MUST be used verbatim - a program's tracking id is not something
         # the fleet may invent a fresh one of per link/click. Only when

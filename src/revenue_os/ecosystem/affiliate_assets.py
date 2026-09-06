@@ -55,11 +55,24 @@ def render_comparison_page(*, draft: OpportunityDraft, match: AffiliateMatch,
     offer = match.offer
     problem = _esc(draft.title)
     # a "people have said, in their own words" framing is only honest when
-    # a REAL evidence quote exists (spec: no fabricated demand quotes) -
-    # an opportunity with no evidence at all gets a neutral problem
-    # statement instead, never a quote dressed up as verbatim.
+    # a REAL, independently-arising evidence quote exists (spec: no
+    # fabricated demand quotes) - an opportunity with no evidence, OR an
+    # editorial pick (a human chose this topic proactively, not a captured
+    # post - see ecosystem.editorial), gets the neutral "this is a common
+    # need" statement instead, never dressing up our own editorial
+    # judgement as a stranger's verbatim words. Checked via BOTH
+    # `raw.editorial_pick` (set at build time) AND `source_meta.source_type`
+    # (still correct after a persist -> pipeline.draft_from_record() round
+    # trip, which does not currently reconstruct `raw` - see that
+    # function's own docstring/tests) - a live-deploy path going through
+    # the persisted record must never lose this distinction. Plain string
+    # literal (not an import) - same convention `verification.py` already
+    # uses for `source_type == "human_fed"`.
+    is_editorial_pick = (bool((draft.raw or {}).get("editorial_pick"))
+                        or bool(draft.source_meta
+                                and draft.source_meta.source_type == "editorial_pick"))
     real_evidence = [e for e in (draft.evidence or []) if str(e).strip()]
-    has_real_quote = bool(real_evidence)
+    has_real_quote = bool(real_evidence) and not is_editorial_pick
     need_quote = _esc(real_evidence[0]) if has_real_quote else _esc(draft.title)
     product = _esc(offer.product_name)
     program = _esc(offer.program_name)
@@ -87,27 +100,29 @@ def render_comparison_page(*, draft: OpportunityDraft, match: AffiliateMatch,
     # them in (spec: no invented reviews/testimonials).
     criteria_html = pros_html = who_html = budget_html = reco_html = ""
     if offer.evidence:
-        criteria_html = """<section>
+        category_label = _esc(offer.category.replace("-", " ").replace("_", " ")) or "this category"
+        keyword_list = ", ".join(offer.keywords[:8])
+        criteria_html = f"""<section>
 <h2>What to look for</h2>
 <ul>
-<li>Pickup pattern and how well it isolates your voice from room/keyboard noise</li>
-<li>Plug-and-play compatibility with your OS and streaming/call software</li>
-<li>Physical controls (mute, gain) you can reach without opening software</li>
-<li>Price relative to what you actually need it for</li>
+<li>Whether it actually covers what you need: {_esc(keyword_list) or category_label}</li>
+<li>What the program's own stated terms say (below) versus what you actually need</li>
+<li>Total cost relative to what you get, including any recurring cost</li>
+<li>How easy it is to get started - and to cancel or switch away later</li>
 </ul>
 </section>"""
         pros_html = f"""<section>
 <h2>What the program/listing states</h2>
 <ul>{evidence_items}</ul>
 <p class="note">These are the program's own stated facts, not a first-hand
-test result - we have not independently benchmarked audio quality.</p>
+test result - we have not independently verified them ourselves.</p>
 </section>"""
         who_html = f"""<section>
 <h2>Who this is for</h2>
-<p>Someone who wants a straightforward, single-microphone setup for voice
-chat, streaming, or recording - not someone who already needs a
-multi-microphone studio setup or is chasing a specific, verified
-audio-quality benchmark we have not tested ourselves.</p>
+<p>Someone whose need matches {category_label}{f" ({_esc(keyword_list)})" if keyword_list else ""} -
+not someone looking for something outside that category, and not a
+substitute for checking your own specific requirements against the
+program's own stated terms above.</p>
 </section>"""
         price_ts = (f" as of {_esc(offer.price_observed_at)}" if offer.price_observed_at else "")
         price_note = f" {_esc(offer.price_source_note)}" if offer.price_source_note else ""
@@ -162,7 +177,15 @@ program we have actually joined.</p>
         "word_count": word_count,
         "meets_min_words": word_count >= _MIN_WORDS,
         "has_disclosure": DISCLOSURE_TEXT in page,
-        "has_cta": cta_url in page,
+        # the href attribute renders the HTML-ESCAPED url (e.g. "&" ->
+        # "&amp;") - a cta_url containing such a character would otherwise
+        # never match a plain substring check against the rendered page.
+        # `cta_url == ""` deliberately still passes (unchanged from
+        # before this fix) - build_asset() calls this BEFORE the real
+        # link/cta_url exists, purely to quality-gate everything else;
+        # deploy_asset() re-renders with the real cta_url and is the
+        # actual, authoritative check of it.
+        "has_cta": cta_url in page or _esc(cta_url) in page,
         "has_evidence": bool(offer.evidence),
         "has_demand_quote": need_quote != "",
     }
