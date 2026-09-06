@@ -1672,6 +1672,15 @@ def _cmd_affiliate_deploy(args) -> int:
     return 0 if result["status"] != "human_required" else 0
 
 
+def _cmd_deploy_site(args) -> int:
+    """Website: (re)deploy the homepage + category + legal pages."""
+    from .ecosystem.site import deploy_site
+
+    out = deploy_site(_data_dir(args))
+    print(json.dumps(out, indent=2))
+    return 0 if out["deployed"] else 1
+
+
 def _cmd_affiliate_clicks(args) -> int:
     """Affiliate Revenue Pipeline: click/economics rollup for one link."""
     from .ecosystem.affiliate_links import link_economics
@@ -3094,6 +3103,14 @@ def build_parser() -> argparse.ArgumentParser:
              "plan-strategy, but affiliate-specific and callable directly)")
     afd.add_argument("opportunity_id", metavar="OPPORTUNITY_ID")
     afd.set_defaults(func=_cmd_affiliate_deploy)
+
+    dsite = sub.add_parser(
+        "deploy-site", parents=[common],
+        help="Website: (re)deploy the customer-facing homepage + category "
+             "+ legal pages (site.py) - built purely from real, already-"
+             "deployed guides; run after any guide is deployed/redeployed "
+             "so the homepage stays in sync")
+    dsite.set_defaults(func=_cmd_deploy_site)
 
     afc = sub.add_parser(
         "affiliate-clicks", parents=[common],

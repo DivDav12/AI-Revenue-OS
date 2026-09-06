@@ -75,6 +75,16 @@ class FakeAdapterTests(unittest.TestCase):
         r3 = a.deploy(_artifact(html="<different>"))
         self.assertNotEqual(r1.deployment_id, r3.deployment_id)
 
+    def test_empty_slug_deploys_at_the_root_no_leading_slash(self):
+        # site.py's homepage/category/legal pages deploy with slug="" so
+        # they land at the true site root, not a subfolder - never a
+        # leading "/" in the resulting URL.
+        artifact = DeploymentArtifact(opportunity_id="site", slug="",
+                                      files={"index.html": "<h1>home</h1>"})
+        r = FakeDeploymentAdapter().deploy(artifact)
+        self.assertTrue(r.success)
+        self.assertEqual(r.live_url, "https://fake.pages.test/index.html")
+
 
 class GitHubPagesAdapterTests(unittest.TestCase):
     def test_missing_credentials_fails_closed(self):
@@ -105,6 +115,32 @@ class GitHubPagesAdapterTests(unittest.TestCase):
         self.assertEqual(r.live_url, "https://me.github.io/site/opp-x/index.html")
         self.assertEqual(r.commit_sha, "abc123")
         self.assertIn("opp-x/index.html", gh.puts)
+
+    def test_empty_slug_deploys_at_repo_root_no_leading_slash(self):
+        from revenue_os.deploy import GitHubPagesConfig
+
+        class _FakeGH:
+            def __init__(self):
+                self.puts = []
+
+            def get_file(self, repo_path):
+                return None
+
+            def put_file(self, repo_path, content, *, message, sha=None):
+                self.puts.append(repo_path)
+                return {"commit": {"sha": "abc123"}}
+
+        cfg = GitHubPagesConfig(token="t", owner="me", repo="site", branch="main")
+        gh = _FakeGH()
+        artifact = DeploymentArtifact(opportunity_id="site", slug="",
+                                      files={"index.html": "<h1>home</h1>",
+                                            "impressum/index.html": "<h1>impressum</h1>"})
+        r = GitHubPagesDeploymentAdapter(config=cfg, client=gh).deploy(artifact)
+        self.assertTrue(r.success)
+        self.assertEqual(r.live_url, "https://me.github.io/site/index.html")
+        self.assertIn("index.html", gh.puts)
+        self.assertIn("impressum/index.html", gh.puts)
+        self.assertNotIn("/index.html", gh.puts)   # never a leading slash
 
 
 # ---------------------------------------------------------------------------

@@ -1343,9 +1343,10 @@ class AmazonAffiliateLoopTests(unittest.TestCase):
             guide_title="Bestes USB-Mikrofon fuer Streaming & Discord")
         low = page.lower()
         for forbidden in ("★", "5 stars", "5/5", "customers say", "verified purchase",
-                         "amazing sound quality", "best mic i've ever"):
+                         "amazing sound quality", "best mic i've ever",
+                         "5 sterne", "kundenmeinung", "kundenbewertung", "klingt fantastisch"):
             self.assertNotIn(forbidden, low)
-        self.assertIn("have not tested it ourselves", low)
+        self.assertIn("nicht selbst getestet", low)
 
 
 if __name__ == "__main__":

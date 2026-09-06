@@ -23,12 +23,13 @@ from ..deployment import DeploymentArtifact, default_deployment_adapter
 from .affiliate_matching import AffiliateMatch
 from .affiliate_model import AffiliateAsset, AffiliateAssetStore, new_id
 from .model import OpportunityDraft
+from .site import page_shell
 
+#: exact wording requested for the German customer-facing site - shown
+#: directly next to/under the CTA button, and reused in the FAQ.
 DISCLOSURE_TEXT = (
-    "Affiliate disclosure: this page may contain affiliate links. If you "
-    "buy through one, we may earn a commission at no extra cost to you. "
-    "We only link to products we have researched and can back with real "
-    "evidence.")
+    "Wenn du über diesen Link kaufst, erhalten wir möglicherweise eine "
+    "Provision. Für dich entstehen dadurch keine zusätzlichen Kosten.")
 
 #: minimum body word count before a page is even considered publishable -
 #: a hard floor against "thin/valueless mass pages" (spec section 9).
@@ -47,11 +48,13 @@ def _esc(text: str) -> str:
 def render_comparison_page(*, draft: OpportunityDraft, match: AffiliateMatch,
                            cta_url: str, guide_title: str = "",
                            related_links: tuple = ()) -> tuple[str, dict]:
-    """Render one self-contained HTML "problem -> solution" page. Returns
+    """Render one German-language "problem -> solution" buying-guide page,
+    wrapped in the shared `site.py` chrome (header/nav/footer/CSS/
+    branding) so every rendered page looks like one coherent site. Returns
     (html, quality_checks) - the checks are computed against the RENDERED
     content, not guessed, so `check_quality()` and the renderer can never
     silently disagree. `guide_title=` overrides the default "<product>:
-    does it solve ...?" headline (e.g. for a roundup-style buying guide) -
+    passt das zu ...?" headline (e.g. for a roundup-style buying guide) -
     every other section stays evidence-grounded regardless. `related_links=`
     is an optional tuple of `(title, url)` pairs to OTHER REAL, already-
     deployed pages (content-cluster interlinking, spec: "connect pages
@@ -60,20 +63,20 @@ def render_comparison_page(*, draft: OpportunityDraft, match: AffiliateMatch,
     default (byte-identical output to before this parameter existed)."""
     offer = match.offer
     problem = _esc(draft.title)
-    # a "people have said, in their own words" framing is only honest when
-    # a REAL, independently-arising evidence quote exists (spec: no
-    # fabricated demand quotes) - an opportunity with no evidence, OR an
+    # a "Nutzer:innen haben in eigenen Worten beschrieben" framing is only
+    # honest when a REAL, independently-arising evidence quote exists (spec:
+    # no fabricated demand quotes) - an opportunity with no evidence, OR an
     # editorial pick (a human chose this topic proactively, not a captured
-    # post - see ecosystem.editorial), gets the neutral "this is a common
-    # need" statement instead, never dressing up our own editorial
-    # judgement as a stranger's verbatim words. Checked via BOTH
-    # `raw.editorial_pick` (set at build time) AND `source_meta.source_type`
-    # (still correct after a persist -> pipeline.draft_from_record() round
-    # trip, which does not currently reconstruct `raw` - see that
-    # function's own docstring/tests) - a live-deploy path going through
-    # the persisted record must never lose this distinction. Plain string
-    # literal (not an import) - same convention `verification.py` already
-    # uses for `source_type == "human_fed"`.
+    # post - see ecosystem.editorial), gets the neutral "häufiger Bedarf"
+    # statement instead, never dressing up our own editorial judgement as a
+    # stranger's verbatim words. Checked via BOTH `raw.editorial_pick` (set
+    # at build time) AND `source_meta.source_type` (still correct after a
+    # persist -> pipeline.draft_from_record() round trip, which does not
+    # currently reconstruct `raw` - see that function's own docstring/
+    # tests) - a live-deploy path going through the persisted record must
+    # never lose this distinction. Plain string literal (not an import) -
+    # same convention `verification.py` already uses for
+    # `source_type == "human_fed"`.
     is_editorial_pick = (bool((draft.raw or {}).get("editorial_pick"))
                         or bool(draft.source_meta
                                 and draft.source_meta.source_type == "editorial_pick"))
@@ -82,75 +85,84 @@ def render_comparison_page(*, draft: OpportunityDraft, match: AffiliateMatch,
     need_quote = _esc(real_evidence[0]) if has_real_quote else _esc(draft.title)
     product = _esc(offer.product_name)
     program = _esc(offer.program_name)
-    price_line = (f"Listed price: {_esc(offer.currency)} {offer.product_price:.2f}"
-                 f"{' (estimated - not source-confirmed)' if offer.price_is_estimate else ''}"
-                 if offer.product_price > 0 else "Price: see the offer page (not stated here).")
+    price_line = (f"Listenpreis: {_esc(offer.currency)} {offer.product_price:.2f}"
+                 f"{' (Schätzung - nicht direkt an der Quelle bestätigt)' if offer.price_is_estimate else ''}"
+                 if offer.product_price > 0 else
+                 "Preis: siehe Angebotsseite des Anbieters (hier nicht angegeben).")
     evidence_items = "".join(f"<li>{_esc(e)}</li>" for e in offer.evidence) or (
-        "<li>No additional program evidence was supplied.</li>")
+        "<li>Der Anbieter hat keine weiteren Angaben zur Verfügung gestellt.</li>")
 
     faq_items = (
-        f"<dt>Is this sponsored?</dt><dd>{_esc(DISCLOSURE_TEXT)}</dd>"
-        f"<dt>What problem does this solve?</dt><dd>{need_quote}</dd>"
+        f"<dt>Ist das gesponsert?</dt><dd>{_esc(DISCLOSURE_TEXT)}</dd>"
+        f"<dt>Welches Problem löst das?</dt><dd>{need_quote}</dd>"
     )
     problem_statement = (
-        f'People looking for a solution have said, in their own words: &quot;{need_quote}&quot;'
+        f'Nutzer:innen haben ihren Bedarf in eigenen Worten so beschrieben: &quot;{need_quote}&quot;'
         if has_real_quote else
-        f"This is a common need: {need_quote}"
+        f"Ein häufiger Bedarf: {need_quote}"
     )
-    headline = _esc(guide_title) if guide_title else f"{product}: does it solve &quot;{problem}&quot;?"
+    headline = _esc(guide_title) if guide_title else f"{product}: passt das zu &quot;{problem}&quot;?"
+    # PLAIN-TEXT (unescaped) title/description for page_shell(), which
+    # escapes its own inputs exactly once - `headline`/`product`/
+    # `need_quote` above are already HTML-escaped for direct embedding in
+    # the body, and passing them to page_shell() too would double-escape
+    # (e.g. "&amp;" -> "&amp;amp;").
+    title_text = guide_title if guide_title else f'{offer.product_name}: passt das zu "{draft.title}"?'
+    description_text = f"{offer.product_name}: {real_evidence[0] if has_real_quote else draft.title}"
 
-    # "What to look for" / "who it's for" / recommendation are generic,
-    # category-level buying guidance - never a specific performance claim
-    # ("great sound", a star rating, a review quote) that was not actually
-    # sourced. Only rendered when the offer has real evidence to ground
-    # them in (spec: no invented reviews/testimonials).
+    # "Worauf du achten solltest" / "Für wen (nicht)" / Einschätzung sind
+    # generische, kategorie-bezogene Kaufhinweise - niemals eine konkrete
+    # Leistungsbehauptung ("klingt super", ein Sternerating, ein
+    # Bewertungszitat), die nicht tatsächlich belegt ist. Nur gerendert,
+    # wenn der Anbieter echte Belege liefert (spec: keine erfundenen
+    # Tests/Bewertungen).
     criteria_html = pros_html = who_html = budget_html = reco_html = ""
     if offer.evidence:
-        category_label = _esc(offer.category.replace("-", " ").replace("_", " ")) or "this category"
+        category_label = _esc(offer.category.replace("-", " ").replace("_", " ")) or "diese Kategorie"
         keyword_list = ", ".join(offer.keywords[:8])
         criteria_html = f"""<section>
-<h2>What to look for</h2>
+<h2>Worauf du achten solltest</h2>
 <ul>
-<li>Whether it actually covers what you need: {_esc(keyword_list) or category_label}</li>
-<li>What the program's own stated terms say (below) versus what you actually need</li>
-<li>Total cost relative to what you get, including any recurring cost</li>
-<li>How easy it is to get started - and to cancel or switch away later</li>
+<li>Ob es wirklich das abdeckt, was du brauchst: {_esc(keyword_list) or category_label}</li>
+<li>Was die eigenen Angaben des Anbieters sagen (unten) - im Vergleich zu deinem tatsächlichen Bedarf</li>
+<li>Die Gesamtkosten im Verhältnis zum Nutzen, inklusive laufender Kosten</li>
+<li>Wie leicht der Einstieg ist - und wie leicht du später wieder kündigen/wechseln kannst</li>
 </ul>
 </section>"""
         pros_html = f"""<section>
-<h2>What the program/listing states</h2>
+<h2>Vorteile laut Anbieter</h2>
 <ul>{evidence_items}</ul>
-<p class="note">These are the program's own stated facts, not a first-hand
-test result - we have not independently verified them ourselves.</p>
+<p class="note">Das sind die eigenen Angaben des Anbieters, kein eigener
+Test - wir haben diese Angaben nicht selbst unabhängig nachgeprüft.</p>
 </section>"""
         who_html = f"""<section>
-<h2>Who this is for</h2>
-<p>Someone whose need matches {category_label}{f" ({_esc(keyword_list)})" if keyword_list else ""} -
-not someone looking for something outside that category, and not a
-substitute for checking your own specific requirements against the
-program's own stated terms above.</p>
+<h2>Nicht ideal, wenn ...</h2>
+<p>... dein Bedarf nicht zu {category_label}{f" ({_esc(keyword_list)})" if keyword_list else ""}
+passt. Diese Einschätzung ersetzt nicht den Abgleich deiner eigenen,
+konkreten Anforderungen mit den oben genannten Angaben des Anbieters.</p>
 </section>"""
-        price_ts = (f" as of {_esc(offer.price_observed_at)}" if offer.price_observed_at else "")
+        price_ts = (f" Stand: {_esc(offer.price_observed_at)}." if offer.price_observed_at else "")
         price_note = f" {_esc(offer.price_source_note)}" if offer.price_source_note else ""
         budget_html = f"""<section>
-<h2>Budget context</h2>
-<p>The price shown above was last checked{price_ts}.{price_note} Marketplace
-prices change - always check the current price on the product page before
-buying.</p>
+<h2>Hinweis zum Preis</h2>
+<p>Der oben genannte Preis wurde zuletzt geprüft.{price_ts}{price_note} Preise
+bei Anbietern ändern sich - prüfe den aktuellen Preis immer direkt auf der
+Angebotsseite, bevor du kaufst.</p>
 </section>"""
         reco_html = f"""<section>
-<h2>Our take</h2>
-<p>Based on the program's own stated facts above (not a first-hand review),
-{product} is a reasonable option if those facts match what you need. We
-have not tested it ourselves and are not claiming it is the objectively
-"best" option - only that it is a real, currently-available product from a
-program we have actually joined.</p>
+<h2>Unsere Einschätzung</h2>
+<p>Basierend auf den eigenen Angaben des Anbieters oben (kein eigener Test)
+ist {product} eine sinnvolle Option, wenn diese Angaben zu deinem Bedarf
+passen. Wir haben es nicht selbst getestet und behaupten nicht, dass es
+objektiv die "beste" Option ist - nur, dass es ein reales, aktuell
+verfügbares Angebot aus einem Partnerprogramm ist, dem wir tatsächlich
+beigetreten sind.</p>
 </section>"""
 
     related_html = ""
     if related_links:
         items = "".join(f'<li><a href="{_esc(u)}">{_esc(t)}</a></li>' for t, u in related_links)
-        related_html = f"""<nav aria-label="Related guides"><h2>More guides</h2>
+        related_html = f"""<nav aria-label="Weitere Ratgeber"><h2>Weitere Kaufberatungen</h2>
 <ul>{items}</ul>
 </nav>"""
 
@@ -158,12 +170,12 @@ program we have actually joined.</p>
 <h1>{headline}</h1>
 <p class="disclosure">{_esc(DISCLOSURE_TEXT)}</p>
 <section>
-<h2>The problem</h2>
+<h2>Worum geht es?</h2>
 <p>{problem_statement}</p>
 </section>
 {criteria_html}
 <section>
-<h2>{product} ({program})</h2>
+<h2>Unsere Empfehlung: {product} ({program})</h2>
 <p>{price_line}</p>
 </section>
 {pros_html}
@@ -171,23 +183,19 @@ program we have actually joined.</p>
 {budget_html}
 {reco_html}
 <section>
-<h2>FAQ</h2>
+<h2>Häufige Fragen</h2>
 <dl>{faq_items}</dl>
 </section>
-<p class="cta"><a href="{_esc(cta_url)}" rel="sponsored nofollow">Check {product} &rarr;</a></p>
+<p class="cta">
+<a class="button" href="{_esc(cta_url)}" rel="sponsored nofollow">Zum Händler &rarr;</a><br>
+<span class="disclosure">{_esc(DISCLOSURE_TEXT)}</span>
+</p>
 {related_html}
 </article>"""
 
-    page = f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{headline}</title>
-<meta name="description" content="{product} evaluated against a real, stated need: {need_quote}">
-</head><body>
-{body_html}
-</body></html>"""
+    page = page_shell(title=title_text, description=description_text, body_html=body_html)
 
-    word_count = len(re.findall(r"[A-Za-z0-9]+", body_html))
+    word_count = len(re.findall(r"[A-Za-zÄÖÜäöüß0-9]+", body_html))
     checks = {
         "word_count": word_count,
         "meets_min_words": word_count >= _MIN_WORDS,

@@ -144,8 +144,8 @@ class AssetFramingTests(unittest.TestCase):
             note="This category is commonly searched by new online business owners.")
         page, _ = affiliate_assets.render_comparison_page(
             draft=draft, match=self._match(), cta_url="https://example.test/go/x")
-        self.assertNotIn("have said, in their own words", page)
-        self.assertIn("This is a common need", page)
+        self.assertNotIn("in eigenen Worten", page)
+        self.assertIn("Ein häufiger Bedarf", page)
 
     def test_real_discovered_draft_with_evidence_still_gets_quote_framing(self):
         # regression guard: this fix must not change behaviour for a real,
@@ -160,7 +160,7 @@ class AssetFramingTests(unittest.TestCase):
             evidence=["Is there a tool for building a sales funnel?"], source_meta=meta)
         page, _ = affiliate_assets.render_comparison_page(
             draft=draft, match=self._match(), cta_url="https://example.test/go/x")
-        self.assertIn("have said, in their own words", page)
+        self.assertIn("in eigenen Worten", page)
 
     def test_editorial_framing_survives_persist_and_reconstruct_round_trip(self):
         # regression guard: draft_from_record() does not currently restore
@@ -183,8 +183,8 @@ class AssetFramingTests(unittest.TestCase):
 
         page, _ = affiliate_assets.render_comparison_page(
             draft=reconstructed, match=self._match(), cta_url="https://example.test/go/x")
-        self.assertNotIn("have said, in their own words", page)
-        self.assertIn("This is a common need", page)
+        self.assertNotIn("in eigenen Worten", page)
+        self.assertIn("Ein häufiger Bedarf", page)
 
     def test_editorial_asset_still_has_disclosure_and_cta_and_passes_quality_gate(self):
         draft = editorial.build_editorial_draft(

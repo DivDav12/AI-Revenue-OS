@@ -134,7 +134,8 @@ class FakeDeploymentAdapter(DeploymentAdapter):
 
         # drop_url: provider claims success but returns no URL - callers must
         # still treat this as a failure and never fabricate a URL.
-        url = "" if self.drop_url else f"{self.base_url}/{artifact.slug}/index.html"
+        index_path = f"{artifact.slug}/index.html" if artifact.slug else "index.html"
+        url = "" if self.drop_url else f"{self.base_url}/{index_path}"
         res = DeploymentResult(
             success=True, provider=self.provider, live_url=url,
             deployment_id=f"fake-{artifact.slug}-{digest[:8]}",
@@ -181,17 +182,18 @@ class GitHubPagesDeploymentAdapter(DeploymentAdapter):
             return DeploymentResult(success=False, blocked=True,
                                     provider=self.provider, error=str(exc))
 
-        files = {f"{artifact.slug}/{name}": data
+        prefix = f"{artifact.slug}/" if artifact.slug else ""
+        files = {f"{prefix}{name}": data
                  for name, data in artifact.as_bytes().items()}
         try:
             res = _deploy.deploy_files(
                 cfg, files, client=self._client,
-                message=f"deploy {artifact.slug} ({now_iso()})")
+                message=f"deploy {artifact.slug or 'site'} ({now_iso()})")
         except _deploy.DeployError as exc:
             return DeploymentResult(success=False, provider=self.provider,
                                     error=str(exc))
 
-        index_key = f"{artifact.slug}/index.html"
+        index_key = f"{prefix}index.html"
         live_url = res["urls"].get(index_key) or next(iter(res["urls"].values()), "")
         if not valid_live_url(live_url):
             return DeploymentResult(
