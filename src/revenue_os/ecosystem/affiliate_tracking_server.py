@@ -1,9 +1,13 @@
 """Affiliate click-tracking redirect server (spec section 6).
 
 A minimal, real HTTP server: `GET /go/<tracking_id>` records one click
-(`affiliate_links.record_click`) and 302-redirects to the link's real
-external `target_url`. Nothing else is served. Same localhost-only,
-no-JS, no-file-write pattern as `dashboard_server.py`.
+(`affiliate_links.record_click`, thread-safe under real concurrent
+traffic) and 302-redirects to the link's real external `target_url`.
+`GET /healthz` is the only other route - a plain liveness check for a
+reverse proxy / container orchestrator, reachable from any address since
+it never touches click data. Everything else 404s or (for anything but
+/healthz, from a non-loopback address) 403s. Same localhost-only, no-JS,
+no-file-write pattern as `dashboard_server.py`.
 
 Reaching real visitors requires a human to put this behind a public
 domain / reverse proxy (TLS termination, DNS) - that is genuinely a
@@ -36,13 +40,27 @@ def _make_handler(data_dir: Path):
             pass
 
         def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler convention
+            path = urlsplit(self.path).path
+            # a liveness check a reverse proxy / container orchestrator can
+            # poll - deliberately allowed from any address (unlike /go/,
+            # never touches click data, never reveals anything sensitive)
+            # so a health-checking sidecar reachable only over the network
+            # (not loopback) still gets a real answer.
+            if path == "/healthz":
+                body = b"ok"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
             if self.client_address[0] not in _LOOPBACK:
                 self.send_response(403)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
 
-            path = urlsplit(self.path).path
             parts = [p for p in path.split("/") if p]
             if len(parts) == 2 and parts[0] == "go" and parts[1]:
                 tracking_id = parts[1]

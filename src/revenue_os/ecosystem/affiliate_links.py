@@ -16,6 +16,7 @@ guessed into existence - see `affiliate_revenue.py`.
 
 from __future__ import annotations
 
+import threading
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from .affiliate_model import (
@@ -82,6 +83,20 @@ def create_link(data_dir, *, opportunity_id: str, asset: AffiliateAsset,
     return link
 
 
+#: serializes the click-record read-modify-write below across threads -
+#: `_JsonListStore.save()` atomically replaces the file, but the
+#: load -> increment -> save sequence around it is NOT atomic on its own;
+#: the real tracking redirect server (affiliate_tracking_server.py) is a
+#: `ThreadingHTTPServer` and, once deployed behind real public traffic,
+#: two near-simultaneous clicks could otherwise both read the same
+#: starting click_count and the later save silently overwrite the
+#: earlier one (a lost update) - a real correctness bug for exactly the
+#: "measurable end-to-end" use case this exists for. One process-wide
+#: lock is sufficient (this only ever runs inside a single server
+#: process; there is no multi-process deployment of it).
+_click_lock = threading.Lock()
+
+
 def record_click(data_dir, *, tracking_id: str = "", link_id: str = "",
                  channel: str = "", now_iso: str = "") -> dict:
     """Record one click, data-sparse by construction: only link identity,
@@ -90,24 +105,25 @@ def record_click(data_dir, *, tracking_id: str = "", link_id: str = "",
     user agent, no cookie). Resolves `tracking_id` -> `link_id` when the
     caller only has the public tracking id (the redirect handler's case).
     Unknown tracking_id/link_id -> a no-op dict, never a crash (a stray or
-    forged tracking id must not raise)."""
-    link_store = AffiliateLinkStore.load(data_dir)
-    link = (link_store.get_by_tracking_id(tracking_id) if tracking_id
-           else link_store.get(link_id))
-    if link is None:
-        return {"recorded": False, "reason": "unknown link"}
+    forged tracking id must not raise). Thread-safe (see `_click_lock`)."""
+    with _click_lock:
+        link_store = AffiliateLinkStore.load(data_dir)
+        link = (link_store.get_by_tracking_id(tracking_id) if tracking_id
+               else link_store.get(link_id))
+        if link is None:
+            return {"recorded": False, "reason": "unknown link"}
 
-    click_store = ClickStore.load(data_dir)
-    click = ClickEvent(click_id=new_id("clk"), link_id=link.link_id,
-                       ts=now_iso, channel=channel or link.source)
-    click_store.record(click)
-    click_store.save()
+        click_store = ClickStore.load(data_dir)
+        click = ClickEvent(click_id=new_id("clk"), link_id=link.link_id,
+                           ts=now_iso, channel=channel or link.source)
+        click_store.record(click)
+        click_store.save()
 
-    link.click_count += 1
-    link_store.upsert(link)
-    link_store.save()
-    return {"recorded": True, "click_id": click.click_id, "link_id": link.link_id,
-            "target_url": link.target_url}
+        link.click_count += 1
+        link_store.upsert(link)
+        link_store.save()
+        return {"recorded": True, "click_id": click.click_id, "link_id": link.link_id,
+                "target_url": link.target_url}
 
 
 def link_economics(data_dir, link_id: str) -> dict:

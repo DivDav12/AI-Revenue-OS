@@ -591,6 +591,60 @@ class TrackingServerTests(unittest.TestCase):
             server.shutdown()
             thread.join(timeout=2)
 
+    def test_healthz_returns_200_and_reveals_no_click_data(self):
+        server = affiliate_tracking_server.serve(_tmp(), port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+            conn.request("GET", "/healthz")
+            resp = conn.getresponse()
+            body = resp.read()
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(body, b"ok")
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+
+    def test_concurrent_clicks_are_all_recorded_no_lost_updates(self):
+        # regression guard for a real race condition: record_click()'s
+        # load -> increment -> save is not atomic on its own: without the
+        # lock, near-simultaneous requests can silently lose a click.
+        d = _tmp()
+        store = affiliate_model.AffiliateLinkStore.load(d)
+        link = affiliate_model.AffiliateLink(link_id="l1", opportunity_id="op", asset_id="a",
+                                             offer_id="o", tracking_id="trk-concurrent",
+                                             target_url="https://merchant.example/prod")
+        store.upsert(link)
+        store.save()
+
+        server = affiliate_tracking_server.serve(d, port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        n = 25
+        try:
+            port = server.server_address[1]
+
+            def _hit():
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                conn.request("GET", "/go/trk-concurrent")
+                resp = conn.getresponse()
+                resp.read()
+                conn.close()
+
+            workers = [threading.Thread(target=_hit) for _ in range(n)]
+            for w in workers:
+                w.start()
+            for w in workers:
+                w.join(timeout=5)
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+
+        self.assertEqual(affiliate_model.AffiliateLinkStore.load(d).get("l1").click_count, n)
+        self.assertEqual(len(affiliate_model.ClickStore.load(d).by_link("l1")), n)
+
     def test_run_forever_starts_serves_and_closes_cleanly(self):
         from unittest import mock
 
