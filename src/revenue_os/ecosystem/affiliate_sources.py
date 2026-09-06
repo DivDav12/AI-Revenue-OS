@@ -57,6 +57,11 @@ _AMAZON_HOSTS = frozenset({
     "amazon.co.uk", "www.amazon.co.uk", "amazon.fr", "www.amazon.fr",
     "amazon.it", "www.amazon.it", "amazon.es", "www.amazon.es",
 })
+#: Awin's own click-tracking host only - an Awin affiliate link is a real
+#: deep link on this domain (awin1.com/cread.php?awinmid=<advertiser>&
+#: awinaffid=<publisher>&ued=<destination>), never a shortener/redirector
+#: that could hide where the link actually goes.
+_AWIN_TRACKING_HOSTS = frozenset({"www.awin1.com", "awin1.com"})
 
 
 def _validate_amazon_fields(raw: dict) -> None:
@@ -88,6 +93,42 @@ def _validate_amazon_fields(raw: dict) -> None:
                 f"product_asin {asin!r} does not appear in product_url "
                 f"{url!r} - ASIN/URL mismatch, refusing to guess which is "
                 "correct")
+
+
+def _validate_awin_fields(raw: dict) -> None:
+    """Awin-specific fail-closed checks. Only runs when network == 'awin' -
+    every other network is unaffected. Mirrors `_validate_amazon_fields`:
+    an Awin affiliate link must be a real click-through deep link on
+    Awin's own tracking host and carry both ids the network needs to
+    attribute a sale (awinmid = advertiser, awinaffid = publisher). It
+    never rewrites or guesses at a fix - either the link is structurally a
+    real Awin deep link or ingestion refuses it."""
+    from urllib.parse import parse_qs, urlparse
+
+    url = str(raw.get("product_url") or "").strip()
+    if not url:
+        raise IngestionError(
+            "awin offers require product_url - the real awin1.com/cread.php "
+            "tracking link the network issued")
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.netloc.lower() not in _AWIN_TRACKING_HOSTS:
+        raise IngestionError(
+            f"product_url host {parsed.netloc!r} is not Awin's tracking host "
+            "(www.awin1.com) - refusing a URL that could hide where an "
+            "affiliate link actually goes (no shorteners/redirectors)")
+    if parsed.path != "/cread.php":
+        raise IngestionError(
+            f"product_url path {parsed.path!r} is not /cread.php - not a "
+            "recognised Awin click-through link")
+    q = parse_qs(parsed.query)
+    if not (q.get("awinmid") or [""])[0].strip():
+        raise IngestionError(
+            "awin product_url is missing awinmid - the Awin advertiser id "
+            "the sale is attributed to")
+    if not (q.get("awinaffid") or [""])[0].strip():
+        raise IngestionError(
+            "awin product_url is missing awinaffid - the Awin publisher id "
+            "the commission is paid to")
 
 
 class IngestionError(ValueError):
@@ -167,6 +208,8 @@ def parse_offer_json(raw: dict) -> dict:
 
     if network == "amazon_associates":
         _validate_amazon_fields(raw)
+    elif network == "awin":
+        _validate_awin_fields(raw)
 
     return dict(raw)
 
