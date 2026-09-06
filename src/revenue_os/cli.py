@@ -1348,6 +1348,13 @@ def _cmd_dashboard_serve(args) -> int:
     return 0
 
 
+def _cmd_serve_affiliate_tracker(args) -> int:
+    from .ecosystem.affiliate_tracking_server import run_forever
+
+    run_forever(_data_dir(args), host=args.host, port=args.port)
+    return 0
+
+
 def _cmd_jarvis(args) -> int:
     from .jarvis_server import serve
 
@@ -1764,6 +1771,34 @@ def _cmd_affiliate_funnel(args) -> int:
     except FunnelStatusError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    print(json.dumps(out, indent=2))
+    return 0
+
+
+def _cmd_traffic_readiness(args) -> int:
+    from .ecosystem.affiliate_intel import traffic_readiness
+    print(json.dumps(traffic_readiness(_data_dir(args)), indent=2))
+    return 0
+
+
+def _cmd_ad_campaign_readiness(args) -> int:
+    """Ads architecture (NOT ACTIVE): report only - never spends, never
+    connects to an ad platform."""
+    from .ecosystem.ad_campaign import AdCampaignPlan, ad_campaign_readiness
+
+    plan = None
+    budget_fields = (args.budget_eur, args.max_cpc_eur, args.max_cpa_eur, args.stop_loss_eur)
+    if any(v is not None for v in budget_fields):
+        if any(v is None for v in budget_fields):
+            print("error: --budget-eur, --max-cpc-eur, --max-cpa-eur, and --stop-loss-eur "
+                 "must all be given together to form a plan", file=sys.stderr)
+            return 1
+        plan = AdCampaignPlan(
+            offer_id=args.offer_id, channel=args.channel, budget_eur=args.budget_eur,
+            max_cpc_eur=args.max_cpc_eur, max_cpa_eur=args.max_cpa_eur,
+            stop_loss_eur=args.stop_loss_eur,
+            min_confirmed_conversions=args.min_confirmed_conversions)
+    out = ad_campaign_readiness(_data_dir(args), offer_id=args.offer_id, plan=plan)
     print(json.dumps(out, indent=2))
     return 0
 
@@ -2870,6 +2905,19 @@ def build_parser() -> argparse.ArgumentParser:
                         help="recorded as the actor for gate actions")
     dserve.set_defaults(func=_cmd_dashboard_serve)
 
+    atserve = sub.add_parser(
+        "serve-affiliate-tracker", parents=[common],
+        help="run the real affiliate click-tracking redirect server in the "
+             "foreground (GET /go/<tracking_id> -> record click -> 302 to "
+             "the real offer URL); loopback-only by design - see "
+             "ecosystem.affiliate_tracking_server for what a public domain "
+             "actually requires")
+    atserve.add_argument("--port", type=int, default=8788)
+    atserve.add_argument("--host", default="127.0.0.1",
+                         help="loopback only; the handler itself refuses any "
+                              "non-loopback client regardless")
+    atserve.set_defaults(func=_cmd_serve_affiliate_tracker)
+
     jv = sub.add_parser(
         "jarvis", parents=[common],
         help="JARVIS agent command console on localhost (control plane: "
@@ -3111,6 +3159,29 @@ def build_parser() -> argparse.ArgumentParser:
              "traffic/conversion/commission - never fabricated)")
     aff_fun.add_argument("opportunity_id", metavar="OPPORTUNITY_ID")
     aff_fun.set_defaults(func=_cmd_affiliate_funnel)
+
+    adr = sub.add_parser(
+        "ad-campaign-readiness", parents=[common],
+        help="Ads architecture (NOT ACTIVE): whether an offer has enough "
+             "real, confirmed conversion evidence to even PROPOSE a "
+             "budget-gated paid-ad plan - never spends anything, never "
+             "bypasses the existing MONEY/ADVERTISE human-approval gate")
+    adr.add_argument("offer_id", metavar="OFFER_ID")
+    adr.add_argument("--channel", default="", help="a label only - no ad platform is connected")
+    adr.add_argument("--budget-eur", type=float, default=None)
+    adr.add_argument("--max-cpc-eur", type=float, default=None)
+    adr.add_argument("--max-cpa-eur", type=float, default=None)
+    adr.add_argument("--stop-loss-eur", type=float, default=None)
+    adr.add_argument("--min-confirmed-conversions", type=int, default=3)
+    adr.set_defaults(func=_cmd_ad_campaign_readiness)
+
+    tr = sub.add_parser(
+        "traffic-readiness", parents=[common],
+        help="Traffic engine: content assets deployed/waiting, per-channel "
+             "READY/WAITING/DISABLED, tracking state, confirmed conversions "
+             "and revenue - every field real/persisted, revenue never "
+             "inferred from clicks")
+    tr.set_defaults(func=_cmd_traffic_readiness)
 
     aft = sub.add_parser(
         "affiliate-tick", parents=[common],

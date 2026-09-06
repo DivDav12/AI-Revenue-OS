@@ -172,3 +172,51 @@ def affiliate_status(data_dir) -> dict:
         "scaling_candidates": opt["scale"],
         "human_setup_required": setup_required_networks(data_dir),
     }
+
+
+def traffic_readiness(data_dir) -> dict:
+    """Traffic-engine read model (spec: Phase 11) - every field a real,
+    persisted fact or an explicit, hardcoded policy label
+    (`paid_ads: "DISABLED"`), never an inferred or projected metric.
+    Revenue is NEVER inferred from clicks - it is always the same
+    settled-commission sum `affiliate_status()` reports as `revenue_eur`."""
+    from ..opportunity_store import load_opportunities
+
+    assets = AffiliateAssetStore.load(data_dir).all()
+    deployed = [a for a in assets if a.live_url]
+    waiting = [a for a in assets if not a.live_url]
+
+    completed_chain_plans = []
+    for rec in load_opportunities(data_dir).all():
+        plan = (rec.get("strategy") or {}).get("plan") or {}
+        if plan.get("kind") == "affiliate_chain" and plan.get("status") == "completed":
+            completed_chain_plans.append(plan)
+
+    seo_ready = bool(deployed)
+    organic_communities_ready = any(p.get("distribution_plan") for p in completed_chain_plans)
+    click_tracking_active = any(p.get("click_tracking_active") for p in completed_chain_plans)
+
+    settled = [c for c in CommissionStore.load(data_dir).all()
+              if c.status in SETTLED_COMMISSION_STATUSES]
+
+    return {
+        "content_assets": {"deployed": len(deployed), "waiting": len(waiting)},
+        "traffic_channels": {
+            "seo": "READY" if seo_ready else "WAITING",
+            "organic_communities": "READY" if organic_communities_ready else "WAITING",
+            "paid_ads": "DISABLED",
+        },
+        "tracking": {
+            "page_tracking": "not_implemented - no analytics are wired; static GitHub Pages "
+                             "hosting has no server-side page-view tracking",
+            "affiliate_click_tracking": ("active" if click_tracking_active else
+                                        "not_active - AFFILIATE_TRACKING_BASE_URL is not set / "
+                                        "the tracking redirect server is not deployed behind a "
+                                        "public domain yet (see "
+                                        "ecosystem.affiliate_tracking_server / "
+                                        "`revenue_os serve-affiliate-tracker`)"),
+        },
+        "conversions_confirmed": len(settled),
+        "revenue_confirmed_eur": round(sum(c.amount for c in settled), 2),
+        "deployed_page_urls": [a.live_url for a in deployed],
+    }

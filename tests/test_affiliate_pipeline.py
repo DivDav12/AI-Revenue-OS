@@ -347,6 +347,45 @@ class AssetGenerationTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertTrue(any("evidence" in r for r in reasons))
 
+    def test_page_has_mobile_friendly_viewport_meta(self):
+        draft = _demand_draft()
+        page, _ = affiliate_assets.render_comparison_page(
+            draft=draft, match=self._match(), cta_url="https://example.test/go/abc")
+        self.assertIn('<meta name="viewport" content="width=device-width, initial-scale=1">', page)
+
+    def test_related_links_rendered_when_supplied(self):
+        draft = _demand_draft()
+        page, _ = affiliate_assets.render_comparison_page(
+            draft=draft, match=self._match(), cta_url="https://example.test/go/abc",
+            related_links=(("What is a sales funnel?", "https://example.test/what-is-a-sales-funnel/"),))
+        self.assertIn("https://example.test/what-is-a-sales-funnel/", page)
+        self.assertIn("What is a sales funnel?", page)
+
+    def test_no_related_links_section_when_none_supplied(self):
+        # byte-identical to before this parameter existed for the default case.
+        draft = _demand_draft()
+        page, _ = affiliate_assets.render_comparison_page(
+            draft=draft, match=self._match(), cta_url="https://example.test/go/abc")
+        self.assertNotIn("More guides", page)
+
+    def test_related_links_persist_and_survive_a_redeploy(self):
+        d = _tmp()
+        match = self._match()
+        links = (("What is a sales funnel?", "https://example.test/what-is-a-sales-funnel/"),)
+        asset, ok, _ = affiliate_assets.build_asset(
+            d, opportunity_id="opRel", draft=_demand_draft(), match=match,
+            cta_url="https://example.test/go/x", related_links=links)
+        self.assertTrue(ok)
+        self.assertEqual(asset.related_links, links)
+
+        reloaded = affiliate_model.AffiliateAssetStore.load(d).get(asset.asset_id)
+        self.assertEqual(reloaded.related_links, links)
+
+        out = affiliate_assets.deploy_asset(asset=reloaded, draft=_demand_draft(), match=match,
+                                            cta_url="https://example.test/go/x",
+                                            adapter=FakeDeploymentAdapter())
+        self.assertTrue(out["deployed"])
+
     def test_build_asset_is_idempotent_per_opportunity_offer(self):
         d = _tmp()
         draft = _demand_draft()
@@ -518,6 +557,26 @@ class TrackingServerTests(unittest.TestCase):
         finally:
             server.shutdown()
             thread.join(timeout=2)
+
+    def test_run_forever_starts_serves_and_closes_cleanly(self):
+        from unittest import mock
+
+        fake_server = mock.Mock()
+        fake_server.server_port = 8788
+        with mock.patch.object(affiliate_tracking_server, "serve", return_value=fake_server) as m:
+            affiliate_tracking_server.run_forever(_tmp(), host="127.0.0.1", port=8788)
+        m.assert_called_once_with(mock.ANY, host="127.0.0.1", port=8788)
+        fake_server.serve_forever.assert_called_once()
+        fake_server.server_close.assert_called_once()
+
+    def test_run_forever_cli_wiring(self):
+        from unittest import mock
+
+        from revenue_os.cli import main
+        with mock.patch("revenue_os.ecosystem.affiliate_tracking_server.run_forever") as m:
+            rc = main(["--data-dir", str(_tmp()), "serve-affiliate-tracker", "--port", "8788"])
+        self.assertEqual(rc, 0)
+        m.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -849,6 +908,78 @@ class IntelTests(unittest.TestCase):
         status = affiliate_intel.affiliate_status(d)
         networks = {row["network"] for row in status["human_setup_required"]}
         self.assertIn(affiliate_model.NETWORK_AMAZON_ASSOCIATES, networks)
+
+
+# ---------------------------------------------------------------------------
+# 13a. traffic-engine readiness read model
+# ---------------------------------------------------------------------------
+
+class TrafficReadinessTests(unittest.TestCase):
+    def test_empty_state_is_all_waiting_paid_ads_always_disabled(self):
+        d = _tmp()
+        r = affiliate_intel.traffic_readiness(d)
+        self.assertEqual(r["content_assets"], {"deployed": 0, "waiting": 0})
+        self.assertEqual(r["traffic_channels"]["seo"], "WAITING")
+        self.assertEqual(r["traffic_channels"]["organic_communities"], "WAITING")
+        self.assertEqual(r["traffic_channels"]["paid_ads"], "DISABLED")
+        self.assertEqual(r["conversions_confirmed"], 0)
+        self.assertEqual(r["revenue_confirmed_eur"], 0)
+
+    def test_deployed_asset_makes_seo_ready_and_lists_the_real_url(self):
+        d = _tmp()
+        draft = _demand_draft()
+        DiscoveryEngine(d, sources=[_OneDraftSource(draft)]).run(limit_per_source=5)
+        oid = next(r["id"] for r in load_opportunities(d).all()
+                  if r["discovery"]["opportunity_type"] == model.TYPE_AFFILIATE)
+        affiliate_sources.ingest_affiliate_offer(d, _offer_json())
+        eco_pipeline.evaluate(d, oid)
+        eco_pipeline.select(d, oid)
+        from unittest import mock
+        with mock.patch("revenue_os.ecosystem.affiliate_assets.default_deployment_adapter",
+                       return_value=FakeDeploymentAdapter()):
+            eco_pipeline.plan(d, oid)
+
+        r = affiliate_intel.traffic_readiness(d)
+        self.assertEqual(r["content_assets"]["deployed"], 1)
+        self.assertEqual(r["traffic_channels"]["seo"], "READY")
+        self.assertEqual(r["traffic_channels"]["organic_communities"], "READY")
+        self.assertEqual(len(r["deployed_page_urls"]), 1)
+        self.assertTrue(r["deployed_page_urls"][0].startswith("https://"))
+
+    def test_click_tracking_reported_active_only_when_the_chain_says_so(self):
+        d = _tmp()
+        draft = _demand_draft()
+        DiscoveryEngine(d, sources=[_OneDraftSource(draft)]).run(limit_per_source=5)
+        oid = next(r["id"] for r in load_opportunities(d).all()
+                  if r["discovery"]["opportunity_type"] == model.TYPE_AFFILIATE)
+        affiliate_sources.ingest_affiliate_offer(d, _offer_json())
+        eco_pipeline.evaluate(d, oid)
+        eco_pipeline.select(d, oid)
+        from unittest import mock
+        with mock.patch("revenue_os.ecosystem.affiliate_assets.default_deployment_adapter",
+                       return_value=FakeDeploymentAdapter()), \
+             mock.patch.dict("os.environ", {}, clear=False):
+            import os
+            os.environ.pop("AFFILIATE_TRACKING_BASE_URL", None)
+            eco_pipeline.plan(d, oid)
+
+        r = affiliate_intel.traffic_readiness(d)
+        self.assertIn("not_active", r["tracking"]["affiliate_click_tracking"])
+
+    def test_revenue_never_inferred_from_clicks(self):
+        d = _tmp()
+        store = affiliate_model.AffiliateLinkStore.load(d)
+        store.upsert(affiliate_model.AffiliateLink(
+            link_id="l1", opportunity_id="op", asset_id="a", offer_id="o",
+            click_count=1000, conversion_count=50))   # lots of real clicks, zero settled commission
+        store.save()
+        r = affiliate_intel.traffic_readiness(d)
+        self.assertEqual(r["revenue_confirmed_eur"], 0)
+        self.assertEqual(r["conversions_confirmed"], 0)
+
+    def test_cli_traffic_readiness_runs(self):
+        from revenue_os.cli import main
+        self.assertEqual(main(["--data-dir", str(_tmp()), "traffic-readiness"]), 0)
 
 
 # ---------------------------------------------------------------------------

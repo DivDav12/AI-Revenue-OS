@@ -45,13 +45,19 @@ def _esc(text: str) -> str:
 
 
 def render_comparison_page(*, draft: OpportunityDraft, match: AffiliateMatch,
-                           cta_url: str, guide_title: str = "") -> tuple[str, dict]:
+                           cta_url: str, guide_title: str = "",
+                           related_links: tuple = ()) -> tuple[str, dict]:
     """Render one self-contained HTML "problem -> solution" page. Returns
     (html, quality_checks) - the checks are computed against the RENDERED
     content, not guessed, so `check_quality()` and the renderer can never
     silently disagree. `guide_title=` overrides the default "<product>:
     does it solve ...?" headline (e.g. for a roundup-style buying guide) -
-    every other section stays evidence-grounded regardless."""
+    every other section stays evidence-grounded regardless. `related_links=`
+    is an optional tuple of `(title, url)` pairs to OTHER REAL, already-
+    deployed pages (content-cluster interlinking, spec: "connect pages
+    into a content cluster") - never a fabricated/placeholder link, the
+    caller supplies only URLs that are already real and live; empty by
+    default (byte-identical output to before this parameter existed)."""
     offer = match.offer
     problem = _esc(draft.title)
     # a "people have said, in their own words" framing is only honest when
@@ -141,6 +147,13 @@ have not tested it ourselves and are not claiming it is the objectively
 program we have actually joined.</p>
 </section>"""
 
+    related_html = ""
+    if related_links:
+        items = "".join(f'<li><a href="{_esc(u)}">{_esc(t)}</a></li>' for t, u in related_links)
+        related_html = f"""<nav aria-label="Related guides"><h2>More guides</h2>
+<ul>{items}</ul>
+</nav>"""
+
     body_html = f"""<article>
 <h1>{headline}</h1>
 <p class="disclosure">{_esc(DISCLOSURE_TEXT)}</p>
@@ -162,10 +175,12 @@ program we have actually joined.</p>
 <dl>{faq_items}</dl>
 </section>
 <p class="cta"><a href="{_esc(cta_url)}" rel="sponsored nofollow">Check {product} &rarr;</a></p>
+{related_html}
 </article>"""
 
     page = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{headline}</title>
 <meta name="description" content="{product} evaluated against a real, stated need: {need_quote}">
 </head><body>
@@ -209,7 +224,7 @@ def check_quality(checks: dict) -> tuple[bool, list]:
 
 def build_asset(data_dir, *, opportunity_id: str, draft: OpportunityDraft,
                 match: AffiliateMatch, cta_url: str, now_iso: str = "",
-                guide_title: str = "") -> tuple[AffiliateAsset, bool, list]:
+                guide_title: str = "", related_links: tuple = ()) -> tuple[AffiliateAsset, bool, list]:
     """Render + quality-gate one asset and persist its record (NOT yet
     deployed - `deploy_asset()` is the separate, explicit publish step, so
     a failed quality gate never reaches deployment). Idempotent per
@@ -223,7 +238,7 @@ def build_asset(data_dir, *, opportunity_id: str, draft: OpportunityDraft,
             return existing, ok, reasons
 
     page, checks = render_comparison_page(draft=draft, match=match, cta_url=cta_url,
-                                          guide_title=guide_title)
+                                          guide_title=guide_title, related_links=related_links)
     ok, reasons = check_quality(checks)
     slug = _slugify(f"{draft.title}-{match.offer.product_name}")
     asset = AffiliateAsset(
@@ -231,7 +246,7 @@ def build_asset(data_dir, *, opportunity_id: str, draft: OpportunityDraft,
         offer_id=match.offer.offer_id, asset_type="comparison_page",
         title=draft.title[:200], guide_title=guide_title, slug=slug, file_path="index.html",
         disclosure_included=checks["has_disclosure"], quality_checks=checks,
-        created_at=now_iso)
+        related_links=tuple(related_links), created_at=now_iso)
     store.upsert(asset)
     store.save()
     # the rendered page itself is not persisted to JSON (large, derivable) -
@@ -249,7 +264,8 @@ def deploy_asset(*, asset: AffiliateAsset, draft: OpportunityDraft,
     a test/caller inject `deployment.FakeDeploymentAdapter()`; the default
     is the real, credential-gated GitHub Pages adapter."""
     page, checks = render_comparison_page(draft=draft, match=match, cta_url=cta_url,
-                                          guide_title=asset.guide_title)
+                                          guide_title=asset.guide_title,
+                                          related_links=asset.related_links)
     ok, reasons = check_quality(checks)
     if not ok:
         return {"deployed": False, "blocked": True, "reasons": reasons}

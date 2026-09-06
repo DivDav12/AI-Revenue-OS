@@ -64,8 +64,16 @@ NETWORK_SYSTEME_IO = "systeme_io"
 _SYSTEME_IO_HOSTS = frozenset({"systeme.io", "www.systeme.io"})
 
 #: the one product this source represents - systeme.io the platform
-#: itself. Not a guess: this IS the entire affiliate program.
-_OFFER_TITLE = "systeme.io - all-in-one funnel, email & online business platform"
+#: itself. Not a guess: this IS the entire affiliate program. Kept SHORT
+#: and free of generic filler words on purpose - a real live run found
+#: that `affiliate_matching.match_offers()` tokenizes `product_name` into
+#: individual bare words as part of its relevance signal, and a marketing
+#: tagline ("...all-in-one...online business platform...") supplied
+#: several completely generic false-positive tokens ("all", "one",
+#: "business", "platform") that matched unrelated real demand (e.g.
+#: "Google My Business verification..." scored 0.75 relevance). See
+#: content_opportunity.py's module docstring / test coverage.
+_OFFER_TITLE = "systeme.io"
 
 #: static, transparent stand-in for what a real per-network search API
 #: would filter server-side (see module docstring, gate 1 of 2). PHRASES,

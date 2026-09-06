@@ -407,6 +407,13 @@ class AffiliateAsset:
     live_url: str = ""
     disclosure_included: bool = True
     quality_checks: dict = field(default_factory=dict)
+    #: (title, url) pairs to OTHER REAL, already-deployed pages (content-
+    #: cluster interlinking) - persisted for the same reason `guide_title`
+    #: is: `deploy_asset()` re-renders from THIS stored value, not a
+    #: freshly-supplied one, so a re-deploy is byte-identical to what
+    #: `build_asset()` quality-gated. Empty by default - no cluster is
+    #: claimed unless real pages actually exist to link to.
+    related_links: tuple = ()
     created_at: str = ""
 
     def to_dict(self) -> dict:
@@ -415,12 +422,15 @@ class AffiliateAsset:
                 "title": self.title, "guide_title": self.guide_title,
                 "slug": self.slug, "file_path": self.file_path,
                 "live_url": self.live_url, "disclosure_included": self.disclosure_included,
-                "quality_checks": dict(self.quality_checks), "created_at": self.created_at}
+                "quality_checks": dict(self.quality_checks),
+                "related_links": [list(p) for p in self.related_links],
+                "created_at": self.created_at}
 
     @classmethod
     def from_dict(cls, d: dict) -> "AffiliateAsset":
         d = dict(d or {})
         d["quality_checks"] = dict(d.get("quality_checks") or {})
+        d["related_links"] = tuple(tuple(p) for p in (d.get("related_links") or ()))
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 

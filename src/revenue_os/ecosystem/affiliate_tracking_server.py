@@ -73,3 +73,22 @@ def serve(data_dir, *, host: str = "127.0.0.1", port: int = 0) -> ThreadingHTTPS
     like the existing dashboard/jarvis servers' own test fixtures)."""
     server = ThreadingHTTPServer((host, port), _make_handler(Path(data_dir)))
     return server
+
+
+def run_forever(data_dir, *, host: str = "127.0.0.1", port: int = 8788) -> None:
+    """Foreground entry point for a human to actually RUN this (e.g. under
+    systemd/a container, with a LOCAL reverse proxy such as nginx/Caddy on
+    the same host terminating TLS for a real public domain and forwarding
+    to 127.0.0.1:<port> - see the module docstring: this handler only ever
+    accepts connections whose `client_address` is loopback, by design, so
+    it is NOT ready to sit directly behind a typical PaaS load balancer
+    without a same-host proxy in front of it)."""
+    server = serve(data_dir, host=host, port=port)
+    print(f"affiliate tracking redirect server: http://{host}:{server.server_port}/go/<tracking_id>  "
+         "(loopback-only; put a local reverse proxy in front for a public domain - Ctrl-C to stop)")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
