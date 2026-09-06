@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://DivDav12.github.io/AI-Revenue-OS/sitemap.xml
