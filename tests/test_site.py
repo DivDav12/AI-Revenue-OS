@@ -238,6 +238,7 @@ class BuildAndDeploySiteTests(unittest.TestCase):
         self.assertIn("affiliate-erklaerung/index.html", artifact.files)
         for key, _label in site.SITE_CATEGORIES:
             self.assertIn(f"kategorie/{key}/index.html", artifact.files)
+        self.assertIn("robots.txt", artifact.files)
 
     def test_deploy_site_uses_the_injected_adapter_and_lands_at_root(self):
         d = _tmp()
@@ -263,6 +264,49 @@ class BuildAndDeploySiteTests(unittest.TestCase):
         self.assertIn("Beste Gaming-Maus unter 50€", artifact.files["index.html"])
         self.assertIn("Beste Gaming-Maus unter 50€",
                       artifact.files[f"kategorie/{site.CATEGORY_MAEUSE}/index.html"])
+
+
+class SitemapAndRobotsTests(unittest.TestCase):
+    _REAL_ENV = {"GITHUB_TOKEN": "t", "GITHUB_PAGES_REPO": "someone/site"}
+
+    def test_robots_always_present_even_without_config(self):
+        txt = site.render_robots_txt(environ={})
+        self.assertIn("User-agent: *", txt)
+        self.assertIn("Allow: /", txt)
+        self.assertNotIn("Sitemap:", txt)   # no real base URL to point at
+
+    def test_robots_references_sitemap_when_config_is_real(self):
+        txt = site.render_robots_txt(environ=self._REAL_ENV)
+        self.assertIn("Sitemap: https://someone.github.io/site/sitemap.xml", txt)
+
+    def test_sitemap_is_none_without_real_config_never_fabricates_a_domain(self):
+        self.assertIsNone(site.render_sitemap_xml(_tmp(), environ={}))
+
+    def test_sitemap_lists_real_pages_with_absolute_urls(self):
+        d = _tmp()
+        xml = site.render_sitemap_xml(d, environ=self._REAL_ENV)
+        self.assertIsNotNone(xml)
+        self.assertIn("<loc>https://someone.github.io/site/</loc>", xml)
+        self.assertIn("<loc>https://someone.github.io/site/impressum/</loc>", xml)
+        for key, _label in site.SITE_CATEGORIES:
+            self.assertIn(f"<loc>https://someone.github.io/site/kategorie/{key}/</loc>", xml)
+
+    def test_sitemap_includes_real_deployed_guides_not_undeployed_ones(self):
+        d = _tmp()
+        _seed_real_guide(d, category="usb-microphone-streaming", title="Mikrofon-Guide",
+                         live_url="https://divdav12.github.io/AI-Revenue-OS/mik/")
+        xml = site.render_sitemap_xml(d, environ=self._REAL_ENV)
+        self.assertIn("<loc>https://divdav12.github.io/AI-Revenue-OS/mik/</loc>", xml)
+
+    def test_build_site_artifact_omits_sitemap_without_real_config(self):
+        import os
+        from unittest import mock
+
+        d = _tmp()
+        with mock.patch.dict(os.environ, {}, clear=True):
+            artifact = site.build_site_artifact(d)
+        self.assertNotIn("sitemap.xml", artifact.files)
+        self.assertIn("robots.txt", artifact.files)
 
 
 if __name__ == "__main__":

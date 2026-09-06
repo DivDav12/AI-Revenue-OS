@@ -23,7 +23,7 @@ from ..deployment import DeploymentArtifact, default_deployment_adapter
 from .affiliate_matching import AffiliateMatch
 from .affiliate_model import AffiliateAsset, AffiliateAssetStore, new_id
 from .model import OpportunityDraft
-from .site import page_shell
+from .site import category_breadcrumb, page_shell
 
 #: exact wording requested for the German customer-facing site - shown
 #: directly next to/under the CTA button, and reused in the FAQ.
@@ -108,7 +108,13 @@ def render_comparison_page(*, draft: OpportunityDraft, match: AffiliateMatch,
     # the body, and passing them to page_shell() too would double-escape
     # (e.g. "&amp;" -> "&amp;amp;").
     title_text = guide_title if guide_title else f'{offer.product_name}: passt das zu "{draft.title}"?'
-    description_text = f"{offer.product_name}: {real_evidence[0] if has_real_quote else draft.title}"
+    # a curated `guide_title` is already a proper description of the page's
+    # topic - preferring it over the raw demand title avoids a redundant/
+    # duplicated meta description when the demand title itself already
+    # names the product (a real case found live: an editorial title that
+    # already started with the product's own name).
+    description_text = (f"{offer.product_name}: {guide_title}" if guide_title else
+                        f"{offer.product_name}: {real_evidence[0] if has_real_quote else draft.title}")
 
     # "Worauf du achten solltest" / "Für wen (nicht)" / Einschätzung sind
     # generische, kategorie-bezogene Kaufhinweise - niemals eine konkrete
@@ -166,7 +172,16 @@ beigetreten sind.</p>
 <ul>{items}</ul>
 </nav>"""
 
+    # internal linking (spec: "crawlable page structure") - a real link
+    # back to the guide's own category page, using the SAME category
+    # taxonomy the homepage/category grid already use.
+    cat_label, cat_path = category_breadcrumb(offer.category)
+    breadcrumb_html = (f'<nav aria-label="Breadcrumb" class="breadcrumb">'
+                       f'<a href="/">Start</a> &rsaquo; <a href="{_esc(cat_path)}">{_esc(cat_label)}</a>'
+                       f'</nav>')
+
     body_html = f"""<article>
+{breadcrumb_html}
 <h1>{headline}</h1>
 <p class="disclosure">{_esc(DISCLOSURE_TEXT)}</p>
 <section>

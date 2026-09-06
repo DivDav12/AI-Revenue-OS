@@ -353,6 +353,39 @@ class AssetGenerationTests(unittest.TestCase):
             draft=draft, match=self._match(), cta_url="https://example.test/go/abc")
         self.assertIn('<meta name="viewport" content="width=device-width, initial-scale=1">', page)
 
+    def test_page_has_a_breadcrumb_linking_to_its_real_category(self):
+        draft = _demand_draft()
+        match = self._match()
+        match.offer.category = "usb-microphone-streaming"
+        page, _ = affiliate_assets.render_comparison_page(
+            draft=draft, match=match, cta_url="https://example.test/go/abc")
+        self.assertIn('class="breadcrumb"', page)
+        self.assertIn('href="/kategorie/mikrofone/"', page)
+        self.assertIn(">Mikrofone<", page)
+
+    def test_unmapped_category_breadcrumb_falls_back_to_sonstiges(self):
+        draft = _demand_draft()
+        match = self._match()   # category defaults to "other"
+        page, _ = affiliate_assets.render_comparison_page(
+            draft=draft, match=match, cta_url="https://example.test/go/abc")
+        self.assertIn('href="/kategorie/sonstiges/"', page)
+
+    def test_curated_guide_title_avoids_a_redundant_meta_description(self):
+        # regression guard for a real bug found live: an editorial title
+        # that already restated the product name produced a duplicated,
+        # broken <title>/description once wrapped by the new headline
+        # pattern - a curated guide_title must be used for the meta
+        # description too, not just the on-page headline.
+        draft = _demand_draft(title="systeme.io: does it solve building a sales funnel?")
+        match = self._match()
+        page, _ = affiliate_assets.render_comparison_page(
+            draft=draft, match=match, cta_url="https://example.test/go/abc",
+            guide_title="Sales-Funnel-Software für Anfänger")
+        self.assertIn(
+            '<meta name="description" content="Acme Cloud Hosting: '
+            'Sales-Funnel-Software für Anfänger">', page)
+        self.assertNotIn("does it solve", page)
+
     def test_related_links_rendered_when_supplied(self):
         draft = _demand_draft()
         page, _ = affiliate_assets.render_comparison_page(

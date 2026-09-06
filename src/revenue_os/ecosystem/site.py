@@ -98,6 +98,15 @@ def classify_offer_category(offer_category: str) -> str:
     return CATEGORY_SONSTIGES
 
 
+def category_breadcrumb(offer_category: str) -> tuple[str, str]:
+    """(label, path) for the site category a real `AffiliateOffer.category`
+    falls under - used by a guide page to link back to its own category
+    (internal linking, spec: "crawlable page structure")."""
+    key = classify_offer_category(offer_category)
+    label = _CATEGORY_LABELS.get(key, key)
+    return label, f"/kategorie/{key}/"
+
+
 # ---------------------------------------------------------------------------
 # shared chrome
 # ---------------------------------------------------------------------------
@@ -143,6 +152,7 @@ section.block h2{font-size:1.4rem;margin-bottom:14px}
 .cta a.button:hover{background:var(--accent-dark);text-decoration:none}
 footer.site{border-top:1px solid var(--border);margin-top:48px;padding:28px 0;color:var(--muted);font-size:.9rem}
 footer.site a{color:var(--muted)}
+.breadcrumb{font-size:.85rem;color:var(--muted);margin-bottom:10px}
 article h1{font-size:1.7rem;line-height:1.3}
 article section{margin:26px 0}
 article h2{font-size:1.2rem}
@@ -386,6 +396,50 @@ def render_legal_pages() -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# crawlability - sitemap.xml / robots.txt (spec: "crawlable page
+# structure"). A sitemap requires ABSOLUTE URLs by spec - `_real_base_url()`
+# only ever returns a real, already-configured GitHub Pages base URL (pure
+# config read, no network call, no guessed domain); without it,
+# `render_sitemap_xml()` fails closed (returns None, never a fabricated
+# domain) and `build_site_artifact()` simply omits sitemap.xml.
+# ---------------------------------------------------------------------------
+
+def _real_base_url(environ=None) -> str:
+    from ..deploy import DeployError, GitHubPagesConfig
+
+    try:
+        return GitHubPagesConfig.from_env(environ).public_base()
+    except DeployError:
+        return ""
+
+
+def render_robots_txt(environ=None) -> str:
+    base = _real_base_url(environ)
+    lines = ["User-agent: *", "Allow: /"]
+    if base:
+        lines.append(f"Sitemap: {base}/sitemap.xml")
+    return "\n".join(lines) + "\n"
+
+
+def _sitemap_paths(data_dir) -> list[str]:
+    paths = ["/", "/impressum/", "/datenschutz/", "/affiliate-erklaerung/"]
+    paths += [f"/kategorie/{key}/" for key, _label in SITE_CATEGORIES]
+    return paths
+
+
+def render_sitemap_xml(data_dir, *, environ=None) -> str | None:
+    base = _real_base_url(environ)
+    if not base:
+        return None
+    locs = [base + p for p in _sitemap_paths(data_dir)]
+    locs += [c.live_url for c in _real_guide_cards(data_dir)]
+    body = "".join(f"<url><loc>{_esc(u)}</loc></url>" for u in locs)
+    return ('<?xml version="1.0" encoding="UTF-8"?>'
+           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+           f"{body}</urlset>")
+
+
+# ---------------------------------------------------------------------------
 # assembly + deploy
 # ---------------------------------------------------------------------------
 
@@ -393,6 +447,10 @@ def build_site_artifact(data_dir) -> DeploymentArtifact:
     files: dict[str, str] = {"index.html": render_homepage(data_dir)}
     files.update(all_category_pages(data_dir))
     files.update(render_legal_pages())
+    files["robots.txt"] = render_robots_txt()
+    sitemap = render_sitemap_xml(data_dir)
+    if sitemap:
+        files["sitemap.xml"] = sitemap
     return DeploymentArtifact(opportunity_id="site", slug=SITE_ROOT_SLUG, files=files)
 
 
