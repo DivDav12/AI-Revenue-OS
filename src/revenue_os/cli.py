@@ -632,8 +632,10 @@ def _cmd_pipeline_cycle(args) -> int:
         if chain.get("status") == "completed":
             print(f"  chain:       completed - live at {chain.get('asset_live_url')}")
         else:
+            reason = chain.get("reason", "")
+            reason_text = "; ".join(reason) if isinstance(reason, (list, tuple)) else str(reason)
             print(f"  chain:       {chain.get('status')} "
-                  f"({chain.get('step')}: {chain.get('reason')})")
+                  f"({chain.get('step')}: {reason_text})")
     if "pin" in report:
         print(f"  pin draft:   {report['pin']['pin_id']}")
     if "digital_product" in report:

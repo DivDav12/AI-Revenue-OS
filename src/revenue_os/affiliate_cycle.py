@@ -14,12 +14,14 @@ never silently skipped and never crashing the rest of the cycle -
 human.
 
 GitHub Pages deployment is autonomous ONLY when an already-configured
-GITHUB_TOKEN + GITHUB_PAGES_REPO resolve
-(`deployment.default_deployment_adapter().authorized`) - this module
-never requests, prints, or rotates that credential; it only checks
-whether deploy would succeed BEFORE attempting it, so a missing
-credential is reported as one clear HUMAN SETUP REQUIRED line instead of
-a confusing failure deep in the chain. `deploy.py`'s own `_redact()`
+GITHUB_TOKEN + GITHUB_PAGES_REPO resolve. This module never requests,
+prints, or rotates that credential. Content build, quality gate, and
+link creation need no credential at all and always run regardless -
+only the final deploy step is credential-gated, and
+`ecosystem.affiliate_pipeline.run_affiliate_chain()`'s own
+`deploy_asset()` call already resolves the adapter and fails closed
+(never fabricates a live URL) if unauthorized, reporting a precise
+`human_required` at the `deploy` step. `deploy.py`'s own `_redact()`
 guarantees the token itself never appears in any error message this
 module could surface.
 
@@ -80,24 +82,23 @@ def run_cycle(data_dir, *, source_names=DEFAULT_REAL_SOURCES, limit_per_source: 
     draft = draft_from_record(rec)
 
     # 2. Affiliate Chain: content -> QC -> link -> GitHub Pages deploy.
-    #    Autonomous ONLY if a GitHub credential already resolves (or a
-    #    test explicitly injected a fake adapter - never a real bypass).
+    # Always attempted - build_asset/QC/create_link need no credential at
+    # all and are safe local work; only the final deploy step is
+    # credential-gated. `run_affiliate_chain`'s own deploy_asset() call
+    # already resolves the adapter and fails closed (never fabricates a
+    # live URL) if unauthorized, so a separate pre-check here would only
+    # throw away real, safe work for no safety benefit - see
+    # `deployment.GitHubPagesDeploymentAdapter.deploy()`'s own
+    # DeployError handling and `deploy.py`'s `_redact()` guarantee.
     adapter = deployment_adapter if deployment_adapter is not None else default_deployment_adapter()
-    if not adapter.authorized:
+    chain_result = run_affiliate_chain(data_dir, opportunity_id=opportunity_id,
+                                       draft=draft, now_iso=now_iso,
+                                       deployment_adapter=adapter)
+    if chain_result["status"] != "completed":
+        reason = chain_result.get("reason", "")
+        reason_text = "; ".join(reason) if isinstance(reason, (list, tuple)) else str(reason)
         human_actions.append(
-            "DEPLOYMENT: no GitHub Pages credential configured (GITHUB_TOKEN + "
-            "GITHUB_PAGES_REPO) - set them yourself; the fleet never requests, "
-            "prints, or rotates this credential")
-        chain_result = {"status": "human_required", "step": "deploy_precheck",
-                        "reason": "no GitHub Pages credential configured"}
-    else:
-        chain_result = run_affiliate_chain(data_dir, opportunity_id=opportunity_id,
-                                           draft=draft, now_iso=now_iso,
-                                           deployment_adapter=adapter)
-        if chain_result["status"] != "completed":
-            human_actions.append(
-                f"AFFILIATE CHAIN ({chain_result.get('step', '?')}): "
-                f"{chain_result.get('reason', '')}")
+            f"AFFILIATE CHAIN ({chain_result.get('step', '?')}): {reason_text}")
     report["chain"] = chain_result
 
     # 3. Distribution: Pinterest pin draft - only once something is

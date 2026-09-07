@@ -150,9 +150,43 @@ class FullPipelineE2ETests(unittest.TestCase):
                 source_kwargs={"file": {"path": str(self.signal_path)}},
                 now_iso="2026-09-07T12:00:00Z")  # no deployment_adapter injected
             self.assertEqual(report["chain"]["status"], "human_required")
-            self.assertEqual(report["chain"]["step"], "deploy_precheck")
-            self.assertTrue(any("DEPLOYMENT" in a for a in report["human_actions"]))
+            self.assertEqual(report["chain"]["step"], "deploy")
+            self.assertTrue(any("GITHUB_TOKEN" in r for r in report["chain"]["reason"]))
+            self.assertTrue(any("AFFILIATE CHAIN" in a and "GITHUB_TOKEN" in a
+                                for a in report["human_actions"]))
             self.assertNotIn("pin", report)  # never drafts a pin for a page that isn't live
+        finally:
+            for k, v in backup.items():
+                if v is not None:
+                    os.environ[k] = v
+
+    def test_content_build_and_qc_happen_even_without_a_deploy_credential(self):
+        # build_asset/QC/create_link need no credential and are safe local
+        # work - they must run and persist even when deploy is blocked,
+        # not be thrown away by an unnecessary pre-check.
+        import os
+        backup = {k: os.environ.pop(k, None) for k in ("GITHUB_TOKEN", "GITHUB_PAGES_REPO")}
+        try:
+            affiliate_sources.ingest_affiliate_offer(self.d, _offer_json())
+            report = run_cycle(
+                self.d, source_names=("file",),
+                source_kwargs={"file": {"path": str(self.signal_path)}},
+                now_iso="2026-09-07T12:00:00Z")
+            self.assertEqual(report["chain"]["status"], "human_required")
+            asset_id = report["chain"]["asset_id"]
+            link_id = report["chain"]["link_id"]
+            self.assertTrue(asset_id)
+            self.assertTrue(link_id)
+
+            asset = AffiliateAssetStore.load(self.d).get(asset_id)
+            self.assertIsNotNone(asset)
+            self.assertTrue(asset.quality_checks.get("meets_min_words"))
+            self.assertTrue(asset.quality_checks.get("has_disclosure"))
+            self.assertEqual(asset.live_url, "")  # never fabricated - not actually live
+
+            link = AffiliateLinkStore.load(self.d).get(link_id)
+            self.assertIsNotNone(link)
+            self.assertTrue(link.target_url)
         finally:
             for k, v in backup.items():
                 if v is not None:

@@ -68,7 +68,7 @@ class PipelineCycleCliTests(unittest.TestCase):
                               "--source", "file", "--source-path", str(self.signal_path)])
             self.assertEqual(code, 0)
             self.assertIn("SELECTED", out)
-            self.assertIn("DEPLOYMENT", out)
+            self.assertIn("AFFILIATE CHAIN", out)
             self.assertIn("GITHUB_TOKEN", out)
             # never claims a live URL when nothing was actually deployed
             self.assertNotIn("live at", out)
