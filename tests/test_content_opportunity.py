@@ -152,6 +152,35 @@ class DuplicatePreventionTests(unittest.TestCase):
         self.assertTrue(candidates[0].already_has_a_page)
         self.assertFalse(candidates[0].recommend_page)
 
+    def test_a_qc_failed_not_yet_deployed_asset_never_permanently_blocks_a_retry(self):
+        # regression: a topic whose ONLY past attempt failed the quality
+        # gate (e.g. the offer had no evidence yet at build time) must
+        # stay retryable once the offer is fixed - it must never be
+        # treated the same as a topic that already has a real page.
+        from revenue_os.ecosystem.affiliate_model import AffiliateAsset, AffiliateAssetStore
+
+        d = _tmp()
+        store = AffiliateOfferStore.load(d)
+        store.upsert(_offer())
+        store.save()
+        draft = _real_draft("looking for a good funnel builder", category="online-business-platform")
+        DiscoveryEngine(d, sources=[_OneDraftSource(draft)]).run(limit_per_source=5)
+        oid = load_opportunities(d).all()[0]["id"]
+
+        astore = AffiliateAssetStore.load(d)
+        astore.upsert(AffiliateAsset(
+            asset_id="asset-failed", opportunity_id=oid, offer_id="aff-systeme",
+            live_url="",  # never deployed
+            quality_checks={"meets_min_words": True, "has_disclosure": True,
+                            "has_cta": True, "has_evidence": False,
+                            "has_demand_quote": True}))
+        astore.save()
+
+        candidates = co.find_content_opportunities(d, offer_id="aff-systeme")
+        self.assertEqual(len(candidates), 1)
+        self.assertFalse(candidates[0].already_has_a_page)
+        self.assertTrue(candidates[0].recommend_page)
+
 
 class ExclusionTests(unittest.TestCase):
     def test_synthetic_records_are_excluded(self):

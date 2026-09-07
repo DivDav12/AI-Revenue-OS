@@ -252,17 +252,29 @@ def build_asset(data_dir, *, opportunity_id: str, draft: OpportunityDraft,
     deployed - `deploy_asset()` is the separate, explicit publish step, so
     a failed quality gate never reaches deployment). Idempotent per
     (opportunity_id, offer_id): re-running returns the existing asset
-    record rather than minting a duplicate."""
+    record rather than minting a duplicate - but re-renders and recomputes
+    the quality gate fresh every time (cheap, deterministic, no I/O)
+    rather than trusting a previously-stored `quality_checks` verbatim,
+    because the OFFER referenced by `offer_id` can legitimately change
+    after the first build (e.g. a human adds real `evidence` that was
+    missing before) - the same reasoning `deploy_asset()` already
+    documents for re-rendering right before publish. A stale
+    `has_evidence: False` from the very first build must never
+    permanently block an asset once the underlying offer is fixed."""
     store = AffiliateAssetStore.load(data_dir)
-    for existing in store.by_opportunity(opportunity_id):
-        if existing.offer_id == match.offer.offer_id:
-            checks = existing.quality_checks
-            ok, reasons = check_quality(checks)
-            return existing, ok, reasons
-
     page, checks = render_comparison_page(draft=draft, match=match, cta_url=cta_url,
                                           guide_title=guide_title, related_links=related_links)
     ok, reasons = check_quality(checks)
+
+    for existing in store.by_opportunity(opportunity_id):
+        if existing.offer_id == match.offer.offer_id:
+            if existing.quality_checks != checks:
+                existing.quality_checks = checks
+                existing.disclosure_included = checks["has_disclosure"]
+                store.upsert(existing)
+                store.save()
+            return existing, ok, reasons
+
     slug = _slugify(f"{draft.title}-{match.offer.product_name}")
     asset = AffiliateAsset(
         asset_id=new_id("asset"), opportunity_id=opportunity_id,

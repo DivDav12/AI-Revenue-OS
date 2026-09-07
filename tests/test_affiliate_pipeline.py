@@ -430,6 +430,37 @@ class AssetGenerationTests(unittest.TestCase):
         self.assertEqual(a1.asset_id, a2.asset_id)
         self.assertTrue(ok1 and ok2)
 
+    def test_build_asset_re_checks_quality_when_the_offer_gains_evidence_later(self):
+        # regression: a human fixes a real offer (adds evidence that was
+        # missing on the first build) - the SAME opportunity/offer pair
+        # must re-pass quality on the next build_asset() call, not stay
+        # stuck forever on the stale "no evidence" verdict from before the
+        # fix (the asset_id must not change - still the same asset row).
+        d = _tmp()
+        draft = _demand_draft()
+        offer = affiliate_model.AffiliateOffer(
+            offer_id="o-eve", network="generic_saas_program", program_name="Acme Affiliates",
+            product_name="Acme Cloud Hosting", product_price=20.0,
+            commission=affiliate_model.CommissionModel(kind="percent", rate=0.3),
+            evidence=(), status=model.POLICY_OK)
+        match = affiliate_matching.AffiliateMatch(offer=offer, match_score=0.6, demand_strength=0.6)
+
+        a1, ok1, reasons1 = affiliate_assets.build_asset(
+            d, opportunity_id="op-eve", draft=draft, match=match, cta_url="x")
+        self.assertFalse(ok1)
+        self.assertIn("no program evidence to back the product claims", reasons1)
+        self.assertFalse(a1.quality_checks["has_evidence"])
+
+        offer.evidence = ("Acme dashboard: real, human-supplied product facts",)
+        a2, ok2, reasons2 = affiliate_assets.build_asset(
+            d, opportunity_id="op-eve", draft=draft, match=match, cta_url="x")
+        self.assertEqual(a1.asset_id, a2.asset_id)
+        self.assertTrue(ok2, reasons2)
+        self.assertTrue(a2.quality_checks["has_evidence"])
+
+        reloaded = affiliate_model.AffiliateAssetStore.load(d).get(a1.asset_id)
+        self.assertTrue(reloaded.quality_checks["has_evidence"])
+
 
 # ---------------------------------------------------------------------------
 # 6. link creation + attribution

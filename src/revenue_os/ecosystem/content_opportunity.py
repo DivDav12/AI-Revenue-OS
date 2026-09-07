@@ -147,6 +147,7 @@ def find_content_opportunities(data_dir, *, offer_id: str, limit: int = 200) -> 
     entries are still returned (visibility) but `recommend_page` is always
     False for them (duplicate prevention - never propose a second page for
     a topic we already cover)."""
+    from . import affiliate_assets
     from .affiliate_model import AffiliateAssetStore, AffiliateOfferStore
     from .pipeline import draft_from_record
     from ..opportunity_store import load_opportunities
@@ -155,7 +156,17 @@ def find_content_opportunities(data_dir, *, offer_id: str, limit: int = 200) -> 
     if offer is None:
         return []
 
-    covered_opportunity_ids = {a.opportunity_id for a in AffiliateAssetStore.load(data_dir).all()}
+    # "covered" = either already live (deploy_asset() re-checks quality
+    # right before publishing, so a live_url is proof it passed), or a
+    # not-yet-deployed asset that currently passes the quality gate. An
+    # asset that FAILED the gate (e.g. the offer had no evidence yet at
+    # build time) must never permanently block this opportunity from
+    # being retried once the offer is fixed - build_asset() itself
+    # already re-renders and re-checks fresh on every call for exactly
+    # this reason; this selection layer must agree with it.
+    covered_opportunity_ids = {
+        a.opportunity_id for a in AffiliateAssetStore.load(data_dir).all()
+        if a.live_url or affiliate_assets.check_quality(a.quality_checks)[0]}
 
     out: list[ContentOpportunity] = []
     for rec in load_opportunities(data_dir).all()[:limit]:
