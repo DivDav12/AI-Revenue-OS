@@ -9,12 +9,21 @@ income from €0 starting capital, with no paid ads, no paid SaaS, no
 credit card, and no bypassing of identity/KYC requirements.
 
 The selected model (researched and scored — see
-`docs/BUSINESS_MODEL_RESEARCH.md`) is an **organic content + affiliate
-engine, Pinterest-accelerated**: quality-gated comparison pages on an
-owned static site, monetized via affiliate networks (Amazon Associates,
-Awin, CJ, systeme.io, ...), with Pinterest pin drafts as a fast, $0
-organic traffic channel. A digital-product upsell (Gumroad-hosted
-templates/printables) is a planned next increment, not yet built.
+`docs/BUSINESS_MODEL_RESEARCH.md` and the superseding
+`docs/BUSINESS_MODEL_SCORING.md`) is an **organic content + multi-network
+affiliate engine, Pinterest-accelerated**: quality-gated comparison
+pages on an owned static site, monetized via affiliate networks (Amazon
+Associates, Awin, CJ — never assume approval, only ever use a currently
+usable/configured network), with Pinterest pin drafts as a fast, $0
+organic traffic channel, and a digital-product upsell (Gumroad/Payhip
+templates/guides) as a parallel path that never blocks the affiliate
+pipeline. Built: `revenue_os pipeline-cycle` — see `docs/ARCHITECTURE.md`,
+`docs/AUTONOMY.md`, `docs/OPERATIONS.md`.
+
+The hard LLM/API budget ceiling is exactly **$3.00** (`budget_guard.py`,
+`CAP_USD`), not $3.20 — the old `budget.py`'s pre-sale-cap-plus-growth-
+capital concept belonged to the retired service business and does not
+apply to this pipeline.
 
 The founder-outreach "Customer Launch Plan" service-business line from
 the prior mission is retired (not deleted — see
@@ -234,22 +243,30 @@ niche or offer will work. Revenue is not guaranteed.
 
 ## Current Priority
 
-The foundation (agent runtime, task system, dashboard, safety fabric) is
-built. Current priority, in order:
+The foundation AND the affiliate/content pipeline are built and tested
+end to end with fake adapters (`revenue_os pipeline-cycle` — see
+`docs/ARCHITECTURE.md`). Current priority, in order:
 
-1. A human joins at least one real affiliate program (Amazon Associates
-   or Awin) and one Pinterest account — both free, no card, no bank
-   needed to start; see `ecosystem/affiliate_model.NETWORK_POLICY` for
-   the exact per-network setup steps.
-2. Deploy a small number of real, quality-gated content pages for those
-   offers.
-3. Draft and post Pinterest pins for those pages (`pinterest-draft` /
-   `pinterest-pending` / `pinterest-mark-posted`); measure real clicks.
+1. A human joins at least one real affiliate program (Amazon Associates,
+   Awin, or CJ) and one Pinterest account — both free, no card, no bank
+   needed to start; see `docs/SETUP.md` and
+   `ecosystem/affiliate_model.NETWORK_POLICY` for the exact per-network
+   setup steps. Set `GITHUB_TOKEN`/`GITHUB_PAGES_REPO` too.
+2. Run `revenue_os pipeline-cycle` on a schedule (cron / GitHub Actions,
+   $0); it will discover, select, build, deploy, and draft a Pinterest
+   pin on its own once step 1 is done, and print exactly what still
+   needs you.
+3. Post the drafted pins yourself; measure real clicks
+   (`pipeline-cycle`'s measurement/optimization steps already run).
 4. Only once that loop produces a real click/conversion signal, expand:
-   more niches, more offers, then the planned digital-product agent.
+   more niches (join more networks), and only then consider the deferred
+   extensions in `docs/ARCHITECTURE.md` (Pinterest API automation,
+   digital-product upload automation, dashboard rework).
 
-Do not build the digital-product agent or additional distribution
-channels before step 1–3 have real data.
+Do not build the deferred extensions before step 1–3 have real data. Do
+not delete the still-undeleted, superseded 26-agent-roster-era modules
+without a full per-module dependency audit first (see `ARCHITECTURE.md`'s
+"not deleted this pass" list) — that is a separate, later task.
 
 
 

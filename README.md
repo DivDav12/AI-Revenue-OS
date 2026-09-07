@@ -1,11 +1,34 @@
 # AI-Revenue-OS
 Autonomous multi-agent AI revenue ecosystem
 
-**Business model:** an organic content + affiliate engine, Pinterest-
-accelerated — €0 start, no ads, no paid SaaS. Researched, scored against
-23 alternatives, and selected in
-[docs/BUSINESS_MODEL_RESEARCH.md](docs/BUSINESS_MODEL_RESEARCH.md).
-Architecture: [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md).
+**Business model:** an organic content + multi-network affiliate engine,
+Pinterest-accelerated, with a digital-product upsell — €0 start, no ads,
+no paid SaaS. Researched and scored against 33 alternatives with an
+adversarial review; see
+[docs/BUSINESS_MODEL_RESEARCH.md](docs/BUSINESS_MODEL_RESEARCH.md) and
+[docs/BUSINESS_MODEL_SCORING.md](docs/BUSINESS_MODEL_SCORING.md).
+Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) ·
+Autonomy: [docs/AUTONOMY.md](docs/AUTONOMY.md) ·
+Safety: [docs/SAFETY.md](docs/SAFETY.md) ·
+Setup: [docs/SETUP.md](docs/SETUP.md) ·
+Operations: [docs/OPERATIONS.md](docs/OPERATIONS.md) ·
+Costs: [docs/COSTS.md](docs/COSTS.md) ·
+Risks: [docs/RISKS.md](docs/RISKS.md)
+
+## Pipeline cycle (`pipeline-cycle`)
+
+One bounded, schedulable cycle through the whole pipeline: real
+discovery → select → build → QC → GitHub Pages deploy → Pinterest pin
+draft → digital-product draft (parallel) → measure → optimize. Safe to
+run repeatedly at $0; never crashes on a blocked step, always reports
+exactly what needs a human.
+
+```
+revenue_os pipeline-cycle --data-dir data [--source hn,remoteok] [--json]
+```
+
+See [docs/OPERATIONS.md](docs/OPERATIONS.md) for the full human-action
+playbook.
 
 ## Pinterest distribution (`pinterest-draft` / `pinterest-pending` / `pinterest-mark-posted`)
 

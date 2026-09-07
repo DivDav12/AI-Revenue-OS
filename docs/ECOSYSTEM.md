@@ -163,11 +163,29 @@ revenue_os ecosystem-status
 - Real ads / supplier orders / affiliate-network fees are
   `MONEY_APPROVAL_REQUIRED`.
 
+## Correction (V2 architecture pass)
+
+The line below previously read "AFFILIATE strategy produces only a
+prepared, human-gated plan" - that was **stale documentation, not
+accurate code behavior**: `affiliate_pipeline.run_affiliate_chain()`
+already implements a real, autonomous MATCH -> EVALUATE -> BUILD ASSET
+-> CREATE LINK -> DEPLOY -> DISTRIBUTE chain, fail-closed per step, and
+reaches an actual live GitHub Pages asset when a usable offer and a
+GitHub credential both exist. See `docs/ARCHITECTURE.md` for the new
+`opportunity_agent` / `affiliate_chain_agent` / `pinterest_distributor`
+/ `measurement_agent` / `optimization_agent` layer built on top of it,
+and `revenue_os pipeline-cycle` for the schedulable entry point.
+
 ## Not yet built (next phases)
 
-- Fully autonomous chains for TASK / AFFILIATE / ECOMMERCE strategies
-  (spec §11, §13, §14) - today they produce a prepared, human-gated plan.
+- Fully autonomous chains for TASK / ECOMMERCE strategies (spec §11,
+  §14) - today they produce a prepared, human-gated plan. AFFILIATE is
+  built (see correction above).
 - Ad Strategy experiment loop with a real test budget (spec §17) - the
-  autonomy layer already classes it `HUMAN_APPROVAL_REQUIRED`.
+  autonomy layer already classes it `HUMAN_APPROVAL_REQUIRED`, and no ad
+  spend is in scope for the selected business model regardless.
 - Dashboard / JARVIS panels for the ecosystem read model
   (`ecosystem/intel.py` is the data layer, wired to `ecosystem-status`).
+- Pinterest API integration for actual autonomous posting, browser
+  automation for any platform, and digital-product upload automation -
+  see `docs/ARCHITECTURE.md`'s "deferred extensions" list.

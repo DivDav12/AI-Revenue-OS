@@ -22,6 +22,8 @@ Read commands:
   acquisition-rescore   re-score the whole lead store with the current model ($0)
   acquisition-queue     high/medium prospects still waiting on a human (de-duped)
   outreach-status ID posted|skipped   record what YOU did with a drafted brief
+  pipeline-cycle   one bounded affiliate/content pipeline cycle - discover -> select ->
+                   build -> QC -> deploy -> pin draft -> digital product -> measure -> optimize
   pinterest-draft ASSET_ID   draft a Pinterest pin for a deployed affiliate asset ($0, never posts)
   pinterest-pending          pin drafts still waiting on a human to post or skip
   pinterest-mark-posted ID posted|skipped   record what YOU did with a drafted pin
@@ -594,6 +596,56 @@ def _cmd_acquisition_queue(args) -> int:
         print()
     print("The system drafted these. You check each community's self-promotion "
           "rules and post every reply yourself - it never posts, DMs, or emails.")
+    return 0
+
+
+def _cmd_pipeline_cycle(args) -> int:
+    from datetime import datetime, timezone
+
+    from .affiliate_cycle import run_cycle
+    from .opportunity_agent import DEFAULT_REAL_SOURCES
+
+    data_dir = _data_dir(args)
+    source_names = tuple(args.sources) if args.sources else DEFAULT_REAL_SOURCES
+    source_kwargs = {}
+    if "file" in source_names:
+        if not args.source_path:
+            raise ValueError("--source file needs --source-path")
+        source_kwargs["file"] = {"path": args.source_path}
+    report = run_cycle(data_dir, source_names=source_names,
+                       limit_per_source=args.limit_per_source,
+                       source_kwargs=source_kwargs,
+                       now_iso=datetime.now(timezone.utc).isoformat())
+    if args.json:
+        print(json.dumps(report, indent=2, default=str))
+        return 0
+
+    print(f"PIPELINE CYCLE  ({report['ran_at']})")
+    if "discovery_error" in report:
+        print(f"  discovery FAILED: {report['discovery_error']}")
+        return 1
+    sel = report.get("selection", {})
+    print(f"  opportunity: {sel.get('status')}"
+          + (f" - {sel.get('reason')}" if sel.get("reason") else ""))
+    chain = report.get("chain")
+    if chain:
+        if chain.get("status") == "completed":
+            print(f"  chain:       completed - live at {chain.get('asset_live_url')}")
+        else:
+            print(f"  chain:       {chain.get('status')} "
+                  f"({chain.get('step')}: {chain.get('reason')})")
+    if "pin" in report:
+        print(f"  pin draft:   {report['pin']['pin_id']}")
+    if "digital_product" in report:
+        print(f"  digital product: {report['digital_product']['product_id']}")
+    print()
+    actions = report.get("human_actions") or []
+    if actions:
+        print("Needs you:")
+        for a in actions:
+            print(f"  - {a}")
+    else:
+        print("Nothing needs you this cycle.")
     return 0
 
 
@@ -2705,6 +2757,22 @@ def build_parser() -> argparse.ArgumentParser:
                         help="ignore the cached draft and re-call the API")
     obrief.add_argument("--json", action="store_true")
     obrief.set_defaults(func=_cmd_outreach_brief)
+
+    pcycle = sub.add_parser(
+        "pipeline-cycle", parents=[common],
+        help="one bounded affiliate/content pipeline cycle: real discovery -> "
+             "select -> build -> QC -> GitHub Pages deploy -> pin draft -> "
+             "digital product draft -> measure -> optimize. Safe to run "
+             "repeatedly on a schedule ($0); never crashes on a blocked step.",
+    )
+    pcycle.add_argument("--source", action="append", dest="sources", default=None,
+                        help="real source name (hn, remoteok, file) - repeatable; "
+                             "default: hn, remoteok")
+    pcycle.add_argument("--limit-per-source", type=int, default=25)
+    pcycle.add_argument("--source-path", default=None,
+                        help="path for --source file (a curated JSON signal list)")
+    pcycle.add_argument("--json", action="store_true")
+    pcycle.set_defaults(func=_cmd_pipeline_cycle)
 
     pdraft = sub.add_parser(
         "pinterest-draft", parents=[common],

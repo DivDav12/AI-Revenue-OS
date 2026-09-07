@@ -14,11 +14,14 @@ from pathlib import Path
 from revenue_os import action_class
 from revenue_os.ecosystem.affiliate_model import AffiliateAsset, PIN_DRAFT, PIN_POSTED, PIN_SKIPPED
 from revenue_os.ecosystem.pinterest_pins import (
+    MAX_PINS_DRAFTED_PER_DAY,
     PIN_DISCLOSURE,
     PinDraftError,
+    PinRateLimitExceeded,
     draft_pin,
     mark_posted,
     pending_pins,
+    pins_drafted_on,
 )
 from revenue_os.messages import Task
 from revenue_os.pinterest_agent import PinterestDistributorAgent
@@ -97,6 +100,60 @@ class DraftPinTests(unittest.TestCase):
         pending = pending_pins(self.data_dir)
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0].asset_id, "asset-2")
+
+
+class RateLimitTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.data_dir = Path(self._tmp.name)
+
+    def test_rate_limit_is_a_documented_internal_policy_not_pinterests(self):
+        # the docstring/wording contract: this must never claim to be an
+        # official Pinterest limit.
+        import inspect
+
+        from revenue_os.ecosystem import pinterest_pins as mod
+        src = " ".join(inspect.getsource(mod).replace("#:", " ").split())
+        self.assertIn("NOT an official Pinterest-published limit", src)
+        self.assertNotIn("Pinterest limit is", src)
+
+    def test_drafts_up_to_the_daily_cap_then_refuses(self):
+        for i in range(MAX_PINS_DRAFTED_PER_DAY):
+            draft_pin(self.data_dir, asset=_asset(asset_id=f"asset-{i}"),
+                     product_name=f"Product {i}", now_iso="2026-09-07T10:00:00Z")
+        self.assertEqual(pins_drafted_on(self.data_dir, date="2026-09-07"),
+                         MAX_PINS_DRAFTED_PER_DAY)
+        with self.assertRaises(PinRateLimitExceeded):
+            draft_pin(self.data_dir, asset=_asset(asset_id="asset-overflow"),
+                     product_name="One too many", now_iso="2026-09-07T11:00:00Z")
+
+    def test_a_new_day_resets_the_counter(self):
+        for i in range(MAX_PINS_DRAFTED_PER_DAY):
+            draft_pin(self.data_dir, asset=_asset(asset_id=f"asset-{i}"),
+                     product_name=f"Product {i}", now_iso="2026-09-07T10:00:00Z")
+        # tomorrow: must not raise
+        pin = draft_pin(self.data_dir, asset=_asset(asset_id="asset-tomorrow"),
+                        product_name="Fresh day", now_iso="2026-09-08T00:00:01Z")
+        self.assertTrue(pin.pin_id)
+
+    def test_rate_limit_never_blocks_re_fetching_an_existing_draft(self):
+        for i in range(MAX_PINS_DRAFTED_PER_DAY):
+            draft_pin(self.data_dir, asset=_asset(asset_id=f"asset-{i}"),
+                     product_name=f"Product {i}", now_iso="2026-09-07T10:00:00Z")
+        # re-drafting an ALREADY-drafted asset is idempotent, never rate-limited
+        again = draft_pin(self.data_dir, asset=_asset(asset_id="asset-0"),
+                          product_name="Product 0", now_iso="2026-09-07T12:00:00Z")
+        self.assertTrue(again.pin_id)
+
+    def test_no_now_iso_skips_rate_limiting_but_still_works(self):
+        # callers that don't supply a timestamp (e.g. older direct calls)
+        # are not rate-limited - only real CLI/agent callers that pass a
+        # real now_iso get paced.
+        for i in range(MAX_PINS_DRAFTED_PER_DAY + 2):
+            pin = draft_pin(self.data_dir, asset=_asset(asset_id=f"asset-{i}"),
+                            product_name=f"Product {i}")
+            self.assertTrue(pin.pin_id)
 
 
 class SafetyGateTests(unittest.TestCase):

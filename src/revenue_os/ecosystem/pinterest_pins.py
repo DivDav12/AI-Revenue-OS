@@ -41,6 +41,39 @@ class PinDraftError(ValueError):
     """Raised when an asset is not eligible to be drafted into a pin."""
 
 
+#: Internal, conservative pacing policy for how many pin DRAFTS this
+#: system will queue as "ready to post" per calendar day. This is OUR OWN
+#: safety choice, informed by third-party 2026 reports describing an
+#: observed safe range of roughly 5-15 pins/day for automated posting on
+#: a similarly-sized account. It is explicitly NOT an official
+#: Pinterest-published limit, Pinterest publishes no such number, and
+#: Pinterest's actual spam-detection behavior could change at any time
+#: without notice. Never describe this constant - in code, tests, docs,
+#: or CLI output - as an official Pinterest limit or a safety guarantee.
+MAX_PINS_DRAFTED_PER_DAY = 10
+
+
+class PinRateLimitExceeded(PinDraftError):
+    """Raised when drafting another pin would exceed our own conservative
+    daily pacing policy (MAX_PINS_DRAFTED_PER_DAY) - this is a policy WE
+    chose, never a Pinterest-reported error."""
+
+
+def _date_part(iso_ts: str) -> str:
+    """The 'YYYY-MM-DD' prefix of an ISO timestamp - no timezone library
+    needed, matching this codebase's existing now_iso()-string convention
+    elsewhere. Empty input yields "" (rate limiting is skipped - see
+    draft_pin())."""
+    return (iso_ts or "")[:10]
+
+
+def pins_drafted_on(data_dir, *, date: str) -> int:
+    """How many pin drafts already exist with created_at on this calendar
+    date (plain date-prefix comparison)."""
+    store = PinterestPinStore.load(data_dir)
+    return sum(1 for p in store.all() if _date_part(p.created_at) == date)
+
+
 def _clip(text: str, limit: int) -> str:
     text = " ".join((text or "").split())
     return text if len(text) <= limit else text[: max(0, limit - 1)].rstrip() + "…"
@@ -68,6 +101,14 @@ def draft_pin(data_dir, *, asset: AffiliateAsset, product_name: str = "",
         raise PinDraftError(
             f"asset {asset.asset_id!r} has no live_url - deploy it first; "
             "a pin is never drafted against a page that is not actually live")
+
+    today = _date_part(now_iso)
+    if today and pins_drafted_on(data_dir, date=today) >= MAX_PINS_DRAFTED_PER_DAY:
+        raise PinRateLimitExceeded(
+            f"internal pacing policy reached: {MAX_PINS_DRAFTED_PER_DAY} pin draft(s) "
+            f"already queued for {today}. This is our own conservative safety choice "
+            "(not an official Pinterest limit) - try again tomorrow, or a human may "
+            "deliberately raise MAX_PINS_DRAFTED_PER_DAY in code and redeploy.")
 
     name = (product_name or asset.title or "Produkt").strip()
     topic = (asset.guide_title or asset.title or name).strip()

@@ -1,3 +1,12 @@
+> **Note:** this document's Phase 1 model table and sources are still the
+> authoritative research base. A stricter, explicitly-weighted rescoring
+> (33 models, an adversarial review, and a documented Top 3 + final
+> winner) was done in a later pass — see
+> [`BUSINESS_MODEL_SCORING.md`](BUSINESS_MODEL_SCORING.md), which
+> supersedes the scoring/selection sections below. The winning model
+> category is unchanged; the later pass added multi-network affiliate
+> diversification and Pinterest rate-limiting as binding requirements.
+
 # Business Model Research — Phase 1 & 2 (2026-09)
 
 Mission pivot: the prior "any business model, founder-outreach + Customer
