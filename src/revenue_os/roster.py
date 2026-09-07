@@ -62,6 +62,12 @@ AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec("supplier_finder", "Supplier Finder", "discovery", "Sourcing feasibility",
               "find_suppliers", node="discovery", status="live",
               depends_on=("opportunity_finder",)),
+    # Affiliate/content pipeline (business-model research, phase 5/6): real
+    # public-signal discovery -> deterministic score/select against a
+    # currently-usable affiliate offer. See opportunity_agent.py.
+    AgentSpec("opportunity_agent", "Opportunity Agent", "discovery",
+              "Real discovery + score/select", "discover_and_select_opportunity",
+              node="discovery", status="live"),
     # --- build cluster --------------------------------------------------
     AgentSpec("content_creator", "Content Creator", "build", "Launch page",
               "package_deliverable", node="content", status="live",
@@ -82,6 +88,13 @@ AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec("automation_engineer", "Automation Engineer", "build", "Ops automation",
               "automate", node="decision", gate="human", status="live",
               depends_on=("opportunity_finder",)),
+    # Content -> QC -> link -> GitHub Pages deploy, as one atomic,
+    # idempotent step (wraps ecosystem.affiliate_pipeline.run_affiliate_chain).
+    # Autonomous only once a GitHub credential is actually configured -
+    # never requests/prints/rotates it. See affiliate_chain_agent.py.
+    AgentSpec("affiliate_chain_agent", "Affiliate Chain Agent", "build",
+              "Content, QC, link, deploy", "run_affiliate_chain", node="content",
+              status="live", depends_on=("opportunity_agent",)),
     # --- acquisition cluster (Phase 2: autonomous customer acquisition) ---
     # Finds public "how do I get my first customers" posts, scores them, and
     # drafts a human-review outreach reply. The system never posts, DMs, or
@@ -105,6 +118,15 @@ AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec("distribution_strategist", "Distribution Strategist", "acquisition",
               "Channel research & priority", "research_distribution",
               node="offer", status="live", depends_on=("opportunity_finder",)),
+    # Turns an already-deployed, quality-passed affiliate asset into a
+    # Pinterest pin draft (business-model research, phase 1/2: Pinterest is
+    # the fastest $0 organic-traffic channel available - see
+    # docs/BUSINESS_MODEL_RESEARCH.md). Human-gated: the fleet never logs
+    # into Pinterest or posts - a person reviews the draft and pins it from
+    # their own free Pinterest account.
+    AgentSpec("pinterest_distributor", "Pinterest Distributor", "acquisition",
+              "Organic pin drafts", "prepare_pinterest_pin", node="offer",
+              gate="human", status="live"),
     # --- marketing cluster (all human-gated: real ad spend) -----------
     AgentSpec("ads_manager", "Ads Manager", "marketing", "Campaigns",
               "run_ads", node="offer", gate="human", status="live",
@@ -122,6 +144,17 @@ AGENTS: tuple[AgentSpec, ...] = (
               "manage_profit", node="evaluator", status="live"),
     AgentSpec("revenue_analyst", "Revenue Analyst", "revenue", "ROI analysis",
               "analyze_revenue", node="analyst", status="live"),
+    # Real click aggregation (self-hosted, $0) + human-fed commission
+    # rollup - never invents a conversion. See measurement_agent.py.
+    AgentSpec("measurement_agent", "Measurement Agent", "revenue",
+              "Click + commission rollup", "measure_opportunity", node="analyst",
+              status="live", depends_on=("affiliate_chain_agent",)),
+    # Deterministic priority-weight recompute (ecosystem.learning, plain
+    # ratios, not ML) + zero-traffic flagging (recommendation only, never
+    # auto-deletes). See optimization_agent.py.
+    AgentSpec("optimization_agent", "Optimization Agent", "revenue",
+              "Priority weights + flagging", "optimize", node="evaluator",
+              status="live", depends_on=("measurement_agent",)),
     # --- support / quality cluster ---------------------------------
     AgentSpec("customer_support", "Customer Support", "support", "Customer help",
               "support_customers", node="generic", status="live"),

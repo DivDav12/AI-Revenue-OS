@@ -276,7 +276,7 @@ class ControlActionTests(unittest.TestCase):
     # --- read model ------------------------------------------------
     def test_snapshot_lists_all_agents_with_real_state(self):
         snap = jarvis_snapshot(self.d)
-        self.assertEqual(len(snap["agents"]), 25)
+        self.assertEqual(len(snap["agents"]), 30)
         self.assertFalse(snap["paused"])
         apply_control(self.d, "t", _form(action="disable", agent="designer"))
         snap = jarvis_snapshot(self.d)

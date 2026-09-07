@@ -10,6 +10,7 @@ lineage.
 from __future__ import annotations
 
 from .acquisition import AcquisitionAgent
+from .affiliate_chain_agent import AffiliateChainAgent
 from .agent import DiscoveryAgent, EvaluatorAgent
 from .ads_manager import AdsManagerAgent
 from .automation_engineer import AutomationEngineerAgent
@@ -22,10 +23,14 @@ from .deliverable import DeliverablePackagerAgent
 from .designer import DesignerAgent
 from .developer import DeveloperAgent
 from .distribution import DistributionAgent
+from .measurement_agent import MeasurementAgent
 from .normalize import to_opportunity
+from .opportunity_agent import OpportunityAgent
 from .opportunity_finder import OpportunityFinderAgent
+from .optimization_agent import OptimizationAgent
 from .orchestrator import Orchestrator
 from .outreach_agent import OutreachDrafterAgent
+from .pinterest_agent import PinterestDistributorAgent
 from .profit_master import ProfitMasterAgent
 from .quality_control import QualityControlAgent
 from .registry import AgentRegistry
@@ -56,6 +61,11 @@ _ROSTER_AGENT_CLASSES = {
     "opportunity_scorer": AcquisitionAgent,
     "outreach_drafter": OutreachDrafterAgent,
     "distribution_strategist": DistributionAgent,
+    "pinterest_distributor": PinterestDistributorAgent,
+    "opportunity_agent": OpportunityAgent,
+    "affiliate_chain_agent": AffiliateChainAgent,
+    "measurement_agent": MeasurementAgent,
+    "optimization_agent": OptimizationAgent,
     "supplier_finder": SupplierFinderAgent,
     "designer": DesignerAgent,
     "store_builder": StoreBuilderAgent,

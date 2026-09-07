@@ -1675,7 +1675,7 @@ _ECO_ZONES = {
     "marketing":   (200, 380), "revenue":     (560, 380), "support":     (920, 380),
 }
 # offsets within a zone (up to 6 agents), a friendly little cluster
-_ECO_SLOTS = [(-90, -46), (0, -66), (90, -46), (-90, 46), (0, 66), (90, 46)]
+_ECO_SLOTS = [(-90, -46), (0, -66), (90, -46), (-90, 46), (0, 66), (90, 46), (0, 0)]
 
 
 def _ecosystem_data(snap: dict) -> dict:
@@ -1699,7 +1699,7 @@ def _ecosystem_data(snap: dict) -> dict:
     nodes = {}
     for cluster, specs in by_cluster.items():
         cx, cy = _ECO_ZONES.get(cluster, (560, 260))
-        for i, spec in enumerate(specs[:6]):
+        for i, spec in enumerate(specs[: len(_ECO_SLOTS)]):
             ox, oy = _ECO_SLOTS[i] if i < len(_ECO_SLOTS) else (0, 0)
             a = agents.get(spec.id, {})
             st = a.get("state", "idle")

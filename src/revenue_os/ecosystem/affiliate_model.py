@@ -638,3 +638,77 @@ class CommissionStore(_JsonListStore):
                 self._rows[i] = record.to_dict()
                 return
         self._rows.append(record.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# Pinterest pin drafts (organic distribution layer, business-model research
+# phase 1/2 - see docs/BUSINESS_MODEL_RESEARCH.md). A pin ALWAYS points at an
+# already-deployed AffiliateAsset's real live_url - see pinterest_pins.py,
+# which refuses to draft one otherwise. The fleet never posts a pin itself:
+# `status` only ever moves draft -> posted/skipped via a human confirming
+# what they actually did (mirrors outreach.py's draft/approved/posted
+# lifecycle - the same "the fleet drafts, a human acts" invariant).
+# ---------------------------------------------------------------------------
+
+PIN_DRAFT = "draft"
+PIN_POSTED = "posted"
+PIN_SKIPPED = "skipped"
+PIN_STATUSES = (PIN_DRAFT, PIN_POSTED, PIN_SKIPPED)
+
+
+@dataclass
+class PinterestPinDraft:
+    pin_id: str
+    asset_id: str
+    opportunity_id: str
+    dest_url: str
+    title: str
+    description: str
+    alt_text: str
+    board_suggestion: str = "Allgemein"
+    status: str = PIN_DRAFT
+    created_at: str = ""
+    posted_at: str = ""
+    note: str = ""
+
+    def to_dict(self) -> dict:
+        return {"pin_id": self.pin_id, "asset_id": self.asset_id,
+                "opportunity_id": self.opportunity_id, "dest_url": self.dest_url,
+                "title": self.title, "description": self.description,
+                "alt_text": self.alt_text, "board_suggestion": self.board_suggestion,
+                "status": self.status, "created_at": self.created_at,
+                "posted_at": self.posted_at, "note": self.note}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PinterestPinDraft":
+        d = dict(d or {})
+        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+
+
+class PinterestPinStore(_JsonListStore):
+    _FILENAME = "pinterest_pins.json"
+
+    def all(self) -> list[PinterestPinDraft]:
+        return [PinterestPinDraft.from_dict(r) for r in self._rows]
+
+    def get(self, pin_id: str) -> PinterestPinDraft | None:
+        for r in self._rows:
+            if r.get("pin_id") == pin_id:
+                return PinterestPinDraft.from_dict(r)
+        return None
+
+    def by_asset(self, asset_id: str) -> PinterestPinDraft | None:
+        for r in self._rows:
+            if r.get("asset_id") == asset_id:
+                return PinterestPinDraft.from_dict(r)
+        return None
+
+    def pending(self) -> list[PinterestPinDraft]:
+        return [p for p in self.all() if p.status == PIN_DRAFT]
+
+    def upsert(self, pin: PinterestPinDraft) -> None:
+        for i, r in enumerate(self._rows):
+            if r.get("pin_id") == pin.pin_id:
+                self._rows[i] = pin.to_dict()
+                return
+        self._rows.append(pin.to_dict())

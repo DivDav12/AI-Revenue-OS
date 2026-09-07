@@ -105,6 +105,25 @@ cost, revenue, success, failure_reason}`. `aggregate()` rolls it up;
 `priority_weights()` = win-rate ÷ overall-win-rate, clamped [0.5, 1.6],
 only once ≥ 5 outcomes have settled. Plain ratios - not ML.
 
+## Pinterest distribution (`ecosystem/pinterest_pins.py`)
+
+Selected in the Phase 1/2 business-model research
+(`docs/BUSINESS_MODEL_RESEARCH.md`) as the fastest $0 organic-traffic
+channel: `draft_pin()` turns one already-deployed, quality-passed
+`AffiliateAsset` into a Pinterest pin draft (title/description/alt text,
+template-rendered, no LLM, no network call). It refuses to draft a pin
+for an asset with no real `live_url` - nothing here ever points at a
+fabricated page. Idempotent per asset id, same convention as
+`affiliate_assets.build_asset()`.
+
+The fleet never logs into Pinterest or posts: `action_class.
+posting_permitted("pinterest")` is `False` (Pinterest is a third party,
+not an owned channel), so a draft only ever reaches `PIN_DRAFT` on its
+own. A human reviews it, pins it from their own free Pinterest account,
+and records what they did via `revenue_os pinterest-mark-posted <id>
+posted|skipped`. Roster: `pinterest_distributor` (acquisition cluster,
+`gate="human"`).
+
 ## Simulation (`ecosystem/simulation.py`)
 
 `simulate(n, seed)` runs the whole loop over N synthetic opportunities
@@ -144,11 +163,29 @@ revenue_os ecosystem-status
 - Real ads / supplier orders / affiliate-network fees are
   `MONEY_APPROVAL_REQUIRED`.
 
+## Correction (V2 architecture pass)
+
+The line below previously read "AFFILIATE strategy produces only a
+prepared, human-gated plan" - that was **stale documentation, not
+accurate code behavior**: `affiliate_pipeline.run_affiliate_chain()`
+already implements a real, autonomous MATCH -> EVALUATE -> BUILD ASSET
+-> CREATE LINK -> DEPLOY -> DISTRIBUTE chain, fail-closed per step, and
+reaches an actual live GitHub Pages asset when a usable offer and a
+GitHub credential both exist. See `docs/ARCHITECTURE.md` for the new
+`opportunity_agent` / `affiliate_chain_agent` / `pinterest_distributor`
+/ `measurement_agent` / `optimization_agent` layer built on top of it,
+and `revenue_os pipeline-cycle` for the schedulable entry point.
+
 ## Not yet built (next phases)
 
-- Fully autonomous chains for TASK / AFFILIATE / ECOMMERCE strategies
-  (spec §11, §13, §14) - today they produce a prepared, human-gated plan.
+- Fully autonomous chains for TASK / ECOMMERCE strategies (spec §11,
+  §14) - today they produce a prepared, human-gated plan. AFFILIATE is
+  built (see correction above).
 - Ad Strategy experiment loop with a real test budget (spec §17) - the
-  autonomy layer already classes it `HUMAN_APPROVAL_REQUIRED`.
+  autonomy layer already classes it `HUMAN_APPROVAL_REQUIRED`, and no ad
+  spend is in scope for the selected business model regardless.
 - Dashboard / JARVIS panels for the ecosystem read model
   (`ecosystem/intel.py` is the data layer, wired to `ecosystem-status`).
+- Pinterest API integration for actual autonomous posting, browser
+  automation for any platform, and digital-product upload automation -
+  see `docs/ARCHITECTURE.md`'s "deferred extensions" list.
