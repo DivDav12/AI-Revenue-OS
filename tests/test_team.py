@@ -61,6 +61,7 @@ class TeamTests(unittest.TestCase):
              "competitor_analyzer", "copywriter", "content_creator",
              "revenue_analyst", "trend_hunter",
              "opportunity_scorer", "outreach_drafter", "distribution_strategist",
+             "pinterest_distributor",
              "supplier_finder", "designer", "store_builder", "developer",
              "automation_engineer", "ads_manager", "campaign_optimizer",
              "budget_allocator", "sales_tracker", "profit_master",

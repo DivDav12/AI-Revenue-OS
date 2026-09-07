@@ -2,13 +2,24 @@
 
 
 
-\## Mission
+## Mission
 
+Build a legal, automated multi-agent AI ecosystem that generates online
+income from €0 starting capital, with no paid ads, no paid SaaS, no
+credit card, and no bypassing of identity/KYC requirements.
 
+The selected model (researched and scored — see
+`docs/BUSINESS_MODEL_RESEARCH.md`) is an **organic content + affiliate
+engine, Pinterest-accelerated**: quality-gated comparison pages on an
+owned static site, monetized via affiliate networks (Amazon Associates,
+Awin, CJ, systeme.io, ...), with Pinterest pin drafts as a fast, $0
+organic traffic channel. A digital-product upsell (Gumroad-hosted
+templates/printables) is a planned next increment, not yet built.
 
-Build a legal, automated multi-agent AI ecosystem whose long-term goal is to discover, build, launch, measure, and improve legitimate revenue-generating opportunities.
-
-
+The founder-outreach "Customer Launch Plan" service-business line from
+the prior mission is retired (not deleted — see
+`docs/BUSINESS_MODEL_RESEARCH.md` for what that means concretely). Do
+not extend it further; build on the affiliate/Pinterest engine instead.
 
 The human owner must remain in control of money and legally sensitive actions.
 
@@ -96,47 +107,22 @@ Do not continue building unrelated features after completing the requested task.
 
 
 
-\## Architecture
+## Architecture
 
+Already built and tested (see `docs/ECOSYSTEM.md` + `README.md`):
+Orchestrator + agent roster (`roster.py`/`team.py`), structured task/
+result messages, JSON-file stores as shared state, a live dashboard,
+a pre-sale budget cap + LLM spend metering (cost controller),
+`action_class.py` as the permission/safety firewall, PayPal read-only
+revenue tracking + a revenue ledger, and `ecosystem/learning.py` as the
+outcome-weighting feedback loop.
 
+New for this mission: `ecosystem/pinterest_pins.py` (Pinterest pin
+drafting) and the `pinterest_distributor` roster agent. Planned, not yet
+built: a digital-product agent (Gumroad-hosted templates/printables).
 
-The system will eventually contain:
-
-
-
-\- CEO / Orchestrator
-
-\- Specialized AI agents
-
-\- Task queue
-
-\- Shared memory
-
-\- Database
-
-\- Tool system
-
-\- Event system
-
-\- Live dashboard
-
-\- Cost controller
-
-\- Permission system
-
-\- Revenue tracking
-
-\- Analytics
-
-\- Learning/feedback loop
-
-
-
-Do not implement all of these immediately.
-
-
-
-Build them in small, tested stages.
+Build additions in small, tested stages — do not implement everything in
+one pass.
 
 
 
@@ -232,71 +218,38 @@ Financial actions requiring real money must use an explicit human approval mecha
 
 
 
-\## Revenue Mission
+## Revenue Mission
+
+The business model is chosen (see Mission above and
+`docs/BUSINESS_MODEL_RESEARCH.md` for the full scored comparison of 24
+models). Do not re-litigate the model choice without new evidence; do
+extend it — more niches, more affiliate programs, more Pinterest
+boards — using the same evidence-only, quality-gated, human-approved-
+payout discipline already built into `ecosystem/affiliate_*.py`.
+
+The system should test what actually converts rather than assuming a
+niche or offer will work. Revenue is not guaranteed.
 
 
 
-The system should eventually search for legitimate opportunities based on:
+## Current Priority
 
+The foundation (agent runtime, task system, dashboard, safety fabric) is
+built. Current priority, in order:
 
+1. A human joins at least one real affiliate program (Amazon Associates
+   or Awin) and one Pinterest account — both free, no card, no bank
+   needed to start; see `ecosystem/affiliate_model.NETWORK_POLICY` for
+   the exact per-network setup steps.
+2. Deploy a small number of real, quality-gated content pages for those
+   offers.
+3. Draft and post Pinterest pins for those pages (`pinterest-draft` /
+   `pinterest-pending` / `pinterest-mark-posted`); measure real clicks.
+4. Only once that loop produces a real click/conversion signal, expand:
+   more niches, more offers, then the planned digital-product agent.
 
-\- low startup cost
-
-\- high automation potential
-
-\- real demand
-
-\- reasonable competition
-
-\- legal feasibility
-
-\- time to first revenue
-
-\- profit potential
-
-\- scalability
-
-
-
-The system should test opportunities rather than assuming an idea will work.
-
-
-
-Revenue is not guaranteed.
-
-
-
-\## Current Priority
-
-
-
-The immediate objective is NOT to build a huge autonomous business.
-
-
-
-First build a small, reliable foundation:
-
-
-
-1\. project structure
-
-2\. basic agent runtime
-
-3\. first CEO agent
-
-4\. task system
-
-5\. first supporting agent
-
-6\. communication between agents
-
-7\. basic dashboard
-
-8\. testing
-
-
-
-Only after the foundation works should additional agents, tools, automation, and revenue functionality be added.
+Do not build the digital-product agent or additional distribution
+channels before step 1–3 have real data.
 
 
 

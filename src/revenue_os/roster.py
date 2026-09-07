@@ -105,6 +105,15 @@ AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec("distribution_strategist", "Distribution Strategist", "acquisition",
               "Channel research & priority", "research_distribution",
               node="offer", status="live", depends_on=("opportunity_finder",)),
+    # Turns an already-deployed, quality-passed affiliate asset into a
+    # Pinterest pin draft (business-model research, phase 1/2: Pinterest is
+    # the fastest $0 organic-traffic channel available - see
+    # docs/BUSINESS_MODEL_RESEARCH.md). Human-gated: the fleet never logs
+    # into Pinterest or posts - a person reviews the draft and pins it from
+    # their own free Pinterest account.
+    AgentSpec("pinterest_distributor", "Pinterest Distributor", "acquisition",
+              "Organic pin drafts", "prepare_pinterest_pin", node="offer",
+              gate="human", status="live"),
     # --- marketing cluster (all human-gated: real ad spend) -----------
     AgentSpec("ads_manager", "Ads Manager", "marketing", "Campaigns",
               "run_ads", node="offer", gate="human", status="live",

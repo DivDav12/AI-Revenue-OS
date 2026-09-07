@@ -22,6 +22,9 @@ Read commands:
   acquisition-rescore   re-score the whole lead store with the current model ($0)
   acquisition-queue     high/medium prospects still waiting on a human (de-duped)
   outreach-status ID posted|skipped   record what YOU did with a drafted brief
+  pinterest-draft ASSET_ID   draft a Pinterest pin for a deployed affiliate asset ($0, never posts)
+  pinterest-pending          pin drafts still waiting on a human to post or skip
+  pinterest-mark-posted ID posted|skipped   record what YOU did with a drafted pin
   digest [-q]      one-line summary of what needs the human
   agent-run        operator agent: one loop to a fixed point (also the cron primitive)
   agent-loop       operator agent: tick / sleep / repeat, bounded and resumable
@@ -591,6 +594,75 @@ def _cmd_acquisition_queue(args) -> int:
         print()
     print("The system drafted these. You check each community's self-promotion "
           "rules and post every reply yourself - it never posts, DMs, or emails.")
+    return 0
+
+
+def _cmd_pinterest_draft(args) -> int:
+    from datetime import datetime, timezone
+
+    from .ecosystem.affiliate_model import AffiliateAssetStore
+    from .ecosystem.pinterest_pins import PinDraftError, draft_pin
+
+    data_dir = _data_dir(args)
+    asset = AffiliateAssetStore.load(data_dir).get(args.asset_id)
+    if asset is None:
+        raise ValueError(f"no asset with id {args.asset_id!r}")
+    try:
+        pin = draft_pin(data_dir, asset=asset, product_name=args.product_name or "",
+                        category_label=args.category or "", board_suggestion=args.board or "",
+                        now_iso=datetime.now(timezone.utc).isoformat())
+    except PinDraftError as exc:
+        print(f"BLOCKED: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(pin.to_dict(), indent=2))
+        return 0
+    print(f"PINTEREST PIN DRAFT  ({pin.pin_id}, asset {pin.asset_id})")
+    print(f"  title:       {pin.title}")
+    print(f"  description: {pin.description}")
+    print(f"  alt text:    {pin.alt_text}")
+    print(f"  board:       {pin.board_suggestion}")
+    print(f"  dest URL:    {pin.dest_url}")
+    print("This is a draft only - review it and pin it yourself from your own "
+          f"Pinterest account. Then run "
+          f"`revenue_os pinterest-mark-posted {pin.pin_id} posted`.")
+    return 0
+
+
+def _cmd_pinterest_pending(args) -> int:
+    from .ecosystem.pinterest_pins import pending_pins
+
+    pins = pending_pins(_data_dir(args))
+    if args.json:
+        print(json.dumps([p.to_dict() for p in pins], indent=2))
+        return 0
+    if not pins:
+        print("PINTEREST QUEUE: empty - no pin draft is waiting on you.")
+        return 0
+    print(f"PINTEREST QUEUE - {len(pins)} draft(s) need a human\n")
+    for i, p in enumerate(pins, 1):
+        print(f"{i}. [{p.board_suggestion}] {p.title}")
+        print(f"   {p.description}")
+        print(f"   -> {p.dest_url}")
+        print(f"   id: {p.pin_id}")
+        print()
+    print("The system drafted these. Review each and pin it yourself from "
+          "your own Pinterest account - it never posts on its own.")
+    return 0
+
+
+def _cmd_pinterest_mark_posted(args) -> int:
+    from datetime import datetime, timezone
+
+    from .ecosystem.pinterest_pins import mark_posted
+
+    pin = mark_posted(_data_dir(args), args.pin_id, status=args.status,
+                      now_iso=datetime.now(timezone.utc).isoformat(),
+                      note=(getattr(args, "reason", "") or "").strip())
+    if args.json:
+        print(json.dumps(pin.to_dict(), indent=2))
+        return 0
+    print(f"pin {pin.pin_id} -> {pin.status}")
     return 0
 
 
@@ -2633,6 +2705,35 @@ def build_parser() -> argparse.ArgumentParser:
                         help="ignore the cached draft and re-call the API")
     obrief.add_argument("--json", action="store_true")
     obrief.set_defaults(func=_cmd_outreach_brief)
+
+    pdraft = sub.add_parser(
+        "pinterest-draft", parents=[common],
+        help="draft a Pinterest pin for an already-deployed affiliate asset "
+             "(template-only, $0, never posts)",
+    )
+    pdraft.add_argument("asset_id", help="affiliate asset id (from affiliate_assets.json)")
+    pdraft.add_argument("--product-name", default="", help="real product name from the offer")
+    pdraft.add_argument("--category", default="", help="category label / suggested board")
+    pdraft.add_argument("--board", default="", help="override the suggested Pinterest board")
+    pdraft.add_argument("--json", action="store_true")
+    pdraft.set_defaults(func=_cmd_pinterest_draft)
+
+    ppending = sub.add_parser(
+        "pinterest-pending", parents=[common],
+        help="list every pin draft still waiting on a human to post or skip",
+    )
+    ppending.add_argument("--json", action="store_true")
+    ppending.set_defaults(func=_cmd_pinterest_pending)
+
+    ppost = sub.add_parser(
+        "pinterest-mark-posted", parents=[common],
+        help="record what YOU did with a drafted pin (the system never posts)",
+    )
+    ppost.add_argument("pin_id", help="pin id (from pinterest-draft / pinterest-pending)")
+    ppost.add_argument("status", choices=("posted", "skipped"))
+    ppost.add_argument("--reason", default="", help="optional human note")
+    ppost.add_argument("--json", action="store_true")
+    ppost.set_defaults(func=_cmd_pinterest_mark_posted)
 
     aq = sub.add_parser(
         "acquisition-queue", parents=[common],

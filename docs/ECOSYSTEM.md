@@ -105,6 +105,25 @@ cost, revenue, success, failure_reason}`. `aggregate()` rolls it up;
 `priority_weights()` = win-rate ÷ overall-win-rate, clamped [0.5, 1.6],
 only once ≥ 5 outcomes have settled. Plain ratios - not ML.
 
+## Pinterest distribution (`ecosystem/pinterest_pins.py`)
+
+Selected in the Phase 1/2 business-model research
+(`docs/BUSINESS_MODEL_RESEARCH.md`) as the fastest $0 organic-traffic
+channel: `draft_pin()` turns one already-deployed, quality-passed
+`AffiliateAsset` into a Pinterest pin draft (title/description/alt text,
+template-rendered, no LLM, no network call). It refuses to draft a pin
+for an asset with no real `live_url` - nothing here ever points at a
+fabricated page. Idempotent per asset id, same convention as
+`affiliate_assets.build_asset()`.
+
+The fleet never logs into Pinterest or posts: `action_class.
+posting_permitted("pinterest")` is `False` (Pinterest is a third party,
+not an owned channel), so a draft only ever reaches `PIN_DRAFT` on its
+own. A human reviews it, pins it from their own free Pinterest account,
+and records what they did via `revenue_os pinterest-mark-posted <id>
+posted|skipped`. Roster: `pinterest_distributor` (acquisition cluster,
+`gate="human"`).
+
 ## Simulation (`ecosystem/simulation.py`)
 
 `simulate(n, seed)` runs the whole loop over N synthetic opportunities

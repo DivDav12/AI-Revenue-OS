@@ -26,6 +26,7 @@ from .normalize import to_opportunity
 from .opportunity_finder import OpportunityFinderAgent
 from .orchestrator import Orchestrator
 from .outreach_agent import OutreachDrafterAgent
+from .pinterest_agent import PinterestDistributorAgent
 from .profit_master import ProfitMasterAgent
 from .quality_control import QualityControlAgent
 from .registry import AgentRegistry
@@ -56,6 +57,7 @@ _ROSTER_AGENT_CLASSES = {
     "opportunity_scorer": AcquisitionAgent,
     "outreach_drafter": OutreachDrafterAgent,
     "distribution_strategist": DistributionAgent,
+    "pinterest_distributor": PinterestDistributorAgent,
     "supplier_finder": SupplierFinderAgent,
     "designer": DesignerAgent,
     "store_builder": StoreBuilderAgent,

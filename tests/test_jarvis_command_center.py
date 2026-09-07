@@ -411,10 +411,10 @@ class EcosystemViewTests(unittest.TestCase):
     def tearDown(self):
         self._d.cleanup()
 
-    def test_all_25_agents_are_creatures_with_positions(self):
+    def test_all_26_agents_are_creatures_with_positions(self):
         from revenue_os.jarvis_server import _ecosystem_data
         eco = _ecosystem_data(jarvis_snapshot(self.d))
-        self.assertEqual(len(eco["nodes"]), 25)
+        self.assertEqual(len(eco["nodes"]), 26)
         for n in eco["nodes"]:
             self.assertIn(n["cluster"], ("discovery", "build", "marketing",
                                          "acquisition", "revenue", "support"))
@@ -443,15 +443,15 @@ class EcosystemViewTests(unittest.TestCase):
     def test_panel_renders_svg_creatures(self):
         html = render_console(self.d, csrf="t")
         self.assertIn("THE ECOSYSTEM", html)
-        self.assertEqual(html.count("class='eco "), 25)   # 25 little creatures
+        self.assertEqual(html.count("class='eco "), 26)   # 26 little creatures
         self.assertIn("eco-svg", html)
         self.assertIn("eco-smile", html)
 
     def test_creatures_carry_avatar_glyph_and_home_coords(self):
         html = render_console(self.d, csrf="t")
         # every creature has a home position for the wander loop + its avatar
-        self.assertEqual(html.count("data-hx="), 25)
-        self.assertEqual(html.count("class=eco-icon"), 25)
+        self.assertEqual(html.count("data-hx="), 26)
+        self.assertEqual(html.count("class=eco-icon"), 26)
         self.assertIn("data-id='developer'", html)
         # edges name their endpoints so JS can keep them attached while moving
         self.assertIn("data-from=", html)

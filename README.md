@@ -1,6 +1,28 @@
 # AI-Revenue-OS
 Autonomous multi-agent AI revenue ecosystem
 
+**Business model:** an organic content + affiliate engine, Pinterest-
+accelerated — €0 start, no ads, no paid SaaS. Researched, scored against
+23 alternatives, and selected in
+[docs/BUSINESS_MODEL_RESEARCH.md](docs/BUSINESS_MODEL_RESEARCH.md).
+Architecture: [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md).
+
+## Pinterest distribution (`pinterest-draft` / `pinterest-pending` / `pinterest-mark-posted`)
+
+The fastest $0 organic-traffic channel identified in the research above.
+`pinterest-draft` turns one already-deployed, quality-passed affiliate
+asset into a pin draft (title/description/alt text, template-only, $0,
+no LLM call). The fleet never logs into Pinterest or posts:
+
+```
+revenue_os pinterest-draft <asset-id> --product-name "..." --category "..." [--json]
+revenue_os pinterest-pending [--json]                       # drafts waiting on you
+revenue_os pinterest-mark-posted <pin-id> posted|skipped [--reason "..."]
+```
+
+A human creates a free Pinterest account (no card, no ID needed) and
+pins the draft themselves, then records it with `pinterest-mark-posted`.
+
 ## Autonomous Revenue Ecosystem (`discover` / `evaluate` / `select-strategy` / `simulate`)
 
 Real opportunity discovery → deterministic profitability evaluation →

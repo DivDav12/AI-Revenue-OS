@@ -82,6 +82,7 @@ _SAFE = frozenset({
     "create_digital_product", "create_design", "write_copy", "seo_work",
     "prepare_listing", "prepare_marketplace_asset", "agent_spec_draft",
     "create_documentation", "create_social_draft", "draft_outreach_message",
+    "prepare_pinterest_pin",
     # publish - non-financial, non-identity
     "publish_website", "publish_public_content", "publish_github_repo",
     "publish_docs", "deploy_nonfinancial_infra", "publish_seo_page",
