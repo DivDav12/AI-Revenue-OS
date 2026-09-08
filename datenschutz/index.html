@@ -9,7 +9,11 @@
 body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--fg);background:var(--bg);line-height:1.6}
 a{color:var(--accent);text-decoration:none}
 a:hover{text-decoration:underline}
+a:focus-visible,button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:2px;border-radius:2px}
 img{max-width:100%}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.skip-link{position:absolute;left:8px;top:-40px;background:var(--accent);color:#fff;padding:8px 14px;border-radius:0 0 8px 8px;z-index:100;transition:top .15s}
+.skip-link:focus{top:0}
 .wrap{max-width:960px;margin:0 auto;padding:0 20px}
 header.site{border-bottom:1px solid var(--border);padding:16px 0}
 header.site .wrap{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
@@ -39,7 +43,8 @@ section.block{padding:36px 0}
 section.block h2{font-size:1.4rem;margin-bottom:14px}
 .how-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:18px}
 .how-steps div{border:1px solid var(--border);border-radius:10px;padding:16px}
-.disclosure,p.disclosure{background:var(--bg-alt);border:1px solid var(--border);border-radius:8px;padding:12px 14px;font-size:.9rem;color:var(--muted)}
+.disclosure,p.disclosure{background:#fff8e6;border:1px solid #e5cf8f;border-left:4px solid #b8860b;border-radius:8px;padding:12px 14px;font-size:.95rem;color:var(--fg)}
+.disclosure strong{color:#8a5a00}
 .cta a.button{display:inline-block;padding:14px 26px;border-radius:8px;background:var(--accent);color:#fff;font-weight:600;font-size:1.05rem}
 .cta a.button:hover{background:var(--accent-dark);text-decoration:none}
 footer.site{border-top:1px solid var(--border);margin-top:48px;padding:28px 0;color:var(--muted);font-size:.9rem}
@@ -53,28 +58,103 @@ dl dd{margin:2px 0 0}
 @media (max-width:560px){.hero{padding:36px 0 28px}.hero h1{font-size:1.5rem}.searchbox{flex-direction:column}}
 </style>
 </head><body>
+<a class="skip-link" href="#inhalt">Zum Inhalt springen</a>
 <header class="site"><div class="wrap">
-<a class="brand" href="/">AI Revenue</a>
-<nav class="site"><a href="/">Start</a><a href="/kategorie/kopfhoerer-earbuds/">Kopfhörer &amp; Earbuds</a><a href="/kategorie/mikrofone/">Mikrofone</a><a href="/kategorie/tastaturen/">Tastaturen</a><a href="/kategorie/maeuse/">Mäuse</a></nav>
+<a class="brand" href="/AI-Revenue-OS/">AI Revenue</a>
+<nav class="site" aria-label="Hauptnavigation"><a href="/AI-Revenue-OS/">Start</a><a href="/AI-Revenue-OS/kategorie/kopfhoerer-earbuds/">Kopfhörer &amp; Earbuds</a><a href="/AI-Revenue-OS/kategorie/mikrofone/">Mikrofone</a><a href="/AI-Revenue-OS/kategorie/tastaturen/">Tastaturen</a><a href="/AI-Revenue-OS/kategorie/maeuse/">Mäuse</a></nav>
 </div></header>
+<main id="inhalt">
 <section class="block wrap">
 <h1>Datenschutzerklärung</h1>
-<p>Diese Website ist eine statische Seite. Wir setzen aktuell keine Cookies, keine
-Analyse- oder Tracking-Skripte und keine Werbenetzwerke auf dieser Seite ein.</p>
-<p>Wenn du über einen Link auf dieser Seite zu einem Partnerangebot (z. B.
-systeme.io) wechselst, gilt ab diesem Zeitpunkt die Datenschutzerklärung des
-jeweiligen Anbieters - wir haben keinen Einfluss darauf, welche Daten dieser
-Anbieter erhebt.</p>
-<p>Kontakt für Datenschutzanfragen: <a href="mailto:divdav12support@gmail.com">divdav12support@gmail.com</a></p>
-<p>Diese Datenschutzerklärung beschreibt den aktuellen technischen Stand dieser
-Seite; sie ersetzt keine individuelle Rechtsberatung.</p>
+
+<h2>1. Verantwortlicher</h2>
+<p>Verantwortlich im Sinne der Datenschutz-Grundverordnung (DSGVO):<br>
+<strong>[BITTE ERGÄNZEN: Name / Firmierung]</strong><br>
+<strong>[BITTE ERGÄNZEN: ladungsfähige Anschrift]</strong><br>
+E-Mail: <a href="mailto:divdav12support@gmail.com">divdav12support@gmail.com</a></p>
+
+<h2>2. Grundsätzliches zu dieser Website</h2>
+<p>Diese Website ist eine statische Seite. Wir selbst setzen <strong>keine Cookies</strong>,
+keine Analyse- oder Tracking-Skripte, keine Werbe-Pixel, keine externen
+Schriftarten und keine eingebetteten Drittanbieter-Inhalte (z. B. Karten, Videos,
+Social-Media-Widgets) ein. Es findet keine Reichweitenmessung und kein Profiling
+statt. Ein Consent-Banner ist deshalb für diese Seiten nicht erforderlich.</p>
+
+<h2>3. Hosting und Server-Logdaten (GitHub Pages)</h2>
+<p>Diese Website wird über <strong>GitHub Pages</strong> gehostet, einen Dienst der
+GitHub, Inc., 88 Colin P. Kelly Jr. Street, San Francisco, CA 94107, USA (ein
+Unternehmen der Microsoft Corporation). Beim Aufruf dieser Seiten überträgt dein
+Browser technisch notwendige Daten an GitHub als Hosting-Provider, insbesondere
+die IP-Adresse, Datum und Uhrzeit des Zugriffs, die angeforderte Adresse, den
+HTTP-Statuscode, die übertragene Datenmenge sowie ggf. Referrer und Browser-/
+Betriebssystemkennung. GitHub kann diese Daten in Server-Logdateien zur
+Sicherstellung von Betrieb, Sicherheit und Stabilität verarbeiten. Wir haben auf
+diese Logdateien keinen Zugriff; uns liegen nur aggregierte, nicht personenbezogene
+Zugriffszahlen vor. Rechtsgrundlage ist Art. 6 Abs. 1 lit. f DSGVO (berechtigtes
+Interesse an einer sicheren, zuverlässigen und kostengünstigen Bereitstellung).
+Die Verarbeitung erfolgt teils in den USA; GitHub/Microsoft stützt Übermittlungen
+nach eigenen Angaben auf die EU-Standardvertragsklauseln bzw. das EU-U.S. Data
+Privacy Framework. Einzelheiten:
+<a href="https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement"
+rel="nofollow noopener" target="_blank">GitHub Privacy Statement</a>.
+[BITTE PRÜFEN: aktuellen Übermittlungsmechanismus und ggf. Auftragsverarbeitung
+mit GitHub bestätigen.]</p>
+
+<h2>4. Affiliate-/Partnerlinks (Amazon, systeme.io)</h2>
+<p>Einige Links auf dieser Website sind Partner-/Affiliate-Links. Klickst du einen
+solchen Link an, verlässt du diese Website und gelangst zum jeweiligen Anbieter
+(z. B. amazon.de oder systeme.io). Erst der Anbieter verarbeitet dann deine Daten
+nach <em>seiner</em> Datenschutzerklärung und setzt in der Regel ein Cookie bzw.
+speichert eine Kennung, um einen späteren Kauf unserer Partnerkennung zuzuordnen
+(bei Amazon der Partner-Tag <code>airevenue-21</code>). Darauf haben wir keinen
+Einfluss. Wir erhalten vom Anbieter keine personenbezogenen Daten über dich,
+sondern nur zusammengefasste, anonyme Statistiken zu Klicks und ggf. Provisionen.
+Das Setzen der Links erfolgt auf Grundlage von Art. 6 Abs. 1 lit. f DSGVO
+(berechtigtes Interesse an der Finanzierung des Angebots).</p>
+<p>Datenschutzhinweise der Anbieter:
+<a href="https://www.amazon.de/gp/help/customer/display.html?nodeId=201909010"
+rel="nofollow noopener" target="_blank">Amazon</a> &middot;
+<a href="https://systeme.io/privacy-policy" rel="nofollow noopener"
+target="_blank">systeme.io</a>.</p>
+
+<h2>5. Kontaktaufnahme per E-Mail</h2>
+<p>Wenn du uns per E-Mail schreibst, verarbeiten wir deine E-Mail-Adresse und den
+Inhalt deiner Nachricht ausschließlich zur Bearbeitung deines Anliegens
+(Art. 6 Abs. 1 lit. b bzw. lit. f DSGVO). Die Daten werden gelöscht, sobald sie
+nicht mehr erforderlich sind und keine Aufbewahrungspflichten entgegenstehen.</p>
+
+<h2>6. Formulare, Newsletter, Nutzerkonten</h2>
+<p>Auf dieser Website gibt es kein Kontaktformular, keinen Newsletter und kein
+Nutzerkonto. Die Suchfunktion auf der Startseite arbeitet ausschließlich lokal in
+deinem Browser; dabei werden keine Daten an uns oder Dritte übertragen.</p>
+
+<h2>7. Deine Rechte</h2>
+<p>Du hast nach der DSGVO das Recht auf Auskunft (Art. 15), Berichtigung
+(Art. 16), Löschung (Art. 17), Einschränkung (Art. 18), Datenübertragbarkeit
+(Art. 20) sowie ein Widerspruchsrecht gegen Verarbeitungen auf Grundlage von
+Art. 6 Abs. 1 lit. f (Art. 21). Erteilte Einwilligungen kannst du jederzeit mit
+Wirkung für die Zukunft widerrufen. Außerdem hast du das Recht, dich bei einer
+Datenschutz-Aufsichtsbehörde zu beschweren (Art. 77 DSGVO).
+[BITTE ERGÄNZEN: konkrete zuständige Landesdatenschutzbehörde nach Wohnsitz/Sitz
+des Betreibers.]</p>
+
+<h2>8. Keine Pflicht zur Bereitstellung, keine automatisierte Entscheidung</h2>
+<p>Du bist nicht verpflichtet, uns personenbezogene Daten bereitzustellen. Eine
+automatisierte Entscheidungsfindung einschließlich Profiling nach Art. 22 DSGVO
+findet nicht statt.</p>
+
+<h2>9. Stand und Änderungen</h2>
+<p>Diese Erklärung gibt den aktuellen Stand wieder. Ändert sich die eingesetzte
+Technik, passen wir sie an.</p>
+<p class="disclosure"><strong>Hinweis:</strong> Diese Angaben beschreiben den tatsächlichen technischen und organisatorischen Stand dieser Website. Sie wurden sorgfältig erstellt, ersetzen aber keine individuelle Rechtsberatung und begründen keine Gewähr für Vollständigkeit oder rechtliche Wirksamkeit.</p>
 </section>
+</main>
 <footer class="site"><div class="wrap">
 <p>&copy; AI Revenue. Alle Preise und Angebote laut Angaben der jeweiligen Anbieter/Partnerprogramme, ohne Gewähr.</p>
-<p>
-<a href="/impressum/">Impressum</a> &middot;
-<a href="/datenschutz/">Datenschutz</a> &middot;
-<a href="/affiliate-erklaerung/">Wie wir Geld verdienen</a>
-</p>
+<nav aria-label="Rechtliche Hinweise">
+<a href="/AI-Revenue-OS/impressum/">Impressum</a> &middot;
+<a href="/AI-Revenue-OS/datenschutz/">Datenschutz</a> &middot;
+<a href="/AI-Revenue-OS/affiliate-erklaerung/">Wie wir Geld verdienen</a>
+</nav>
 </div></footer>
 </body></html>
