@@ -3501,6 +3501,9 @@ def build_parser() -> argparse.ArgumentParser:
     rec.add_argument("amount", type=float)
     rec.set_defaults(func=_cmd_record_spend)
 
+    from .social.cli_commands import register as _register_social
+    _register_social(sub, common, actor_only)
+
     return parser
 
 
