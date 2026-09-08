@@ -98,13 +98,19 @@ def classify_offer_category(offer_category: str) -> str:
     return CATEGORY_SONSTIGES
 
 
-def category_breadcrumb(offer_category: str) -> tuple[str, str]:
+def category_breadcrumb(offer_category: str, environ=None) -> tuple[str, str]:
     """(label, path) for the site category a real `AffiliateOffer.category`
     falls under - used by a guide page to link back to its own category
-    (internal linking, spec: "crawlable page structure")."""
+    (internal linking, spec: "crawlable page structure"). `path` is
+    prefixed with the real, already-configured GitHub Pages base
+    (`_real_base_url()`) when one resolves - a GitHub Pages PROJECT site
+    (e.g. https://owner.github.io/repo/) is served under a subpath, so a
+    root-relative "/kategorie/..." link 404s there; '' (unchanged,
+    root-relative) when no real deploy config resolves yet, e.g. tests or
+    a custom domain served at the root."""
     key = classify_offer_category(offer_category)
     label = _CATEGORY_LABELS.get(key, key)
-    return label, f"/kategorie/{key}/"
+    return label, f"{_real_base_url(environ)}/kategorie/{key}/"
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +144,7 @@ nav.site a:hover{color:var(--fg);text-decoration:none}
 .badge-pill{display:inline-flex;align-items:center;gap:7px;background:var(--bg-elev);border:1px solid var(--border);border-radius:999px;padding:7px 16px;font-size:.82rem;color:var(--muted)}
 .hero{padding:72px 0 56px;text-align:center;background:radial-gradient(120% 100% at 50% 0%,#101a3a 0%,var(--bg) 60%)}
 .hero h1{font-size:2.6rem;margin:22px 0 16px;line-height:1.22;font-weight:800}
-.hero h1 .grad{background:var(--accent-grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.grad{background:var(--accent-grad);-webkit-background-clip:text;background-clip:text;color:transparent}
 .hero p.tagline{color:var(--muted);font-size:1.08rem;margin:0 auto 30px;max-width:640px}
 .hero-cta{display:inline-flex;align-items:center;gap:8px;padding:15px 30px;border-radius:999px;background:var(--accent-grad);color:#fff;font-weight:600;font-size:1.02rem}
 .hero-cta:hover{opacity:.92;text-decoration:none}
@@ -158,6 +164,8 @@ nav.site a:hover{color:var(--fg);text-decoration:none}
 .guide-card:hover{border-color:var(--accent);transform:translateY(-2px);text-decoration:none}
 .guide-card .cat{color:var(--accent);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;font-weight:600}
 .guide-card h3{margin:8px 0 0;font-size:1.05rem}
+.guide-card .guide-link{display:block;margin-top:10px;color:var(--accent);font-size:.88rem;font-weight:600}
+.cat-intro{color:var(--muted);font-size:1.02rem;margin:14px 0 26px;max-width:640px}
 .empty-state{color:var(--muted);border:1px dashed var(--border);border-radius:var(--radius);padding:24px;text-align:center;background:var(--bg-elev)}
 section.block{padding:40px 0}
 section.block h2{font-size:1.4rem;margin-bottom:16px}
@@ -179,13 +187,15 @@ article h2{font-size:1.15rem;margin-top:0}
 dl dt{font-weight:600;margin-top:10px}
 dl dd{margin:2px 0 0;color:var(--muted)}
 @media (max-width:640px){.hero{padding:48px 0 36px}.hero h1{font-size:1.9rem}nav.site{gap:12px}.searchbox{display:none}}
+@media (prefers-reduced-motion:reduce){.category-card,.guide-card{transition:none}}
 """
 
 
-def _nav_links() -> str:
+def _nav_links(environ=None) -> str:
+    base = _real_base_url(environ)
     items = [("/", "Start")] + [(f"/kategorie/{key}/", label.split(" ", 1)[1] if " " in label else label)
                                 for key, label in SITE_CATEGORIES[:4]]
-    return "".join(f'<a href="{_esc(href)}">{_esc(label)}</a>' for href, label in items)
+    return "".join(f'<a href="{_esc(base + href)}">{_esc(label)}</a>' for href, label in items)
 
 
 _SEARCH_ICON_SVG = ('<svg width="16" height="16" viewBox="0 0 24 24" fill="none" '
@@ -194,10 +204,11 @@ _SEARCH_ICON_SVG = ('<svg width="16" height="16" viewBox="0 0 24 24" fill="none"
                     '<line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>')
 
 
-def render_header() -> str:
+def render_header(environ=None) -> str:
+    base = _real_base_url(environ)
     return f"""<header class="site"><div class="wrap">
-<a class="brand" href="/"><span class="brand-mark" aria-hidden="true"><i></i><i></i></span>{_esc(SITE_BRAND)}</a>
-<nav class="site">{_nav_links()}
+<a class="brand" href="{_esc(base + '/')}"><span class="brand-mark" aria-hidden="true"><i></i><i></i></span>{_esc(SITE_BRAND)}</a>
+<nav class="site">{_nav_links(environ)}
 <form class="searchbox" id="site-search" onsubmit="return false;">
 <button type="submit" aria-label="Suchen">{_SEARCH_ICON_SVG}</button>
 <input type="search" id="site-search-input" placeholder="Was möchtest du kaufen?" aria-label="Suche">
@@ -206,22 +217,26 @@ def render_header() -> str:
 </div></header>"""
 
 
-def render_footer() -> str:
+def render_footer(environ=None) -> str:
+    base = _real_base_url(environ)
     return f"""<footer class="site"><div class="wrap">
-<p><a class="brand" href="/"><span class="brand-mark" aria-hidden="true"><i></i><i></i></span>{_esc(SITE_BRAND)}</a></p>
+<p><a class="brand" href="{_esc(base + '/')}"><span class="brand-mark" aria-hidden="true"><i></i><i></i></span>{_esc(SITE_BRAND)}</a></p>
 <p>&copy; {_esc(SITE_BRAND)}. Alle Preise und Angebote laut Angaben der jeweiligen Anbieter/Partnerprogramme, ohne Gewähr.</p>
 <p>
-<a href="/impressum/">Impressum</a> &middot;
-<a href="/datenschutz/">Datenschutz</a> &middot;
-<a href="/affiliate-erklaerung/">Wie wir Geld verdienen</a>
+<a href="{_esc(base + '/impressum/')}">Impressum</a> &middot;
+<a href="{_esc(base + '/datenschutz/')}">Datenschutz</a> &middot;
+<a href="{_esc(base + '/affiliate-erklaerung/')}">Wie wir Geld verdienen</a>
 </p>
 </div></footer>"""
 
 
-def page_shell(*, title: str, description: str, body_html: str) -> str:
+def page_shell(*, title: str, description: str, body_html: str, environ=None) -> str:
     """Wrap `body_html` (already-rendered, escaped-as-needed content) with
     the shared header/footer/CSS/branding - the ONE place every page on
-    the site gets its look from."""
+    the site gets its look from. `environ=` (default None -> the real
+    process environment) lets header/footer navigation links resolve the
+    real GitHub Pages PROJECT base path (see `_real_base_url()`) - never a
+    second, independently-guessed base."""
     full_title = SITE_BRAND if title == SITE_BRAND else f"{title} – {SITE_BRAND}"
     return f"""<!doctype html>
 <html lang="de"><head><meta charset="utf-8">
@@ -230,9 +245,9 @@ def page_shell(*, title: str, description: str, body_html: str) -> str:
 <meta name="description" content="{_esc(description)}">
 <style>{_BASE_CSS}</style>
 </head><body>
-{render_header()}
+{render_header(environ)}
 {body_html}
-{render_footer()}
+{render_footer(environ)}
 </body></html>"""
 
 
@@ -264,14 +279,15 @@ def _real_guide_cards(data_dir) -> list[GuideCard]:
 # homepage
 # ---------------------------------------------------------------------------
 
-def render_homepage(data_dir) -> str:
+def render_homepage(data_dir, *, environ=None) -> str:
+    base = _real_base_url(environ)
     cards = _real_guide_cards(data_dir)
     counts: dict[str, int] = {}
     for c in cards:
         counts[c.site_category] = counts.get(c.site_category, 0) + 1
 
     category_html = "".join(
-        f'<a class="category-card" href="/kategorie/{_esc(key)}/">'
+        f'<a class="category-card" href="{_esc(base + f"/kategorie/{key}/")}">'
         f'<span class="emoji">{label.split(" ", 1)[0]}</span>{_esc(label.split(" ", 1)[1])}'
         f'<span class="count">{counts.get(key, 0)} Ratgeber</span></a>'
         for key, label in SITE_CATEGORIES)
@@ -280,7 +296,8 @@ def render_homepage(data_dir) -> str:
         guides_html = '<div class="guides">' + "".join(
             f'<a class="guide-card" href="{_esc(c.live_url)}">'
             f'<span class="cat">{_esc(_CATEGORY_LABELS.get(c.site_category, ""))}</span>'
-            f'<h3>{_esc(c.title)}</h3></a>' for c in cards) + "</div>"
+            f'<h3>{_esc(c.title)}</h3><span class="guide-link">Guide ansehen &rarr;</span></a>'
+            for c in cards) + "</div>"
     else:
         guides_html = ('<div class="empty-state">Noch keine Kaufberatung veröffentlicht - '
                        'schau bald wieder vorbei.</div>')
@@ -314,7 +331,7 @@ def render_homepage(data_dir) -> str:
 <div><strong>1. Echte Nachfrage erkennen</strong><p>Wir beobachten, wonach Menschen tatsächlich suchen und fragen - keine erfundenen Themen.</p></div>
 <div><strong>2. Echtes Angebot prüfen</strong><p>Wir verlinken nur Partnerprogramme, denen wir selbst beigetreten sind und deren Konditionen wir geprüft haben.</p></div>
 <div><strong>3. Ehrlich vergleichen</strong><p>Wir stellen die Fakten der Anbieter dar - ohne erfundene Tests, Sterne oder Kundenstimmen.</p></div>
-<div><strong>4. Transparent verlinken</strong><p>Kaufst du über unseren Link, erhalten wir ggf. eine Provision - ohne Mehrkosten für dich. Siehe <a href="/affiliate-erklaerung/">Wie wir Geld verdienen</a>.</p></div>
+<div><strong>4. Transparent verlinken</strong><p>Kaufst du über unseren Link, erhalten wir ggf. eine Provision - ohne Mehrkosten für dich. Siehe <a href="{_esc(base + '/affiliate-erklaerung/')}">Wie wir Geld verdienen</a>.</p></div>
 </div>
 </section>
 <script>
@@ -331,34 +348,48 @@ def render_homepage(data_dir) -> str:
   }});
 }})();
 </script>"""
-    return page_shell(title=SITE_BRAND, description=SITE_TAGLINE, body_html=body)
+    return page_shell(title=SITE_BRAND, description=SITE_TAGLINE, body_html=body, environ=environ)
 
 
 # ---------------------------------------------------------------------------
 # category pages
 # ---------------------------------------------------------------------------
 
-def render_category_page(category_key: str, data_dir) -> str:
+def render_category_page(category_key: str, data_dir, *, environ=None) -> str:
+    base = _real_base_url(environ)
     label = _CATEGORY_LABELS.get(category_key, category_key)
+    emoji, name = label.split(" ", 1) if " " in label else ("", label)
     cards = [c for c in _real_guide_cards(data_dir) if c.site_category == category_key]
+
+    breadcrumb_html = (f'<nav aria-label="Breadcrumb" class="breadcrumb">'
+                       f'<a href="{_esc(base + "/")}">Start</a> &rsaquo; {_esc(name)}</nav>')
+
     if cards:
         body_list = '<div class="guides">' + "".join(
-            f'<a class="guide-card" href="{_esc(c.live_url)}"><h3>{_esc(c.title)}</h3></a>'
+            f'<a class="guide-card" href="{_esc(c.live_url)}">'
+            f'<span class="cat">{_esc(_CATEGORY_LABELS.get(c.site_category, ""))}</span>'
+            f'<h3>{_esc(c.title)}</h3><span class="guide-link">Guide ansehen &rarr;</span></a>'
             for c in cards) + "</div>"
     else:
         body_list = ('<div class="empty-state">Für diese Kategorie gibt es aktuell noch keine '
                     'Kaufberatung - bald verfügbar.</div>')
+
     body = f"""<section class="block wrap">
-<h1>{_esc(label)}</h1>
+{breadcrumb_html}
+<span class="badge-pill">{emoji} Kategorie</span>
+<h1><span class="grad">{_esc(name)}</span></h1>
+<p class="cat-intro">Kaufberatungen zum Thema {_esc(name)} - basierend auf echten Angeboten aus
+Partnerprogrammen und echten, öffentlich gestellten Fragen. Keine erfundenen Tests, keine
+gefälschten Bewertungen.</p>
 {body_list}
 </section>"""
-    return page_shell(title=label, description=f"Kaufberatung: {label}", body_html=body)
+    return page_shell(title=label, description=f"Kaufberatung: {label}", body_html=body, environ=environ)
 
 
-def all_category_pages(data_dir) -> dict[str, str]:
+def all_category_pages(data_dir, *, environ=None) -> dict[str, str]:
     """{relative file path: html} for every site category - always all of
     them, even empty ones, so the nav/category grid never links to a 404."""
-    return {f"kategorie/{key}/index.html": render_category_page(key, data_dir)
+    return {f"kategorie/{key}/index.html": render_category_page(key, data_dir, environ=environ)
            for key, _label in SITE_CATEGORIES}
 
 
@@ -372,7 +403,7 @@ def _business_email() -> str:
     return (os.environ.get("BUSINESS_EMAIL") or "").strip()
 
 
-def render_impressum() -> str:
+def render_impressum(*, environ=None) -> str:
     email = _business_email()
     contact = (f"<p>E-Mail: <a href=\"mailto:{_esc(email)}\">{_esc(email)}</a></p>" if email else "")
     body = f"""<section class="block wrap">
@@ -383,10 +414,10 @@ Betreiber ergänzt und liegen aktuell noch nicht vor. Diese Seite ist daher noch
 nicht vollständig.</p>
 {contact}
 </section>"""
-    return page_shell(title="Impressum", description="Impressum", body_html=body)
+    return page_shell(title="Impressum", description="Impressum", body_html=body, environ=environ)
 
 
-def render_datenschutz() -> str:
+def render_datenschutz(*, environ=None) -> str:
     email = _business_email()
     contact = (f"<p>Kontakt für Datenschutzanfragen: <a href=\"mailto:{_esc(email)}\">{_esc(email)}</a></p>"
               if email else "")
@@ -402,10 +433,10 @@ Anbieter erhebt.</p>
 <p>Diese Datenschutzerklärung beschreibt den aktuellen technischen Stand dieser
 Seite; sie ersetzt keine individuelle Rechtsberatung.</p>
 </section>"""
-    return page_shell(title="Datenschutz", description="Datenschutzerklärung", body_html=body)
+    return page_shell(title="Datenschutz", description="Datenschutzerklärung", body_html=body, environ=environ)
 
 
-def render_affiliate_erklaerung() -> str:
+def render_affiliate_erklaerung(*, environ=None) -> str:
     body = """<section class="block wrap">
 <h1>Wie wir Geld verdienen</h1>
 <p>Diese Seite veröffentlicht Kaufberatungen zu echten Produkten und Diensten.
@@ -420,14 +451,15 @@ oder Kundenstimmen.</p>
 perspektivisch über Netzwerke wie Awin, CJ Affiliate und Amazon PartnerNet,
 sobald die jeweilige Freischaltung vorliegt.</p>
 </section>"""
-    return page_shell(title="Wie wir Geld verdienen", description="Affiliate-Transparenz", body_html=body)
+    return page_shell(title="Wie wir Geld verdienen", description="Affiliate-Transparenz", body_html=body,
+                      environ=environ)
 
 
-def render_legal_pages() -> dict[str, str]:
+def render_legal_pages(*, environ=None) -> dict[str, str]:
     return {
-        "impressum/index.html": render_impressum(),
-        "datenschutz/index.html": render_datenschutz(),
-        "affiliate-erklaerung/index.html": render_affiliate_erklaerung(),
+        "impressum/index.html": render_impressum(environ=environ),
+        "datenschutz/index.html": render_datenschutz(environ=environ),
+        "affiliate-erklaerung/index.html": render_affiliate_erklaerung(environ=environ),
     }
 
 

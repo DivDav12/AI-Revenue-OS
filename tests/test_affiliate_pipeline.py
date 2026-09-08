@@ -370,6 +370,25 @@ class AssetGenerationTests(unittest.TestCase):
             draft=draft, match=match, cta_url="https://example.test/go/abc")
         self.assertIn('href="/kategorie/sonstiges/"', page)
 
+    def test_breadcrumb_start_link_is_prefixed_under_a_real_project_deploy(self):
+        # regression: a GitHub Pages PROJECT site (served at
+        # https://owner.github.io/<repo>/) needs the guide page's own
+        # breadcrumb "Start" link (and its category link) prefixed with
+        # that repo subpath too - a bare href="/" 404s there.
+        real_env = {"GITHUB_TOKEN": "t", "GITHUB_PAGES_REPO": "DivDav12/AI-Revenue-OS"}
+        base = "https://DivDav12.github.io/AI-Revenue-OS"
+        page, _ = affiliate_assets.render_comparison_page(
+            draft=_demand_draft(), match=self._match(),
+            cta_url="https://example.test/go/abc", environ=real_env)
+        self.assertIn(f'<a href="{base}/">Start</a>', page)
+        self.assertIn(f'href="{base}/kategorie/', page)
+        self.assertNotIn('<a href="/">Start</a>', page)
+
+    def test_breadcrumb_start_link_stays_root_relative_without_real_config(self):
+        page, _ = affiliate_assets.render_comparison_page(
+            draft=_demand_draft(), match=self._match(), cta_url="https://example.test/go/abc")
+        self.assertIn('<a href="/">Start</a>', page)
+
     def test_curated_guide_title_avoids_a_redundant_meta_description(self):
         # regression guard for a real bug found live: an editorial title
         # that already restated the product name produced a duplicated,

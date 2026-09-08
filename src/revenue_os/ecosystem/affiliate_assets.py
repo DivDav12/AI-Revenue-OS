@@ -23,7 +23,7 @@ from ..deployment import DeploymentArtifact, default_deployment_adapter
 from .affiliate_matching import AffiliateMatch
 from .affiliate_model import AffiliateAsset, AffiliateAssetStore, new_id
 from .model import OpportunityDraft
-from .site import category_breadcrumb, page_shell
+from .site import _real_base_url, category_breadcrumb, page_shell
 
 #: exact wording requested for the German customer-facing site - shown
 #: directly next to/under the CTA button, and reused in the FAQ.
@@ -47,7 +47,7 @@ def _esc(text: str) -> str:
 
 def render_comparison_page(*, draft: OpportunityDraft, match: AffiliateMatch,
                            cta_url: str, guide_title: str = "",
-                           related_links: tuple = ()) -> tuple[str, dict]:
+                           related_links: tuple = (), environ=None) -> tuple[str, dict]:
     """Render one German-language "problem -> solution" buying-guide page,
     wrapped in the shared `site.py` chrome (header/nav/footer/CSS/
     branding) so every rendered page looks like one coherent site. Returns
@@ -175,9 +175,10 @@ beigetreten sind.</p>
     # internal linking (spec: "crawlable page structure") - a real link
     # back to the guide's own category page, using the SAME category
     # taxonomy the homepage/category grid already use.
-    cat_label, cat_path = category_breadcrumb(offer.category)
+    cat_label, cat_path = category_breadcrumb(offer.category, environ)
     breadcrumb_html = (f'<nav aria-label="Breadcrumb" class="breadcrumb">'
-                       f'<a href="/">Start</a> &rsaquo; <a href="{_esc(cat_path)}">{_esc(cat_label)}</a>'
+                       f'<a href="{_esc(_real_base_url(environ) + "/")}">Start</a> &rsaquo; '
+                       f'<a href="{_esc(cat_path)}">{_esc(cat_label)}</a>'
                        f'</nav>')
 
     body_html = f"""<article>
@@ -208,7 +209,7 @@ beigetreten sind.</p>
 {related_html}
 </article>"""
 
-    page = page_shell(title=title_text, description=description_text, body_html=body_html)
+    page = page_shell(title=title_text, description=description_text, body_html=body_html, environ=environ)
 
     word_count = len(re.findall(r"[A-Za-zÄÖÜäöüß0-9]+", body_html))
     checks = {

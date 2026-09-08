@@ -309,5 +309,70 @@ class SitemapAndRobotsTests(unittest.TestCase):
         self.assertIn("robots.txt", artifact.files)
 
 
+class InternalNavigationBasePathTests(unittest.TestCase):
+    """Regression guard for a real bug found live: a GitHub Pages PROJECT
+    site (served at https://owner.github.io/<repo>/, not the domain root)
+    needs every INTERNAL nav link prefixed with that repo subpath - a
+    plain root-relative "/kategorie/..." link 404s there. Reuses the
+    SAME real, already-configured base `_real_base_url()` the sitemap
+    already computes - never a second, independently-guessed domain."""
+    _REAL_ENV = {"GITHUB_TOKEN": "t", "GITHUB_PAGES_REPO": "DivDav12/AI-Revenue-OS"}
+    _BASE = "https://DivDav12.github.io/AI-Revenue-OS"
+
+    def test_homepage_nav_links_are_prefixed_under_a_real_project_deploy(self):
+        html = site.render_homepage(_tmp(), environ=self._REAL_ENV)
+        self.assertIn(f'href="{self._BASE}/"', html)
+        self.assertIn(f'href="{self._BASE}/impressum/"', html)
+        self.assertIn(f'href="{self._BASE}/datenschutz/"', html)
+        self.assertIn(f'href="{self._BASE}/affiliate-erklaerung/"', html)
+        for key, _label in site.SITE_CATEGORIES:
+            self.assertIn(f'href="{self._BASE}/kategorie/{key}/"', html)
+        # never a bare, unprefixed internal link once a real base resolves
+        self.assertNotIn('href="/kategorie/', html)
+        self.assertNotIn('href="/impressum/"', html)
+
+    def test_homepage_nav_links_stay_root_relative_without_real_config(self):
+        # unchanged behaviour - a custom domain served at the root, or no
+        # deploy config yet (e.g. every other existing test in this file).
+        html = site.render_homepage(_tmp())
+        self.assertIn('href="/"', html)
+        self.assertIn('href="/impressum/"', html)
+        self.assertIn('href="/kategorie/mikrofone/"', html)
+
+    def test_category_page_nav_and_breadcrumb_prefixed_under_real_deploy(self):
+        html = site.render_category_page(site.CATEGORY_MIKROFONE, _tmp(), environ=self._REAL_ENV)
+        self.assertIn(f'href="{self._BASE}/"', html)
+        self.assertIn(f'href="{self._BASE}/kategorie/kopfhoerer-earbuds/"', html)
+        self.assertNotIn('href="/"', html)
+
+    def test_category_breadcrumb_path_is_prefixed_under_real_deploy(self):
+        label, path = site.category_breadcrumb("usb-microphone-streaming", self._REAL_ENV)
+        self.assertEqual(path, f"{self._BASE}/kategorie/{site.CATEGORY_MIKROFONE}/")
+
+    def test_category_breadcrumb_path_stays_root_relative_without_real_config(self):
+        label, path = site.category_breadcrumb("usb-microphone-streaming")
+        self.assertEqual(path, f"/kategorie/{site.CATEGORY_MIKROFONE}/")
+
+    def test_build_site_artifact_has_no_dangling_internal_link_under_real_deploy(self):
+        # a full crawl of every generated internal href: none may be a
+        # bare root-relative path once a real base is configured - it
+        # would 404 on a GitHub Pages PROJECT site.
+        import os
+        import re
+        from unittest import mock
+
+        d = _tmp()
+        with mock.patch.dict(os.environ, self._REAL_ENV, clear=True):
+            artifact = site.build_site_artifact(d)
+        for path, html in artifact.files.items():
+            if not html.strip().startswith("<!doctype") and "<a " not in html:
+                continue
+            for href in re.findall(r'href="([^"]*)"', html):
+                if href.startswith("#") or href.startswith("mailto:"):
+                    continue
+                self.assertTrue(href.startswith(self._BASE) or href.startswith("https://"),
+                               f"dangling unprefixed internal link {href!r} in {path}")
+
+
 if __name__ == "__main__":
     unittest.main()
