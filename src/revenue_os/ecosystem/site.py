@@ -112,53 +112,73 @@ def category_breadcrumb(offer_category: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 _BASE_CSS = """
-:root{--fg:#16181d;--muted:#5b6270;--bg:#ffffff;--bg-alt:#f6f7f9;--border:#e6e8ec;--accent:#1a56db;--accent-dark:#123f9e}
+:root{--fg:#eef1f8;--muted:#98a2b8;--bg:#05070d;--bg-alt:#0a0e1a;--bg-elev:#10162a;--border:#232a42;--accent:#4f7cff;--accent-2:#9b6bff;--accent-grad:linear-gradient(90deg,var(--accent),var(--accent-2));--radius:14px}
 *{box-sizing:border-box}
 body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--fg);background:var(--bg);line-height:1.6}
-a{color:var(--accent);text-decoration:none}
+a{color:var(--fg);text-decoration:none}
 a:hover{text-decoration:underline}
 img{max-width:100%}
-.wrap{max-width:960px;margin:0 auto;padding:0 20px}
-header.site{border-bottom:1px solid var(--border);padding:16px 0}
+.wrap{max-width:1080px;margin:0 auto;padding:0 20px}
+header.site{border-bottom:1px solid var(--border);padding:16px 0;background:var(--bg)}
 header.site .wrap{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
-.brand{font-weight:700;font-size:1.25rem;color:var(--fg)}
+.brand{display:inline-flex;align-items:center;font-weight:700;font-size:1.15rem;color:var(--fg)}
 .brand:hover{text-decoration:none}
-nav.site a{margin-left:18px;color:var(--fg);font-size:.95rem}
-nav.site a:first-child{margin-left:0}
-.hero{padding:56px 0 40px;text-align:center;background:var(--bg-alt)}
-.hero h1{font-size:2rem;margin:0 0 12px;line-height:1.25}
-.hero p.tagline{color:var(--muted);font-size:1.1rem;margin:0 0 28px}
-.searchbox{max-width:520px;margin:0 auto;display:flex;gap:8px}
-.searchbox input{flex:1;padding:12px 14px;border:1px solid var(--border);border-radius:8px;font-size:1rem}
-.searchbox button{padding:12px 18px;border:0;border-radius:8px;background:var(--accent);color:#fff;font-size:1rem;cursor:pointer}
-.searchbox button:hover{background:var(--accent-dark)}
+.brand-mark{display:inline-flex;gap:3px;align-items:flex-end;width:20px;height:18px;margin-right:9px}
+.brand-mark i{display:block;width:6px;border-radius:3px;background:var(--accent-grad);font-style:normal}
+.brand-mark i:first-child{height:65%}
+.brand-mark i:last-child{height:100%}
+nav.site{display:flex;align-items:center;gap:22px;flex-wrap:wrap}
+nav.site a{color:var(--muted);font-size:.92rem}
+nav.site a:hover{color:var(--fg);text-decoration:none}
+.searchbox{display:flex;align-items:center;gap:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:999px;padding:9px 16px 9px 14px}
+.searchbox svg{flex:none;color:var(--muted)}
+.searchbox input{flex:1;min-width:120px;background:transparent;border:0;color:var(--fg);font-size:.88rem;outline:0}
+.searchbox input::placeholder{color:var(--muted)}
+.searchbox button{border:0;background:transparent;color:var(--muted);cursor:pointer;padding:0;display:flex}
+.badge-pill{display:inline-flex;align-items:center;gap:7px;background:var(--bg-elev);border:1px solid var(--border);border-radius:999px;padding:7px 16px;font-size:.82rem;color:var(--muted)}
+.hero{padding:72px 0 56px;text-align:center;background:radial-gradient(120% 100% at 50% 0%,#101a3a 0%,var(--bg) 60%)}
+.hero h1{font-size:2.6rem;margin:22px 0 16px;line-height:1.22;font-weight:800}
+.hero h1 .grad{background:var(--accent-grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero p.tagline{color:var(--muted);font-size:1.08rem;margin:0 auto 30px;max-width:640px}
+.hero-cta{display:inline-flex;align-items:center;gap:8px;padding:15px 30px;border-radius:999px;background:var(--accent-grad);color:#fff;font-weight:600;font-size:1.02rem}
+.hero-cta:hover{opacity:.92;text-decoration:none}
+.hero-note{margin:16px 0 0;color:var(--muted);font-size:.85rem;display:flex;align-items:center;justify-content:center;gap:6px}
+.feature-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:18px;margin:44px auto 0;max-width:920px;text-align:left}
+.feature-row div{background:var(--bg-elev);border:1px solid var(--border);border-radius:var(--radius);padding:20px}
+.feature-row .icon{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;background:rgba(79,124,255,.14);color:var(--accent);margin-bottom:12px}
+.feature-row strong{display:block;margin-bottom:4px;font-size:.98rem}
+.feature-row p{margin:0;color:var(--muted);font-size:.88rem}
 .categories{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:14px;margin:28px 0}
-.category-card{display:block;border:1px solid var(--border);border-radius:10px;padding:18px 14px;text-align:center;color:var(--fg)}
-.category-card:hover{border-color:var(--accent);text-decoration:none}
-.category-card .emoji{font-size:1.6rem;display:block;margin-bottom:8px}
-.category-card .count{color:var(--muted);font-size:.85rem;display:block;margin-top:4px}
+.category-card{display:block;background:var(--bg-elev);border:1px solid var(--border);border-radius:var(--radius);padding:20px 14px;text-align:center;color:var(--fg);transition:border-color .15s,transform .15s}
+.category-card:hover{border-color:var(--accent);transform:translateY(-2px);text-decoration:none}
+.category-card .emoji{font-size:1.3rem;width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;background:rgba(155,107,255,.14);margin:0 auto 10px}
+.category-card .count{color:var(--muted);font-size:.82rem;display:block;margin-top:5px}
 .guides{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px;margin:20px 0}
-.guide-card{border:1px solid var(--border);border-radius:10px;padding:18px;display:block;color:var(--fg)}
-.guide-card:hover{border-color:var(--accent);text-decoration:none}
-.guide-card .cat{color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.02em}
-.guide-card h3{margin:6px 0 0;font-size:1.05rem}
-.empty-state{color:var(--muted);border:1px dashed var(--border);border-radius:10px;padding:24px;text-align:center}
-section.block{padding:36px 0}
-section.block h2{font-size:1.4rem;margin-bottom:14px}
+.guide-card{background:var(--bg-elev);border:1px solid var(--border);border-radius:var(--radius);padding:20px;display:block;color:var(--fg);transition:border-color .15s,transform .15s}
+.guide-card:hover{border-color:var(--accent);transform:translateY(-2px);text-decoration:none}
+.guide-card .cat{color:var(--accent);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+.guide-card h3{margin:8px 0 0;font-size:1.05rem}
+.empty-state{color:var(--muted);border:1px dashed var(--border);border-radius:var(--radius);padding:24px;text-align:center;background:var(--bg-elev)}
+section.block{padding:40px 0}
+section.block h2{font-size:1.4rem;margin-bottom:16px}
 .how-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:18px}
-.how-steps div{border:1px solid var(--border);border-radius:10px;padding:16px}
-.disclosure,p.disclosure{background:var(--bg-alt);border:1px solid var(--border);border-radius:8px;padding:12px 14px;font-size:.9rem;color:var(--muted)}
-.cta a.button{display:inline-block;padding:14px 26px;border-radius:8px;background:var(--accent);color:#fff;font-weight:600;font-size:1.05rem}
-.cta a.button:hover{background:var(--accent-dark);text-decoration:none}
-footer.site{border-top:1px solid var(--border);margin-top:48px;padding:28px 0;color:var(--muted);font-size:.9rem}
+.how-steps div{background:var(--bg-elev);border:1px solid var(--border);border-radius:var(--radius);padding:18px}
+.disclosure,p.disclosure{background:var(--bg-elev);border:1px solid var(--border);border-radius:10px;padding:13px 15px;font-size:.88rem;color:var(--muted)}
+.note{font-size:.85rem;color:var(--muted);font-style:italic}
+.cta a.button{display:inline-block;padding:15px 28px;border-radius:999px;background:var(--accent-grad);color:#fff;font-weight:600;font-size:1.02rem}
+.cta a.button:hover{opacity:.92;text-decoration:none}
+footer.site{border-top:1px solid var(--border);margin-top:48px;padding:28px 0;color:var(--muted);font-size:.88rem;background:var(--bg-alt)}
 footer.site a{color:var(--muted)}
+footer.site a:hover{color:var(--fg)}
 .breadcrumb{font-size:.85rem;color:var(--muted);margin-bottom:10px}
-article h1{font-size:1.7rem;line-height:1.3}
-article section{margin:26px 0}
-article h2{font-size:1.2rem}
+.breadcrumb a{color:var(--muted)}
+.breadcrumb a:hover{color:var(--fg)}
+article h1{font-size:1.8rem;line-height:1.3}
+article section{background:var(--bg-elev);border:1px solid var(--border);border-radius:var(--radius);padding:20px 22px;margin:22px 0}
+article h2{font-size:1.15rem;margin-top:0}
 dl dt{font-weight:600;margin-top:10px}
-dl dd{margin:2px 0 0}
-@media (max-width:560px){.hero{padding:36px 0 28px}.hero h1{font-size:1.5rem}.searchbox{flex-direction:column}}
+dl dd{margin:2px 0 0;color:var(--muted)}
+@media (max-width:640px){.hero{padding:48px 0 36px}.hero h1{font-size:1.9rem}nav.site{gap:12px}.searchbox{display:none}}
 """
 
 
@@ -168,15 +188,27 @@ def _nav_links() -> str:
     return "".join(f'<a href="{_esc(href)}">{_esc(label)}</a>' for href, label in items)
 
 
+_SEARCH_ICON_SVG = ('<svg width="16" height="16" viewBox="0 0 24 24" fill="none" '
+                    'stroke="currentColor" stroke-width="2" stroke-linecap="round" '
+                    'aria-hidden="true"><circle cx="11" cy="11" r="7"/>'
+                    '<line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>')
+
+
 def render_header() -> str:
     return f"""<header class="site"><div class="wrap">
-<a class="brand" href="/">{_esc(SITE_BRAND)}</a>
-<nav class="site">{_nav_links()}</nav>
+<a class="brand" href="/"><span class="brand-mark" aria-hidden="true"><i></i><i></i></span>{_esc(SITE_BRAND)}</a>
+<nav class="site">{_nav_links()}
+<form class="searchbox" id="site-search" onsubmit="return false;">
+<button type="submit" aria-label="Suchen">{_SEARCH_ICON_SVG}</button>
+<input type="search" id="site-search-input" placeholder="Was möchtest du kaufen?" aria-label="Suche">
+</form>
+</nav>
 </div></header>"""
 
 
 def render_footer() -> str:
     return f"""<footer class="site"><div class="wrap">
+<p><a class="brand" href="/"><span class="brand-mark" aria-hidden="true"><i></i><i></i></span>{_esc(SITE_BRAND)}</a></p>
 <p>&copy; {_esc(SITE_BRAND)}. Alle Preise und Angebote laut Angaben der jeweiligen Anbieter/Partnerprogramme, ohne Gewähr.</p>
 <p>
 <a href="/impressum/">Impressum</a> &middot;
@@ -254,12 +286,16 @@ def render_homepage(data_dir) -> str:
                        'schau bald wieder vorbei.</div>')
 
     body = f"""<section class="hero"><div class="wrap">
-<h1>{_esc(SITE_TAGLINE)}</h1>
+<span class="badge-pill">🔗 Transparente Affiliate-Links</span>
+<h1><span class="grad">{_esc(SITE_TAGLINE)}</span></h1>
 <p class="tagline">Ehrliche, unabhängige Kaufberatung auf Basis echter Angebote - keine erfundenen Tests, keine gefälschten Bewertungen.</p>
-<form class="searchbox" id="site-search" onsubmit="return false;">
-<input type="search" id="site-search-input" placeholder="Was möchtest du kaufen?" aria-label="Suche">
-<button type="submit">Suchen</button>
-</form>
+<a class="hero-cta" href="#guides">Jetzt Guides entdecken &rarr;</a>
+<p class="hero-note">🛡️ Transparent finanziert &middot; Keine versteckten Kosten</p>
+<div class="feature-row">
+<div><span class="icon">{_SEARCH_ICON_SVG}</span><strong>Echte Nachfrage</strong><p>Wir beobachten, wonach Menschen tatsächlich suchen - keine erfundenen Themen.</p></div>
+<div><span class="icon">🛡️</span><strong>Ehrlich verglichen</strong><p>Fakten der Anbieter, ohne erfundene Tests, Sterne oder Kundenstimmen.</p></div>
+<div><span class="icon">🔗</span><strong>Transparente Links</strong><p>Affiliate-Links klar gekennzeichnet, ohne Mehrkosten für dich.</p></div>
+</div>
 </div></section>
 
 <section class="block wrap">
