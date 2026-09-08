@@ -23,13 +23,31 @@ from ..deployment import DeploymentArtifact, default_deployment_adapter
 from .affiliate_matching import AffiliateMatch
 from .affiliate_model import AffiliateAsset, AffiliateAssetStore, new_id
 from .model import OpportunityDraft
-from .site import category_breadcrumb, page_shell
+from .site import category_breadcrumb, page_shell, site_base_path
 
 #: exact wording requested for the German customer-facing site - shown
 #: directly next to/under the CTA button, and reused in the FAQ.
 DISCLOSURE_TEXT = (
     "Wenn du über diesen Link kaufst, erhalten wir möglicherweise eine "
     "Provision. Für dich entstehen dadurch keine zusätzlichen Kosten.")
+
+#: Amazon PartnerNet / Amazon Associates Operating Agreement requires a
+#: participant-identification statement wherever affiliate links to Amazon
+#: appear. Added VERBATIM (only) on pages whose offer network is Amazon -
+#: never on a systeme.io / Awin / other page.
+AMAZON_ASSOCIATE_DISCLOSURE = "Als Amazon-Partner verdiene ich an qualifizierten Verkäufen."
+
+_AMAZON_NETWORKS = frozenset({"amazon_associates"})
+
+
+def _full_disclosure(offer) -> str:
+    """Prominent, clearly-labelled advertising disclosure for the page -
+    generic wording always, plus the required Amazon sentence when (and
+    only when) the linked offer is an Amazon program."""
+    text = f"<strong>Werbung / Affiliate-Link.</strong> {DISCLOSURE_TEXT}"
+    if getattr(offer, "network", "") in _AMAZON_NETWORKS:
+        text += f" {AMAZON_ASSOCIATE_DISCLOSURE}"
+    return text
 
 #: minimum body word count before a page is even considered publishable -
 #: a hard floor against "thin/valueless mass pages" (spec section 9).
@@ -85,15 +103,20 @@ def render_comparison_page(*, draft: OpportunityDraft, match: AffiliateMatch,
     need_quote = _esc(real_evidence[0]) if has_real_quote else _esc(draft.title)
     product = _esc(offer.product_name)
     program = _esc(offer.program_name)
-    price_line = (f"Listenpreis: {_esc(offer.currency)} {offer.product_price:.2f}"
+    price_line = (f"Beobachteter Preis (Momentaufnahme, kein offizieller UVP): "
+                 f"{_esc(offer.currency)} {offer.product_price:.2f}"
                  f"{' (Schätzung - nicht direkt an der Quelle bestätigt)' if offer.price_is_estimate else ''}"
                  if offer.product_price > 0 else
                  "Preis: siehe Angebotsseite des Anbieters (hier nicht angegeben).")
     evidence_items = "".join(f"<li>{_esc(e)}</li>" for e in offer.evidence) or (
         "<li>Der Anbieter hat keine weiteren Angaben zur Verfügung gestellt.</li>")
 
+    disclosure_html = _full_disclosure(offer)
+    faq_answer = _esc(DISCLOSURE_TEXT)
+    if getattr(offer, "network", "") in _AMAZON_NETWORKS:
+        faq_answer += " " + _esc(AMAZON_ASSOCIATE_DISCLOSURE)
     faq_items = (
-        f"<dt>Ist das gesponsert?</dt><dd>{_esc(DISCLOSURE_TEXT)}</dd>"
+        f"<dt>Ist das Werbung / gesponsert?</dt><dd>{faq_answer}</dd>"
         f"<dt>Welches Problem löst das?</dt><dd>{need_quote}</dd>"
     )
     problem_statement = (
@@ -176,14 +199,16 @@ beigetreten sind.</p>
     # back to the guide's own category page, using the SAME category
     # taxonomy the homepage/category grid already use.
     cat_label, cat_path = category_breadcrumb(offer.category)
+    home_href = f"{site_base_path()}/" or "/"
     breadcrumb_html = (f'<nav aria-label="Breadcrumb" class="breadcrumb">'
-                       f'<a href="/">Start</a> &rsaquo; <a href="{_esc(cat_path)}">{_esc(cat_label)}</a>'
+                       f'<a href="{_esc(home_href)}">Start</a> &rsaquo; '
+                       f'<a href="{_esc(cat_path)}">{_esc(cat_label)}</a>'
                        f'</nav>')
 
     body_html = f"""<article>
 {breadcrumb_html}
 <h1>{headline}</h1>
-<p class="disclosure">{_esc(DISCLOSURE_TEXT)}</p>
+<p class="disclosure" role="note">{disclosure_html}</p>
 <section>
 <h2>Worum geht es?</h2>
 <p>{problem_statement}</p>
@@ -202,8 +227,8 @@ beigetreten sind.</p>
 <dl>{faq_items}</dl>
 </section>
 <p class="cta">
-<a class="button" href="{_esc(cta_url)}" rel="sponsored nofollow">Zum Händler &rarr;</a><br>
-<span class="disclosure">{_esc(DISCLOSURE_TEXT)}</span>
+<a class="button" href="{_esc(cta_url)}" rel="sponsored nofollow">Zum Anbieter &rarr; (Werbelink)</a><br>
+<span class="disclosure" role="note">{disclosure_html}</span>
 </p>
 {related_html}
 </article>"""
