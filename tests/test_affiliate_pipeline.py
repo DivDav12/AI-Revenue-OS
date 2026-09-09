@@ -361,7 +361,7 @@ class AssetGenerationTests(unittest.TestCase):
             draft=draft, match=match, cta_url="https://example.test/go/abc")
         self.assertIn('class="breadcrumb"', page)
         self.assertIn('href="/kategorie/mikrofone/"', page)
-        self.assertIn(">Mikrofone<", page)
+        self.assertIn(">Microphones<", page)
 
     def test_unmapped_category_breadcrumb_falls_back_to_sonstiges(self):
         draft = _demand_draft()
@@ -380,14 +380,14 @@ class AssetGenerationTests(unittest.TestCase):
         page, _ = affiliate_assets.render_comparison_page(
             draft=_demand_draft(), match=self._match(),
             cta_url="https://example.test/go/abc", environ=real_env)
-        self.assertIn(f'<a href="{base}/">Start</a>', page)
+        self.assertIn(f'<a href="{base}/">Home</a>', page)
         self.assertIn(f'href="{base}/kategorie/', page)
-        self.assertNotIn('<a href="/">Start</a>', page)
+        self.assertNotIn('<a href="/">Home</a>', page)
 
     def test_breadcrumb_start_link_stays_root_relative_without_real_config(self):
         page, _ = affiliate_assets.render_comparison_page(
             draft=_demand_draft(), match=self._match(), cta_url="https://example.test/go/abc")
-        self.assertIn('<a href="/">Start</a>', page)
+        self.assertIn('<a href="/">Home</a>', page)
 
     def test_curated_guide_title_avoids_a_redundant_meta_description(self):
         # regression guard for a real bug found live: an editorial title
@@ -399,10 +399,10 @@ class AssetGenerationTests(unittest.TestCase):
         match = self._match()
         page, _ = affiliate_assets.render_comparison_page(
             draft=draft, match=match, cta_url="https://example.test/go/abc",
-            guide_title="Sales-Funnel-Software für Anfänger")
+            guide_title="Sales funnel software for beginners")
         self.assertIn(
             '<meta name="description" content="Acme Cloud Hosting: '
-            'Sales-Funnel-Software für Anfänger">', page)
+            'Sales funnel software for beginners">', page)
         self.assertNotIn("does it solve", page)
 
     def test_related_links_rendered_when_supplied(self):
@@ -1393,7 +1393,7 @@ class AmazonAffiliateLoopTests(unittest.TestCase):
                               evidence=[])
         asset, ok, _ = affiliate_assets.build_asset(
             d, opportunity_id="op-chain", draft=draft, match=match, cta_url="",
-            guide_title="Bestes USB-Mikrofon fuer Streaming & Discord")
+            guide_title="Best USB microphone for streaming & Discord")
         self.assertTrue(ok)
         link = affiliate_links.create_link(d, opportunity_id="op-chain", asset=asset,
                                            match=match, source="own_site")
@@ -1446,13 +1446,13 @@ class AmazonAffiliateLoopTests(unittest.TestCase):
         draft = _demand_draft(category="usb-microphone-streaming", evidence=[])
         page, _ = affiliate_assets.render_comparison_page(
             draft=draft, match=match, cta_url="https://www.amazon.de/dp/B0CQP5NL72?tag=airevenue-21",
-            guide_title="Bestes USB-Mikrofon fuer Streaming & Discord")
+            guide_title="Best USB microphone for streaming & Discord")
         low = page.lower()
         for forbidden in ("★", "5 stars", "5/5", "customers say", "verified purchase",
                          "amazing sound quality", "best mic i've ever",
                          "5 sterne", "kundenmeinung", "kundenbewertung", "klingt fantastisch"):
             self.assertNotIn(forbidden, low)
-        self.assertIn("nicht selbst getestet", low)
+        self.assertIn("not tested it ourselves", low)
 
 
 if __name__ == "__main__":

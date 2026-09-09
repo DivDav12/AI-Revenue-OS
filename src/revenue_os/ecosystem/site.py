@@ -31,7 +31,7 @@ from ..deployment import DeploymentArtifact, default_deployment_adapter
 from .affiliate_model import AffiliateAssetStore, AffiliateOfferStore
 
 SITE_BRAND = "AI Revenue"
-SITE_TAGLINE = "Finde das richtige Produkt – ohne stundenlang zu suchen."
+SITE_TAGLINE = "Find the right product – without hours of searching."
 SITE_ROOT_SLUG = ""   # deploys at the repo root, not a subfolder
 
 
@@ -76,18 +76,19 @@ CATEGORY_GAMING = "gaming"
 CATEGORY_TECHNIK = "technik"
 CATEGORY_SONSTIGES = "sonstiges"
 
-#: (key, emoji label) - display order.
+#: (key, emoji label) - display order. Keys are URL slugs and never change;
+#: only the human-readable labels are localised.
 SITE_CATEGORIES: tuple[tuple[str, str], ...] = (
-    (CATEGORY_KOPFHOERER, "\U0001F3A7 Kopfhörer & Earbuds"),
-    (CATEGORY_MIKROFONE, "\U0001F399️ Mikrofone"),
-    (CATEGORY_TASTATUREN, "⌨️ Tastaturen"),
-    (CATEGORY_MAEUSE, "\U0001F5B1️ Mäuse"),
-    (CATEGORY_MONITORE, "\U0001F5A5️ Monitore"),
+    (CATEGORY_KOPFHOERER, "\U0001F3A7 Headphones & Earbuds"),
+    (CATEGORY_MIKROFONE, "\U0001F399️ Microphones"),
+    (CATEGORY_TASTATUREN, "⌨️ Keyboards"),
+    (CATEGORY_MAEUSE, "\U0001F5B1️ Mice"),
+    (CATEGORY_MONITORE, "\U0001F5A5️ Monitors"),
     (CATEGORY_GAMING, "\U0001F3AE Gaming"),
-    (CATEGORY_TECHNIK, "\U0001F4BB Technik"),
+    (CATEGORY_TECHNIK, "\U0001F4BB Tech"),
 )
 
-_CATEGORY_LABELS = dict(SITE_CATEGORIES) | {CATEGORY_SONSTIGES: "\U0001F4E6 Sonstiges"}
+_CATEGORY_LABELS = dict(SITE_CATEGORIES) | {CATEGORY_SONSTIGES: "\U0001F4E6 Other"}
 
 #: real `AffiliateOffer.category` values already used in this codebase,
 #: mapped to a site category - substring match against the offer's own
@@ -220,8 +221,8 @@ dl dd{margin:2px 0 0;color:var(--muted)}
 
 def _nav_links(environ=None) -> str:
     base = _real_base_url(environ)
-    items = [("/", "Start")] + [(f"/kategorie/{key}/", _split_emoji_label(label)[1])
-                                for key, label in SITE_CATEGORIES[:4]]
+    items = [("/", "Home")] + [(f"/kategorie/{key}/", _split_emoji_label(label)[1])
+                               for key, label in SITE_CATEGORIES[:4]]
     return "".join(f'<a href="{_esc(base + href)}">{_esc(label)}</a>' for href, label in items)
 
 
@@ -235,11 +236,11 @@ def render_header(environ=None) -> str:
     base = _real_base_url(environ)
     return f"""<header class="site"><div class="wrap">
 <a class="brand" href="{_esc(base + '/')}"><span class="brand-mark" aria-hidden="true"><i></i><i></i></span>{_esc(SITE_BRAND)}</a>
-<nav class="site" aria-label="Hauptnavigation">{_nav_links(environ)}
+<nav class="site" aria-label="Main navigation">{_nav_links(environ)}
 <form class="searchbox" id="site-search" onsubmit="return false;" role="search">
-<label class="sr-only" for="site-search-input">Kaufberatungen durchsuchen</label>
-<button type="submit" aria-label="Suchen">{_SEARCH_ICON_SVG}</button>
-<input type="search" id="site-search-input" placeholder="Was möchtest du kaufen?" aria-label="Kaufberatungen durchsuchen">
+<label class="sr-only" for="site-search-input">Search buying guides</label>
+<button type="submit" aria-label="Search">{_SEARCH_ICON_SVG}</button>
+<input type="search" id="site-search-input" placeholder="What are you looking to buy?" aria-label="Search buying guides">
 </form>
 </nav>
 </div></header>"""
@@ -249,11 +250,11 @@ def render_footer(environ=None) -> str:
     base = _real_base_url(environ)
     return f"""<footer class="site"><div class="wrap">
 <p><a class="brand" href="{_esc(base + '/')}"><span class="brand-mark" aria-hidden="true"><i></i><i></i></span>{_esc(SITE_BRAND)}</a></p>
-<p>&copy; {_esc(SITE_BRAND)}. Alle Preise und Angebote laut Angaben der jeweiligen Anbieter/Partnerprogramme, ohne Gewähr.</p>
-<nav aria-label="Rechtliche Hinweise">
-<a href="{_esc(base + '/impressum/')}">Impressum</a> &middot;
-<a href="{_esc(base + '/datenschutz/')}">Datenschutz</a> &middot;
-<a href="{_esc(base + '/affiliate-erklaerung/')}">Wie wir Geld verdienen</a>
+<p>&copy; {_esc(SITE_BRAND)}. All prices and offers per the respective providers/affiliate programs, without guarantee.</p>
+<nav aria-label="Legal">
+<a href="{_esc(base + '/impressum/')}">Imprint</a> &middot;
+<a href="{_esc(base + '/datenschutz/')}">Privacy</a> &middot;
+<a href="{_esc(base + '/affiliate-erklaerung/')}">How we make money</a>
 </nav>
 </div></footer>"""
 
@@ -267,15 +268,15 @@ def page_shell(*, title: str, description: str, body_html: str, environ=None) ->
     second, independently-guessed base."""
     full_title = SITE_BRAND if title == SITE_BRAND else f"{title} – {SITE_BRAND}"
     return f"""<!doctype html>
-<html lang="de"><head><meta charset="utf-8">
+<html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{_esc(full_title)}</title>
 <meta name="description" content="{_esc(description)}">
 <style>{_BASE_CSS}</style>
 </head><body>
-<a class="skip-link" href="#inhalt">Zum Inhalt springen</a>
+<a class="skip-link" href="#content">Skip to content</a>
 {render_header(environ)}
-<main id="inhalt">
+<main id="content">
 {body_html}
 </main>
 {render_footer(environ)}
@@ -301,7 +302,7 @@ def _real_guide_cards(data_dir) -> list[GuideCard]:
             continue
         offer = offers.get(asset.offer_id)
         site_cat = classify_offer_category(offer.category if offer else "")
-        cards.append(GuideCard(title=asset.title or "Kaufberatung", live_url=asset.live_url,
+        cards.append(GuideCard(title=asset.title or "Buying guide", live_url=asset.live_url,
                                site_category=site_cat))
     return cards
 
@@ -319,9 +320,10 @@ def render_homepage(data_dir, *, environ=None) -> str:
 
     def _cat_card(key: str, label: str) -> str:
         emoji, text = _split_emoji_label(label)
+        n = counts.get(key, 0)
         return (f'<a class="category-card" href="{_esc(base + f"/kategorie/{key}/")}">'
                 f'<span class="emoji" aria-hidden="true">{emoji}</span>{_esc(text)}'
-                f'<span class="count">{counts.get(key, 0)} Ratgeber</span></a>')
+                f'<span class="count">{n} guide{"" if n == 1 else "s"}</span></a>')
 
     category_html = "".join(_cat_card(key, label) for key, label in SITE_CATEGORIES)
 
@@ -329,42 +331,42 @@ def render_homepage(data_dir, *, environ=None) -> str:
         guides_html = '<div class="guides">' + "".join(
             f'<a class="guide-card" href="{_esc(c.live_url)}">'
             f'<span class="cat">{_esc(_split_emoji_label(_CATEGORY_LABELS.get(c.site_category, ""))[1])}</span>'
-            f'<h3>{_esc(c.title)}</h3><span class="guide-link">Guide ansehen &rarr;</span></a>'
+            f'<h3>{_esc(c.title)}</h3><span class="guide-link">View guide &rarr;</span></a>'
             for c in cards) + "</div>"
     else:
-        guides_html = ('<div class="empty-state">Noch keine Kaufberatung veröffentlicht - '
-                       'schau bald wieder vorbei.</div>')
+        guides_html = ('<div class="empty-state">No buying guide published yet - '
+                       'check back soon.</div>')
 
     body = f"""<section class="hero"><div class="wrap">
-<span class="badge-pill">🔗 Transparente Affiliate-Links</span>
+<span class="badge-pill">🔗 Transparent affiliate links</span>
 <h1><span class="grad">{_esc(SITE_TAGLINE)}</span></h1>
-<p class="tagline">Ehrliche, transparent finanzierte Kaufberatung auf Basis echter Angebote - keine erfundenen Tests, keine gefälschten Bewertungen. Manche Links sind Affiliate-Links (siehe <a href="{_esc(base + '/affiliate-erklaerung/')}">Wie wir Geld verdienen</a>).</p>
-<a class="hero-cta" href="#guides">Jetzt Guides entdecken &rarr;</a>
-<p class="hero-note">🛡️ Transparent finanziert &middot; Keine versteckten Kosten</p>
+<p class="tagline">Honest, transparently funded buying advice based on real offers - no made-up tests, no fake reviews. Some links are affiliate links (see <a href="{_esc(base + '/affiliate-erklaerung/')}">How we make money</a>).</p>
+<a class="hero-cta" href="#guides">Explore the guides &rarr;</a>
+<p class="hero-note">🛡️ Transparently funded &middot; No hidden cost</p>
 <div class="feature-row">
-<div><span class="icon">{_SEARCH_ICON_SVG}</span><strong>Echte Nachfrage</strong><p>Wir beobachten, wonach Menschen tatsächlich suchen - keine erfundenen Themen.</p></div>
-<div><span class="icon">🛡️</span><strong>Ehrlich verglichen</strong><p>Fakten der Anbieter, ohne erfundene Tests, Sterne oder Kundenstimmen.</p></div>
-<div><span class="icon">🔗</span><strong>Transparente Links</strong><p>Affiliate-Links klar gekennzeichnet, ohne Mehrkosten für dich.</p></div>
+<div><span class="icon">{_SEARCH_ICON_SVG}</span><strong>Real demand</strong><p>We watch what people are actually searching for - no made-up topics.</p></div>
+<div><span class="icon">🛡️</span><strong>Compared honestly</strong><p>The providers' own facts, without made-up tests, stars or customer quotes.</p></div>
+<div><span class="icon">🔗</span><strong>Transparent links</strong><p>Affiliate links clearly labelled, at no extra cost to you.</p></div>
 </div>
 </div></section>
 
 <section class="block wrap">
-<h2>Kategorien</h2>
+<h2>Categories</h2>
 <div class="categories">{category_html}</div>
 </section>
 
 <section class="block wrap" id="guides">
-<h2>Aktuelle Kaufberatungen</h2>
+<h2>Latest buying guides</h2>
 {guides_html}
 </section>
 
 <section class="block wrap">
-<h2>So funktioniert {_esc(SITE_BRAND)}</h2>
+<h2>How {_esc(SITE_BRAND)} works</h2>
 <div class="how-steps">
-<div><strong>1. Echte Nachfrage erkennen</strong><p>Wir beobachten, wonach Menschen tatsächlich suchen und fragen - keine erfundenen Themen.</p></div>
-<div><strong>2. Echtes Angebot prüfen</strong><p>Wir verlinken nur Partnerprogramme, denen wir selbst beigetreten sind und deren Konditionen wir geprüft haben.</p></div>
-<div><strong>3. Ehrlich vergleichen</strong><p>Wir stellen die Fakten der Anbieter dar - ohne erfundene Tests, Sterne oder Kundenstimmen.</p></div>
-<div><strong>4. Transparent verlinken</strong><p>Kaufst du über unseren Link, erhalten wir ggf. eine Provision - ohne Mehrkosten für dich. Siehe <a href="{_esc(base + '/affiliate-erklaerung/')}">Wie wir Geld verdienen</a>.</p></div>
+<div><strong>1. Spot real demand</strong><p>We watch what people are actually searching for and asking - no made-up topics.</p></div>
+<div><strong>2. Check a real offer</strong><p>We only link to affiliate programs we have joined ourselves and whose terms we have reviewed.</p></div>
+<div><strong>3. Compare honestly</strong><p>We present the providers' facts - without made-up tests, stars or customer quotes.</p></div>
+<div><strong>4. Link transparently</strong><p>If you buy through our link we may earn a commission - at no extra cost to you. See <a href="{_esc(base + '/affiliate-erklaerung/')}">How we make money</a>.</p></div>
 </div>
 </section>
 <script>
@@ -394,30 +396,29 @@ def render_category_page(category_key: str, data_dir, *, environ=None) -> str:
     cards = [c for c in _real_guide_cards(data_dir) if c.site_category == category_key]
 
     breadcrumb_html = (f'<nav aria-label="Breadcrumb" class="breadcrumb">'
-                       f'<a href="{_esc(base + "/")}">Start</a> &rsaquo; {_esc(name)}</nav>')
+                       f'<a href="{_esc(base + "/")}">Home</a> &rsaquo; {_esc(name)}</nav>')
 
     if cards:
         body_list = '<div class="guides">' + "".join(
             f'<a class="guide-card" href="{_esc(c.live_url)}">'
             f'<span class="cat">{_esc(_split_emoji_label(_CATEGORY_LABELS.get(c.site_category, ""))[1])}</span>'
-            f'<h3>{_esc(c.title)}</h3><span class="guide-link">Guide ansehen &rarr;</span></a>'
+            f'<h3>{_esc(c.title)}</h3><span class="guide-link">View guide &rarr;</span></a>'
             for c in cards) + "</div>"
     else:
-        body_list = ('<div class="empty-state">Für diese Kategorie gibt es aktuell noch keine '
-                    'Kaufberatung - bald verfügbar.</div>')
+        body_list = ('<div class="empty-state">There are no buying guides in this category '
+                    'yet - coming soon.</div>')
 
-    badge = (f'<span class="badge-pill"><span aria-hidden="true">{emoji}</span> Kategorie</span>'
-             if emoji else '<span class="badge-pill">Kategorie</span>')
+    badge = (f'<span class="badge-pill"><span aria-hidden="true">{emoji}</span> Category</span>'
+             if emoji else '<span class="badge-pill">Category</span>')
     body = f"""<section class="block wrap">
 {breadcrumb_html}
 {badge}
 <h1><span class="grad">{_esc(name)}</span></h1>
-<p class="cat-intro">Kaufberatungen zum Thema {_esc(name)} - basierend auf echten Angeboten aus
-Partnerprogrammen und echten, öffentlich gestellten Fragen. Keine erfundenen Tests, keine
-gefälschten Bewertungen.</p>
+<p class="cat-intro">Buying guides on {_esc(name)} - based on real offers from affiliate
+programs and real, publicly asked questions. No made-up tests, no fake reviews.</p>
 {body_list}
 </section>"""
-    return page_shell(title=name, description=f"Kaufberatung: {name}", body_html=body, environ=environ)
+    return page_shell(title=name, description=f"Buying guides: {name}", body_html=body, environ=environ)
 
 
 def all_category_pages(data_dir, *, environ=None) -> dict[str, str]:
@@ -440,198 +441,198 @@ def _business_email() -> str:
 #: shown at the bottom of every legal page - this pass improves accuracy and
 #: completeness but is not a substitute for a qualified legal review.
 _LEGAL_REVIEW_NOTE = (
-    '<p class="disclosure"><strong>Hinweis:</strong> Diese Angaben beschreiben '
-    'den tatsächlichen technischen und organisatorischen Stand dieser Website. '
-    'Sie wurden sorgfältig erstellt, ersetzen aber keine individuelle '
-    'Rechtsberatung und begründen keine Gewähr für Vollständigkeit oder '
-    'rechtliche Wirksamkeit.</p>')
+    '<p class="disclosure"><strong>Note:</strong> These statements describe the '
+    'actual technical and organisational state of this website. They have been '
+    'prepared with care but are not a substitute for individual legal advice '
+    'and do not warrant completeness or legal validity.</p>')
 
 #: exactly the fields a natural person operating this site from Germany must
-#: still supply for a complete Impressum (§ 5 DDG, § 18 Abs. 2 MStV).
+#: still supply for a complete Impressum (§ 5 DDG, § 18(2) MStV).
 IMPRESSUM_REQUIRED_FIELDS: tuple[str, ...] = (
-    "Vollständiger Name der verantwortlichen natürlichen Person "
-    "(bzw. exakte Firmierung samt Rechtsform, falls ein Unternehmen)",
-    "Ladungsfähige Anschrift (Straße, Hausnummer, PLZ, Ort - kein Postfach)",
-    "Zweites, unmittelbar wirksames Kontaktmittel neben der E-Mail "
-    "(z. B. Telefonnummer oder ein Kontaktformular mit Reaktionszusage)",
-    "Umsatzsteuer-Identifikationsnummer nach § 27a UStG - nur falls vorhanden",
-    "Handelsregister / Registergericht und Registernummer - nur falls "
-    "eine Eintragung besteht",
-    "Name und Anschrift der/des inhaltlich Verantwortlichen nach "
-    "§ 18 Abs. 2 MStV",
-    "Angabe, ob zur Teilnahme an einem Verbraucherschlichtungsverfahren "
-    "bereit/verpflichtet (§ 36 VSBG)",
+    "Full name of the responsible natural person "
+    "(or the exact company name and legal form, if a company)",
+    "Address that can be served with legal process "
+    "(street, number, postal code, city - no PO box)",
+    "A second, immediately effective means of contact besides email "
+    "(e.g. a phone number or a contact form with a response commitment)",
+    "VAT identification number under § 27a UStG - only if one exists",
+    "Commercial register / registering court and register number - only if "
+    "a registration exists",
+    "Name and address of the person responsible for content under "
+    "§ 18(2) MStV",
+    "Statement of whether willing/obliged to take part in a consumer "
+    "dispute resolution procedure (§ 36 VSBG)",
 )
 
 
 def render_impressum(*, environ=None) -> str:
     email = _business_email()
-    contact = (f'<p>E-Mail: <a href="mailto:{_esc(email)}">{_esc(email)}</a></p>'
-               if email else '<p><strong>[BITTE ERGÄNZEN: E-Mail-Adresse]</strong></p>')
+    contact = (f'<p>Email: <a href="mailto:{_esc(email)}">{_esc(email)}</a></p>'
+               if email else '<p><strong>[TO BE COMPLETED: email address]</strong></p>')
     todo = "".join(f"<li>{_esc(f)}</li>" for f in IMPRESSUM_REQUIRED_FIELDS)
     body = f"""<section class="block wrap">
-<h1>Impressum</h1>
-<p>Angaben gemäß § 5 Digitale-Dienste-Gesetz (DDG) sowie § 18 Abs. 2
-Medienstaatsvertrag (MStV).</p>
+<h1>Imprint</h1>
+<p>Information pursuant to § 5 of the German Digital Services Act
+(Digitale-Dienste-Gesetz, DDG) and § 18(2) of the German Interstate
+Media Treaty (Medienstaatsvertrag, MStV).</p>
 
-<h2>Diensteanbieter</h2>
-<p><strong>[BITTE ERGÄNZEN: Name bzw. Firmierung der verantwortlichen Person]</strong><br>
-<strong>[BITTE ERGÄNZEN: Straße und Hausnummer]</strong><br>
-<strong>[BITTE ERGÄNZEN: PLZ und Ort]</strong><br>
-Deutschland</p>
+<h2>Service provider</h2>
+<p><strong>[TO BE COMPLETED: name or company name of the responsible person]</strong><br>
+<strong>[TO BE COMPLETED: street and house number]</strong><br>
+<strong>[TO BE COMPLETED: postal code and city]</strong><br>
+Germany</p>
 
-<h2>Kontakt</h2>
+<h2>Contact</h2>
 {contact}
-<p><strong>[BITTE ERGÄNZEN: zweites Kontaktmittel, z. B. Telefonnummer]</strong></p>
+<p><strong>[TO BE COMPLETED: second means of contact, e.g. a phone number]</strong></p>
 
-<h2>Verantwortlich für den Inhalt nach § 18 Abs. 2 MStV</h2>
-<p><strong>[BITTE ERGÄNZEN: Name und Anschrift der verantwortlichen Person]</strong></p>
+<h2>Responsible for content under § 18(2) MStV</h2>
+<p><strong>[TO BE COMPLETED: name and address of the responsible person]</strong></p>
 
-<h2>Umsatzsteuer-Identifikationsnummer</h2>
-<p>[BITTE ERGÄNZEN: USt-IdNr. nach § 27a UStG, falls vorhanden - sonst diesen
-Abschnitt streichen.]</p>
+<h2>VAT identification number</h2>
+<p>[TO BE COMPLETED: VAT ID under § 27a UStG, if one exists - otherwise
+delete this section.]</p>
 
-<h2>EU-Streitschlichtung / Verbraucherschlichtung</h2>
-<p>Die Europäische Kommission stellt eine Plattform zur Online-Streitbeilegung
-bereit: <a href="https://ec.europa.eu/consumers/odr/" rel="nofollow noopener"
+<h2>EU online dispute resolution / consumer arbitration</h2>
+<p>The European Commission provides a platform for online dispute
+resolution: <a href="https://ec.europa.eu/consumers/odr/" rel="nofollow noopener"
 target="_blank">https://ec.europa.eu/consumers/odr/</a>.
-[BITTE ERGÄNZEN/BESTÄTIGEN: Aussage zur Bereitschaft/Verpflichtung zur Teilnahme
-an einem Verbraucherschlichtungsverfahren nach § 36 VSBG.]</p>
+[TO BE COMPLETED/CONFIRMED: statement on willingness/obligation to take part
+in a consumer dispute resolution procedure under § 36 VSBG.]</p>
 
-<h2>Noch offen</h2>
-<p>Dieses Impressum ist unvollständig, solange die oben mit
-<strong>[BITTE ERGÄNZEN]</strong> markierten gesetzlichen Pflichtangaben noch nicht
-eingetragen sind. Die noch fehlenden Angaben:</p>
+<h2>Still outstanding</h2>
+<p>This imprint is incomplete as long as the statutory mandatory details
+marked <strong>[TO BE COMPLETED]</strong> above have not yet been entered.
+The details still missing:</p>
 <ul>{todo}</ul>
 {_LEGAL_REVIEW_NOTE}
 </section>"""
-    return page_shell(title="Impressum",
-                      description="Impressum und Anbieterkennzeichnung", body_html=body,
+    return page_shell(title="Imprint",
+                      description="Imprint and provider identification", body_html=body,
                       environ=environ)
 
 
 def render_datenschutz(*, environ=None) -> str:
     email = _business_email()
-    resp_contact = (f'E-Mail: <a href="mailto:{_esc(email)}">{_esc(email)}</a>'
-                    if email else "<strong>[BITTE ERGÄNZEN: Kontakt-E-Mail]</strong>")
+    resp_contact = (f'Email: <a href="mailto:{_esc(email)}">{_esc(email)}</a>'
+                    if email else "<strong>[TO BE COMPLETED: contact email]</strong>")
     body = f"""<section class="block wrap">
-<h1>Datenschutzerklärung</h1>
+<h1>Privacy Policy</h1>
 
-<h2>1. Verantwortlicher</h2>
-<p>Verantwortlich im Sinne der Datenschutz-Grundverordnung (DSGVO):<br>
-<strong>[BITTE ERGÄNZEN: Name / Firmierung]</strong><br>
-<strong>[BITTE ERGÄNZEN: ladungsfähige Anschrift]</strong><br>
+<h2>1. Controller</h2>
+<p>Controller within the meaning of the General Data Protection Regulation (GDPR):<br>
+<strong>[TO BE COMPLETED: name / company name]</strong><br>
+<strong>[TO BE COMPLETED: address that can be served with legal process]</strong><br>
 {resp_contact}</p>
 
-<h2>2. Grundsätzliches zu dieser Website</h2>
-<p>Diese Website ist eine statische Seite. Wir selbst setzen <strong>keine Cookies</strong>,
-keine Analyse- oder Tracking-Skripte, keine Werbe-Pixel, keine externen
-Schriftarten und keine eingebetteten Drittanbieter-Inhalte (z. B. Karten, Videos,
-Social-Media-Widgets) ein. Es findet keine Reichweitenmessung und kein Profiling
-statt. Ein Consent-Banner ist deshalb für diese Seiten nicht erforderlich.</p>
+<h2>2. About this website</h2>
+<p>This website is a static site. We ourselves set <strong>no cookies</strong>,
+no analytics or tracking scripts, no advertising pixels, no external fonts and
+no embedded third-party content (e.g. maps, videos, social-media widgets).
+There is no reach measurement and no profiling. A consent banner is therefore
+not required for these pages.</p>
 
-<h2>3. Hosting und Server-Logdaten (GitHub Pages)</h2>
-<p>Diese Website wird über <strong>GitHub Pages</strong> gehostet, einen Dienst der
-GitHub, Inc., 88 Colin P. Kelly Jr. Street, San Francisco, CA 94107, USA (ein
-Unternehmen der Microsoft Corporation). Beim Aufruf dieser Seiten überträgt dein
-Browser technisch notwendige Daten an GitHub als Hosting-Provider, insbesondere
-die IP-Adresse, Datum und Uhrzeit des Zugriffs, die angeforderte Adresse, den
-HTTP-Statuscode, die übertragene Datenmenge sowie ggf. Referrer und Browser-/
-Betriebssystemkennung. GitHub kann diese Daten in Server-Logdateien zur
-Sicherstellung von Betrieb, Sicherheit und Stabilität verarbeiten. Wir haben auf
-diese Logdateien keinen Zugriff; uns liegen nur aggregierte, nicht personenbezogene
-Zugriffszahlen vor. Rechtsgrundlage ist Art. 6 Abs. 1 lit. f DSGVO (berechtigtes
-Interesse an einer sicheren, zuverlässigen und kostengünstigen Bereitstellung).
-Die Verarbeitung erfolgt teils in den USA; GitHub/Microsoft stützt Übermittlungen
-nach eigenen Angaben auf die EU-Standardvertragsklauseln bzw. das EU-U.S. Data
-Privacy Framework. Einzelheiten:
+<h2>3. Hosting and server log data (GitHub Pages)</h2>
+<p>This website is hosted via <strong>GitHub Pages</strong>, a service of
+GitHub, Inc., 88 Colin P. Kelly Jr. Street, San Francisco, CA 94107, USA (a
+Microsoft Corporation company). When you open these pages, your browser
+transmits technically necessary data to GitHub as the hosting provider, in
+particular the IP address, the date and time of access, the requested
+address, the HTTP status code, the amount of data transferred and, where
+applicable, the referrer and browser/operating-system identifier. GitHub may
+process this data in server log files to ensure operation, security and
+stability. We have no access to these log files; only aggregated,
+non-personal access figures are available to us. The legal basis is
+Art. 6(1)(f) GDPR (legitimate interest in a secure, reliable and
+cost-effective provision). Processing takes place partly in the USA;
+according to its own statements, GitHub/Microsoft bases transfers on the EU
+Standard Contractual Clauses or the EU-U.S. Data Privacy Framework. Details:
 <a href="https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement"
 rel="nofollow noopener" target="_blank">GitHub Privacy Statement</a>.
-[BITTE PRÜFEN: aktuellen Übermittlungsmechanismus und ggf. Auftragsverarbeitung
-mit GitHub bestätigen.]</p>
+[TO BE VERIFIED: confirm the current transfer mechanism and, where
+applicable, a data processing agreement with GitHub.]</p>
 
-<h2>4. Affiliate-/Partnerlinks (Amazon, systeme.io)</h2>
-<p>Einige Links auf dieser Website sind Partner-/Affiliate-Links. Klickst du einen
-solchen Link an, verlässt du diese Website und gelangst zum jeweiligen Anbieter
-(z. B. amazon.de oder systeme.io). Erst der Anbieter verarbeitet dann deine Daten
-nach <em>seiner</em> Datenschutzerklärung und setzt in der Regel ein Cookie bzw.
-speichert eine Kennung, um einen späteren Kauf unserer Partnerkennung zuzuordnen
-(bei Amazon der Partner-Tag <code>airevenue-21</code>). Darauf haben wir keinen
-Einfluss. Wir erhalten vom Anbieter keine personenbezogenen Daten über dich,
-sondern nur zusammengefasste, anonyme Statistiken zu Klicks und ggf. Provisionen.
-Das Setzen der Links erfolgt auf Grundlage von Art. 6 Abs. 1 lit. f DSGVO
-(berechtigtes Interesse an der Finanzierung des Angebots).</p>
-<p>Datenschutzhinweise der Anbieter:
+<h2>4. Affiliate / partner links (Amazon, systeme.io)</h2>
+<p>Some links on this website are partner/affiliate links. When you click
+such a link, you leave this website and are taken to the respective provider
+(e.g. amazon.de or systeme.io). Only the provider then processes your data
+under <em>its</em> privacy policy and, as a rule, sets a cookie or stores an
+identifier in order to attribute a later purchase to our partner
+identification (for Amazon, the partner tag <code>airevenue-21</code>). We
+have no influence over this. We receive no personal data about you from the
+provider, only aggregated, anonymous statistics on clicks and, where
+applicable, commissions. Placing the links is based on Art. 6(1)(f) GDPR
+(legitimate interest in funding the service).</p>
+<p>Providers' privacy notices:
 <a href="https://www.amazon.de/gp/help/customer/display.html?nodeId=201909010"
 rel="nofollow noopener" target="_blank">Amazon</a> &middot;
 <a href="https://systeme.io/privacy-policy" rel="nofollow noopener"
 target="_blank">systeme.io</a>.</p>
 
-<h2>5. Kontaktaufnahme per E-Mail</h2>
-<p>Wenn du uns per E-Mail schreibst, verarbeiten wir deine E-Mail-Adresse und den
-Inhalt deiner Nachricht ausschließlich zur Bearbeitung deines Anliegens
-(Art. 6 Abs. 1 lit. b bzw. lit. f DSGVO). Die Daten werden gelöscht, sobald sie
-nicht mehr erforderlich sind und keine Aufbewahrungspflichten entgegenstehen.</p>
+<h2>5. Contact by email</h2>
+<p>If you write to us by email, we process your email address and the content
+of your message solely to handle your request (Art. 6(1)(b) or (f) GDPR). The
+data is deleted as soon as it is no longer required and no retention
+obligations apply.</p>
 
-<h2>6. Formulare, Newsletter, Nutzerkonten</h2>
-<p>Auf dieser Website gibt es kein Kontaktformular, keinen Newsletter und kein
-Nutzerkonto. Die Suchfunktion auf der Startseite arbeitet ausschließlich lokal in
-deinem Browser; dabei werden keine Daten an uns oder Dritte übertragen.</p>
+<h2>6. Forms, newsletter, user accounts</h2>
+<p>This website has no contact form, no newsletter and no user account. The
+search function on the home page runs entirely locally in your browser; no
+data is transmitted to us or to third parties in the process.</p>
 
-<h2>7. Deine Rechte</h2>
-<p>Du hast nach der DSGVO das Recht auf Auskunft (Art. 15), Berichtigung
-(Art. 16), Löschung (Art. 17), Einschränkung (Art. 18), Datenübertragbarkeit
-(Art. 20) sowie ein Widerspruchsrecht gegen Verarbeitungen auf Grundlage von
-Art. 6 Abs. 1 lit. f (Art. 21). Erteilte Einwilligungen kannst du jederzeit mit
-Wirkung für die Zukunft widerrufen. Außerdem hast du das Recht, dich bei einer
-Datenschutz-Aufsichtsbehörde zu beschweren (Art. 77 DSGVO).
-[BITTE ERGÄNZEN: konkrete zuständige Landesdatenschutzbehörde nach Wohnsitz/Sitz
-des Betreibers.]</p>
+<h2>7. Your rights</h2>
+<p>Under the GDPR you have the right of access (Art. 15), rectification
+(Art. 16), erasure (Art. 17), restriction (Art. 18) and data portability
+(Art. 20), and a right to object to processing based on Art. 6(1)(f)
+(Art. 21). You can withdraw any consent given at any time with effect for the
+future. You also have the right to lodge a complaint with a data protection
+supervisory authority (Art. 77 GDPR).
+[TO BE COMPLETED: the specific competent supervisory authority based on the
+operator's residence/place of business.]</p>
 
-<h2>8. Keine Pflicht zur Bereitstellung, keine automatisierte Entscheidung</h2>
-<p>Du bist nicht verpflichtet, uns personenbezogene Daten bereitzustellen. Eine
-automatisierte Entscheidungsfindung einschließlich Profiling nach Art. 22 DSGVO
-findet nicht statt.</p>
+<h2>8. No obligation to provide data, no automated decision-making</h2>
+<p>You are not obliged to provide us with personal data. There is no
+automated decision-making, including profiling, within the meaning of
+Art. 22 GDPR.</p>
 
-<h2>9. Stand und Änderungen</h2>
-<p>Diese Erklärung gibt den aktuellen Stand wieder. Ändert sich die eingesetzte
-Technik, passen wir sie an.</p>
+<h2>9. Status and changes</h2>
+<p>This statement reflects the current state. If the technology used changes,
+we will adapt it.</p>
 {_LEGAL_REVIEW_NOTE}
 </section>"""
-    return page_shell(title="Datenschutz", description="Datenschutzerklärung",
+    return page_shell(title="Privacy Policy", description="Privacy Policy",
                       body_html=body, environ=environ)
 
 
 def render_affiliate_erklaerung(*, environ=None) -> str:
     body = f"""<section class="block wrap">
-<h1>Wie wir Geld verdienen</h1>
-<p>Diese Website veröffentlicht Kaufberatungen zu echten Produkten und Diensten.
-Ein Teil der verlinkten Angebote sind Partnerprogramme (Affiliate-Links): Kaufst
-oder registrierst du dich über einen solchen Link, erhalten wir möglicherweise
-eine Provision vom Anbieter. Dir entstehen dadurch keine zusätzlichen Kosten.
-Diese Links sind Werbung.</p>
+<h1>How we make money</h1>
+<p>This website publishes buying guides for real products and services. Some
+of the linked offers are affiliate programs (affiliate links): if you buy or
+sign up through such a link, we may earn a commission from the provider. This
+does not cost you anything extra. These links are advertising.</p>
 
-<p>Wir verlinken ausschließlich Programme, denen wir selbst tatsächlich
-beigetreten sind, und stellen nur Fakten dar, die der Anbieter selbst angibt oder
-die wir direkt geprüft haben - niemals erfundene Testergebnisse, Sterne oder
-Kundenstimmen. Wir testen die Produkte nicht selbst und behaupten das auch nicht.</p>
+<p>We only link to programs we have actually joined ourselves, and we present
+only facts that the provider states itself or that we have checked directly -
+never made-up test results, stars or customer quotes. We do not test the
+products ourselves and do not claim to.</p>
 
 <h2>Amazon</h2>
-<p>Wir nehmen am Partnerprogramm <strong>Amazon PartnerNet</strong> teil; unser
-Partner-Tag lautet <code>airevenue-21</code>.</p>
-<p><strong>Als Amazon-Partner verdiene ich an qualifizierten Verkäufen.</strong></p>
-<p>Amazon und das Amazon-Logo sind Marken von Amazon.com, Inc. oder seinen
-verbundenen Unternehmen; eine Empfehlung, Prüfung oder Unterstützung dieser
-Website durch Amazon ist damit nicht verbunden.</p>
+<p>We take part in the <strong>Amazon PartnerNet</strong> affiliate program;
+our partner tag is <code>airevenue-21</code>.</p>
+<p><strong>As an Amazon Associate I earn from qualifying purchases.</strong></p>
+<p>Amazon and the Amazon logo are trademarks of Amazon.com, Inc. or its
+affiliates; this does not imply any endorsement, review or support of this
+website by Amazon.</p>
 
-<h2>Weitere Programme</h2>
-<p>Zusätzlich nutzen wir das Partnerprogramm von <strong>systeme.io</strong>.
-Weitere Netzwerke wie <strong>Awin</strong> und <strong>CJ Affiliate</strong> sind
-vorbereitet, aber auf dieser Website derzeit nicht mit aktiven Links vertreten.</p>
+<h2>Other programs</h2>
+<p>We also use the <strong>systeme.io</strong> affiliate program. Other
+networks such as <strong>Awin</strong> and <strong>CJ Affiliate</strong> are
+prepared but currently not represented with active links on this website.</p>
 {_LEGAL_REVIEW_NOTE}
 </section>"""
-    return page_shell(title="Wie wir Geld verdienen",
-                      description="Transparenz zu Affiliate-Links und Partnerprogrammen",
+    return page_shell(title="How we make money",
+                      description="Transparency about affiliate links and partner programs",
                       body_html=body, environ=environ)
 
 

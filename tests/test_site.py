@@ -74,22 +74,22 @@ class HomepageTests(unittest.TestCase):
     def test_empty_state_shows_no_guides_but_all_categories_navigable(self):
         d = _tmp()
         html = site.render_homepage(d)
-        self.assertIn("Noch keine Kaufberatung veröffentlicht", html)
+        self.assertIn("No buying guide published yet", html)
         for key, _label in site.SITE_CATEGORIES:
             self.assertIn(f"/kategorie/{key}/", html)
-            self.assertIn("0 Ratgeber", html)
+            self.assertIn("0 guides", html)
 
     def test_real_deployed_guide_appears_with_correct_category_count(self):
         d = _tmp()
         _seed_real_guide(d, category="usb-microphone-streaming",
-                         title="Bestes USB-Mikrofon für Streaming",
+                         title="Best USB microphone for streaming",
                          live_url="https://example.test/mikrofon-guide/")
         html = site.render_homepage(d)
-        self.assertIn("Bestes USB-Mikrofon für Streaming", html)
+        self.assertIn("Best USB microphone for streaming", html)
         self.assertIn("https://example.test/mikrofon-guide/", html)
         self.assertIn(f'/kategorie/{site.CATEGORY_MIKROFONE}/">'
-                      f'<span class="emoji" aria-hidden="true">\U0001F399️</span>Mikrofone'
-                      f'<span class="count">1 Ratgeber',
+                      f'<span class="emoji" aria-hidden="true">\U0001F399️</span>Microphones'
+                      f'<span class="count">1 guide',
                       html)
 
     def test_undeployed_asset_never_shown_on_homepage(self):
@@ -113,7 +113,7 @@ class HomepageTests(unittest.TestCase):
 
     def test_has_search_box_and_hero_and_branding(self):
         html = site.render_homepage(_tmp())
-        self.assertIn("Was möchtest du kaufen?", html)
+        self.assertIn("What are you looking to buy?", html)
         self.assertIn(site.SITE_TAGLINE, html)
         self.assertIn(">AI Revenue<", html)
 
@@ -144,17 +144,17 @@ class CategoryPageTests(unittest.TestCase):
         self.assertEqual(len(pages), len(site.SITE_CATEGORIES))
         for key, _label in site.SITE_CATEGORIES:
             self.assertIn(f"kategorie/{key}/index.html", pages)
-            self.assertIn("bald verfügbar", pages[f"kategorie/{key}/index.html"])
+            self.assertIn("coming soon", pages[f"kategorie/{key}/index.html"])
 
     def test_category_page_lists_only_matching_real_guides(self):
         d = _tmp()
-        _seed_real_guide(d, category="usb-microphone-streaming", title="Mikrofon-Guide",
+        _seed_real_guide(d, category="usb-microphone-streaming", title="Microphone guide",
                          live_url="https://example.test/mik/", offer_id="o1")
-        _seed_real_guide(d, category="gaming-mouse", title="Maus-Guide",
+        _seed_real_guide(d, category="gaming-mouse", title="Mouse guide",
                          live_url="https://example.test/maus/", offer_id="o2")
         mikrofone_page = site.render_category_page(site.CATEGORY_MIKROFONE, d)
-        self.assertIn("Mikrofon-Guide", mikrofone_page)
-        self.assertNotIn("Maus-Guide", mikrofone_page)
+        self.assertIn("Microphone guide", mikrofone_page)
+        self.assertNotIn("Mouse guide", mikrofone_page)
 
     def test_category_page_has_viewport_meta(self):
         html = site.render_category_page(site.CATEGORY_GAMING, _tmp())
@@ -165,10 +165,10 @@ class LegalPageTests(unittest.TestCase):
     def test_impressum_flags_missing_mandatory_fields_never_invents_an_address(self):
         html = site.render_impressum()
         self.assertIn("§", html)
-        self.assertIn("noch nicht", html.lower())
+        self.assertIn("not yet been entered", html)
         # never a fabricated street/city - only real, configured contact
         # info (business email) may appear.
-        for fake_marker in ("Musterstraße", "Musterstadt", "GmbH & Co", "12345 "):
+        for fake_marker in ("Musterstraße", "Musterstadt", "123 Main St", "GmbH & Co", "12345 "):
             self.assertNotIn(fake_marker, html)
 
     def test_impressum_shows_real_business_email_when_configured(self):
@@ -196,12 +196,12 @@ class LegalPageTests(unittest.TestCase):
 
     def test_datenschutz_states_the_real_no_tracking_fact(self):
         html = site.render_datenschutz()
-        self.assertIn("keine Cookies", html)
-        self.assertIn("Tracking-Skripte", html)
+        self.assertIn("no cookies", html)
+        self.assertIn("tracking scripts", html)
 
     def test_affiliate_erklaerung_is_transparent_and_names_real_networks_only(self):
         html = site.render_affiliate_erklaerung()
-        self.assertIn("Provision", html)
+        self.assertIn("commission", html)
         self.assertIn("systeme.io", html)
         # only real, documented networks in this codebase - never a
         # network invented for this page.
@@ -215,16 +215,16 @@ class LegalPageTests(unittest.TestCase):
 
 class PageShellTests(unittest.TestCase):
     def test_non_brand_title_gets_brand_suffix(self):
-        html = site.page_shell(title="Mikrofone", description="x", body_html="<p>x</p>")
-        self.assertIn("<title>Mikrofone – AI Revenue</title>", html)
+        html = site.page_shell(title="Microphones", description="x", body_html="<p>x</p>")
+        self.assertIn("<title>Microphones – AI Revenue</title>", html)
 
     def test_title_is_escaped(self):
         html = site.page_shell(title='<script>alert(1)</script>', description="x", body_html="<p>x</p>")
         self.assertNotIn("<script>alert(1)</script>", html)
 
-    def test_lang_is_german(self):
+    def test_lang_is_english(self):
         html = site.page_shell(title="x", description="x", body_html="<p>x</p>")
-        self.assertIn('<html lang="de">', html)
+        self.assertIn('<html lang="en">', html)
 
 
 class BuildAndDeploySiteTests(unittest.TestCase):

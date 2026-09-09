@@ -4,12 +4,12 @@ dark-theme + base-path-fixed site).
 
 Covers only the behaviour that pass ADDED or CHANGED:
 
-* every page carries a `<main id="inhalt">` landmark + a skip link
+* every page carries a `<main id="content">` landmark + a skip link
 * internal links get the real, already-configured deploy base when - and
   only when - a real deploy target is configured, so Impressum/Datenschutz
   are actually reachable on the deployed GitHub *project* Pages site
-* the Amazon participant-identification disclosure appears on (and only
-  on) pages that link to an Amazon program
+* the Amazon participant-identification disclosure (English wording) appears
+  on (and only on) pages that link to an Amazon program
 * no cookie / consent banner is added (there is nothing to consent to)
 * the § 5 DDG reference replaced the repealed § 5 TMG
 * every legal page flags that it is not individual legal advice
@@ -68,14 +68,14 @@ def _systeme_match() -> AffiliateMatch:
 class LandmarkAndSkipLinkTests(unittest.TestCase):
     def test_shell_has_main_landmark_and_skip_link(self):
         html = site.page_shell(title="x", description="x", body_html="<p>x</p>")
-        self.assertIn('<a class="skip-link" href="#inhalt">', html)
-        self.assertIn('<main id="inhalt">', html)
+        self.assertIn('<a class="skip-link" href="#content">', html)
+        self.assertIn('<main id="content">', html)
 
     def test_homepage_and_guide_have_the_landmark(self):
-        self.assertIn('<main id="inhalt">', site.render_homepage(_tmp()))
+        self.assertIn('<main id="content">', site.render_homepage(_tmp()))
         page, _ = affiliate_assets.render_comparison_page(
             draft=_draft(), match=_amazon_match(), cta_url="https://x.test/go")
-        self.assertIn('<main id="inhalt">', page)
+        self.assertIn('<main id="content">', page)
 
 
 class BasePathTests(unittest.TestCase):
@@ -102,7 +102,7 @@ class BasePathTests(unittest.TestCase):
 
 
 class AmazonDisclosureTests(unittest.TestCase):
-    _AMZ = "Als Amazon-Partner verdiene ich an qualifizierten Verkäufen."
+    _AMZ = "As an Amazon Associate I earn from qualifying purchases."
 
     def test_amazon_page_carries_the_required_participation_statement(self):
         page, _ = affiliate_assets.render_comparison_page(
@@ -121,7 +121,7 @@ class AmazonDisclosureTests(unittest.TestCase):
         for m in (_amazon_match(), _systeme_match()):
             page, _ = affiliate_assets.render_comparison_page(
                 draft=_draft(), match=m, cta_url="https://x.test/go")
-            self.assertIn("Werbung / Affiliate-Link.", page)
+            self.assertIn("Advertisement / affiliate link.", page)
 
 
 class NoConsentBannerTests(unittest.TestCase):
@@ -136,8 +136,8 @@ class NoConsentBannerTests(unittest.TestCase):
 
     def test_datenschutz_states_no_consent_needed_and_no_own_cookies(self):
         html = site.render_datenschutz()
-        self.assertIn("keine Cookies", html)
-        self.assertIn("Consent-Banner", html)   # ...ist nicht erforderlich
+        self.assertIn("no cookies", html)
+        self.assertIn("consent banner is therefore", html)   # ...not required
 
     def test_impressum_cites_ddg_not_the_repealed_tmg(self):
         html = site.render_impressum()
@@ -147,14 +147,14 @@ class NoConsentBannerTests(unittest.TestCase):
     def test_affiliate_page_carries_exact_amazon_wording(self):
         html = site.render_affiliate_erklaerung()
         self.assertIn(
-            "Als Amazon-Partner verdiene ich an qualifizierten Verkäufen.", html)
+            "As an Amazon Associate I earn from qualifying purchases.", html)
         self.assertIn("airevenue-21", html)
 
 
 class LegalReviewNoteTests(unittest.TestCase):
     def test_every_legal_page_flags_it_is_not_legal_advice(self):
         for html in site.render_legal_pages().values():
-            self.assertIn("keine individuelle", html)
+            self.assertIn("not a substitute for individual legal advice", html)
 
     def test_no_generated_page_has_a_dangling_internal_link_under_real_deploy(self):
         with mock.patch.dict(os.environ, _REAL_ENV, clear=True):

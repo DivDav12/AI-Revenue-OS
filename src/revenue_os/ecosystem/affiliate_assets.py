@@ -30,17 +30,18 @@ from .affiliate_model import (
 from .model import OpportunityDraft
 from .site import _real_base_url, category_breadcrumb, page_shell
 
-#: exact wording requested for the German customer-facing site - shown
-#: directly next to/under the CTA button, and reused in the FAQ.
+#: exact wording for the English customer-facing site - shown directly
+#: next to/under the CTA button, and reused in the FAQ.
 DISCLOSURE_TEXT = (
-    "Wenn du über diesen Link kaufst, erhalten wir möglicherweise eine "
-    "Provision. Für dich entstehen dadurch keine zusätzlichen Kosten.")
+    "If you buy through this link, we may earn a commission. "
+    "This does not cost you anything extra.")
 
-#: Amazon PartnerNet / Amazon Associates Operating Agreement requires this
+#: Amazon Associates / PartnerNet Operating Agreement requires this
 #: participant-identification statement wherever affiliate links to Amazon
-#: appear. Added VERBATIM, and ONLY on pages whose offer network is Amazon -
-#: never on a systeme.io / Awin / other page.
-AMAZON_ASSOCIATE_DISCLOSURE = "Als Amazon-Partner verdiene ich an qualifizierten Verkäufen."
+#: appear - this is the official English wording. Added VERBATIM, and ONLY
+#: on pages whose offer network is Amazon - never on a systeme.io / Awin /
+#: other page.
+AMAZON_ASSOCIATE_DISCLOSURE = "As an Amazon Associate I earn from qualifying purchases."
 
 _AMAZON_NETWORKS = frozenset({NETWORK_AMAZON_ASSOCIATES})
 
@@ -53,7 +54,7 @@ def _full_disclosure(offer) -> str:
     """Prominent, clearly-labelled advertising disclosure for the page -
     generic wording always, plus the required Amazon sentence when (and
     only when) the linked offer is an Amazon program."""
-    text = f"<strong>Werbung / Affiliate-Link.</strong> {_esc(DISCLOSURE_TEXT)}"
+    text = f"<strong>Advertisement / affiliate link.</strong> {_esc(DISCLOSURE_TEXT)}"
     if _is_amazon(offer):
         text += f" {_esc(AMAZON_ASSOCIATE_DISCLOSURE)}"
     return text
@@ -75,7 +76,7 @@ def _esc(text: str) -> str:
 def render_comparison_page(*, draft: OpportunityDraft, match: AffiliateMatch,
                            cta_url: str, guide_title: str = "",
                            related_links: tuple = (), environ=None) -> tuple[str, dict]:
-    """Render one German-language "problem -> solution" buying-guide page,
+    """Render one English-language "problem -> solution" buying-guide page,
     wrapped in the shared `site.py` chrome (header/nav/footer/CSS/
     branding) so every rendered page looks like one coherent site. Returns
     (html, quality_checks) - the checks are computed against the RENDERED
@@ -90,11 +91,11 @@ def render_comparison_page(*, draft: OpportunityDraft, match: AffiliateMatch,
     default (byte-identical output to before this parameter existed)."""
     offer = match.offer
     problem = _esc(draft.title)
-    # a "Nutzer:innen haben in eigenen Worten beschrieben" framing is only
+    # a "people described their need in their own words" framing is only
     # honest when a REAL, independently-arising evidence quote exists (spec:
     # no fabricated demand quotes) - an opportunity with no evidence, OR an
     # editorial pick (a human chose this topic proactively, not a captured
-    # post - see ecosystem.editorial), gets the neutral "häufiger Bedarf"
+    # post - see ecosystem.editorial), gets the neutral "a common need"
     # statement instead, never dressing up our own editorial judgement as a
     # stranger's verbatim words. Checked via BOTH `raw.editorial_pick` (set
     # at build time) AND `source_meta.source_type` (still correct after a
@@ -112,33 +113,33 @@ def render_comparison_page(*, draft: OpportunityDraft, match: AffiliateMatch,
     need_quote = _esc(real_evidence[0]) if has_real_quote else _esc(draft.title)
     product = _esc(offer.product_name)
     program = _esc(offer.program_name)
-    price_line = (f"Listenpreis: {_esc(offer.currency)} {offer.product_price:.2f}"
-                 f"{' (Schätzung - nicht direkt an der Quelle bestätigt)' if offer.price_is_estimate else ''}"
+    price_line = (f"List price: {_esc(offer.currency)} {offer.product_price:.2f}"
+                 f"{' (estimate - not confirmed directly at the source)' if offer.price_is_estimate else ''}"
                  if offer.product_price > 0 else
-                 "Preis: siehe Angebotsseite des Anbieters (hier nicht angegeben).")
+                 "Price: see the provider's offer page (not stated here).")
     evidence_items = "".join(f"<li>{_esc(e)}</li>" for e in offer.evidence) or (
-        "<li>Der Anbieter hat keine weiteren Angaben zur Verfügung gestellt.</li>")
+        "<li>The provider has not made any further details available.</li>")
 
     disclosure_html = _full_disclosure(offer)
     faq_answer = _esc(DISCLOSURE_TEXT)
     if _is_amazon(offer):
         faq_answer += " " + _esc(AMAZON_ASSOCIATE_DISCLOSURE)
     faq_items = (
-        f"<dt>Ist das Werbung / gesponsert?</dt><dd>{faq_answer}</dd>"
-        f"<dt>Welches Problem löst das?</dt><dd>{need_quote}</dd>"
+        f"<dt>Is this advertising / sponsored?</dt><dd>{faq_answer}</dd>"
+        f"<dt>What problem does this solve?</dt><dd>{need_quote}</dd>"
     )
     problem_statement = (
-        f'Nutzer:innen haben ihren Bedarf in eigenen Worten so beschrieben: &quot;{need_quote}&quot;'
+        f'People have described their need in their own words: &quot;{need_quote}&quot;'
         if has_real_quote else
-        f"Ein häufiger Bedarf: {need_quote}"
+        f"A common need: {need_quote}"
     )
-    headline = _esc(guide_title) if guide_title else f"{product}: passt das zu &quot;{problem}&quot;?"
+    headline = _esc(guide_title) if guide_title else f"{product}: is it a fit for &quot;{problem}&quot;?"
     # PLAIN-TEXT (unescaped) title/description for page_shell(), which
     # escapes its own inputs exactly once - `headline`/`product`/
     # `need_quote` above are already HTML-escaped for direct embedding in
     # the body, and passing them to page_shell() too would double-escape
     # (e.g. "&amp;" -> "&amp;amp;").
-    title_text = guide_title if guide_title else f'{offer.product_name}: passt das zu "{draft.title}"?'
+    title_text = guide_title if guide_title else f'{offer.product_name}: is it a fit for "{draft.title}"?'
     # a curated `guide_title` is already a proper description of the page's
     # topic - preferring it over the raw demand title avoids a redundant/
     # duplicated meta description when the demand title itself already
@@ -147,68 +148,68 @@ def render_comparison_page(*, draft: OpportunityDraft, match: AffiliateMatch,
     description_text = (f"{offer.product_name}: {guide_title}" if guide_title else
                         f"{offer.product_name}: {real_evidence[0] if has_real_quote else draft.title}")
 
-    # "Worauf du achten solltest" / "Für wen (nicht)" / Einschätzung sind
-    # generische, kategorie-bezogene Kaufhinweise - niemals eine konkrete
-    # Leistungsbehauptung ("klingt super", ein Sternerating, ein
-    # Bewertungszitat), die nicht tatsächlich belegt ist. Nur gerendert,
-    # wenn der Anbieter echte Belege liefert (spec: keine erfundenen
-    # Tests/Bewertungen).
+    # "What to look for" / "Less suitable if" / "Our take" are generic,
+    # category-level buying pointers - never a concrete performance claim
+    # ("sounds great", a star rating, a review quote) that is not actually
+    # backed by evidence. Only rendered when the provider supplies real
+    # evidence (spec: no fabricated tests/reviews).
+    # the guide's own category page + its human-readable label (English),
+    # from the SAME taxonomy the homepage/category grid use - reused below
+    # both for the breadcrumb and as the in-body category label.
+    cat_label, cat_path = category_breadcrumb(offer.category, environ)
+
     criteria_html = pros_html = who_html = budget_html = reco_html = ""
     if offer.evidence:
-        category_label = _esc(offer.category.replace("-", " ").replace("_", " ")) or "diese Kategorie"
-        keyword_list = ", ".join(offer.keywords[:8])
+        category_label = _esc(cat_label) or "this category"
         criteria_html = f"""<section>
-<h2>Worauf du achten solltest</h2>
+<h2>What to look for</h2>
 <ul>
-<li>Ob es wirklich das abdeckt, was du brauchst: {_esc(keyword_list) or category_label}</li>
-<li>Was die eigenen Angaben des Anbieters sagen (unten) - im Vergleich zu deinem tatsächlichen Bedarf</li>
-<li>Die Gesamtkosten im Verhältnis zum Nutzen, inklusive laufender Kosten</li>
-<li>Wie leicht der Einstieg ist - und wie leicht du später wieder kündigen/wechseln kannst</li>
+<li>Whether it actually covers what you need in {category_label}</li>
+<li>What the provider's own stated details say (below) - compared with your real need</li>
+<li>The total cost relative to the benefit, including any recurring cost</li>
+<li>How easy it is to get started - and how easy it is to cancel or switch later</li>
 </ul>
 </section>"""
         pros_html = f"""<section>
-<h2>Vorteile laut Anbieter</h2>
+<h2>What the provider highlights</h2>
 <ul>{evidence_items}</ul>
-<p class="note">Das sind die eigenen Angaben des Anbieters, kein eigener
-Test - wir haben diese Angaben nicht selbst unabhängig nachgeprüft.</p>
+<p class="note">These are the provider's own stated details, not our own
+test - we have not independently verified these details ourselves.</p>
 </section>"""
         who_html = f"""<section>
-<h2>Nicht ideal, wenn ...</h2>
-<p>... dein Bedarf nicht zu {category_label}{f" ({_esc(keyword_list)})" if keyword_list else ""}
-passt. Diese Einschätzung ersetzt nicht den Abgleich deiner eigenen,
-konkreten Anforderungen mit den oben genannten Angaben des Anbieters.</p>
+<h2>Less suitable if ...</h2>
+<p>... your need does not match {category_label}. This assessment does not
+replace checking your own specific requirements against the provider's
+stated details above.</p>
 </section>"""
-        price_ts = (f" Stand: {_esc(offer.price_observed_at)}." if offer.price_observed_at else "")
+        price_ts = (f" As of: {_esc(offer.price_observed_at)}." if offer.price_observed_at else "")
         price_note = f" {_esc(offer.price_source_note)}" if offer.price_source_note else ""
         budget_html = f"""<section>
-<h2>Hinweis zum Preis</h2>
-<p>Der oben genannte Preis wurde zuletzt geprüft.{price_ts}{price_note} Preise
-bei Anbietern ändern sich - prüfe den aktuellen Preis immer direkt auf der
-Angebotsseite, bevor du kaufst.</p>
+<h2>About the price</h2>
+<p>The price shown above was last checked.{price_ts}{price_note} Provider
+prices change - always check the current price directly on the offer page
+before you buy.</p>
 </section>"""
         reco_html = f"""<section>
-<h2>Unsere Einschätzung</h2>
-<p>Basierend auf den eigenen Angaben des Anbieters oben (kein eigener Test)
-ist {product} eine sinnvolle Option, wenn diese Angaben zu deinem Bedarf
-passen. Wir haben es nicht selbst getestet und behaupten nicht, dass es
-objektiv die "beste" Option ist - nur, dass es ein reales, aktuell
-verfügbares Angebot aus einem Partnerprogramm ist, dem wir tatsächlich
-beigetreten sind.</p>
+<h2>Our take</h2>
+<p>Based on the provider's own stated details above (not our own test),
+{product} is a reasonable option if those details match your need. We have
+not tested it ourselves and do not claim it is objectively the "best"
+option - only that it is a real, currently available offer from an
+affiliate program we have actually joined.</p>
 </section>"""
 
     related_html = ""
     if related_links:
         items = "".join(f'<li><a href="{_esc(u)}">{_esc(t)}</a></li>' for t, u in related_links)
-        related_html = f"""<nav aria-label="Weitere Ratgeber"><h2>Weitere Kaufberatungen</h2>
+        related_html = f"""<nav aria-label="More guides"><h2>More buying guides</h2>
 <ul>{items}</ul>
 </nav>"""
 
     # internal linking (spec: "crawlable page structure") - a real link
-    # back to the guide's own category page, using the SAME category
-    # taxonomy the homepage/category grid already use.
-    cat_label, cat_path = category_breadcrumb(offer.category, environ)
+    # back to the guide's own category page (cat_label/cat_path computed above).
     breadcrumb_html = (f'<nav aria-label="Breadcrumb" class="breadcrumb">'
-                       f'<a href="{_esc(_real_base_url(environ) + "/")}">Start</a> &rsaquo; '
+                       f'<a href="{_esc(_real_base_url(environ) + "/")}">Home</a> &rsaquo; '
                        f'<a href="{_esc(cat_path)}">{_esc(cat_label)}</a>'
                        f'</nav>')
 
@@ -217,12 +218,12 @@ beigetreten sind.</p>
 <h1>{headline}</h1>
 <p class="disclosure" role="note">{disclosure_html}</p>
 <section>
-<h2>Worum geht es?</h2>
+<h2>What's this about?</h2>
 <p>{problem_statement}</p>
 </section>
 {criteria_html}
 <section>
-<h2>Unsere Empfehlung: {product} ({program})</h2>
+<h2>Our pick: {product} ({program})</h2>
 <p>{price_line}</p>
 </section>
 {pros_html}
@@ -230,11 +231,11 @@ beigetreten sind.</p>
 {budget_html}
 {reco_html}
 <section>
-<h2>Häufige Fragen</h2>
+<h2>FAQ</h2>
 <dl>{faq_items}</dl>
 </section>
 <p class="cta">
-<a class="button" href="{_esc(cta_url)}" rel="sponsored nofollow">Zum Anbieter &rarr; (Werbelink)</a><br>
+<a class="button" href="{_esc(cta_url)}" rel="sponsored nofollow">Go to the provider &rarr; (ad link)</a><br>
 <span class="disclosure" role="note">{disclosure_html}</span>
 </p>
 {related_html}
