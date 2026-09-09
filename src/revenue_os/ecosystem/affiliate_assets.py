@@ -21,7 +21,12 @@ import re
 
 from ..deployment import DeploymentArtifact, default_deployment_adapter
 from .affiliate_matching import AffiliateMatch
-from .affiliate_model import AffiliateAsset, AffiliateAssetStore, new_id
+from .affiliate_model import (
+    NETWORK_AMAZON_ASSOCIATES,
+    AffiliateAsset,
+    AffiliateAssetStore,
+    new_id,
+)
 from .model import OpportunityDraft
 from .site import _real_base_url, category_breadcrumb, page_shell
 
@@ -30,6 +35,28 @@ from .site import _real_base_url, category_breadcrumb, page_shell
 DISCLOSURE_TEXT = (
     "Wenn du über diesen Link kaufst, erhalten wir möglicherweise eine "
     "Provision. Für dich entstehen dadurch keine zusätzlichen Kosten.")
+
+#: Amazon PartnerNet / Amazon Associates Operating Agreement requires this
+#: participant-identification statement wherever affiliate links to Amazon
+#: appear. Added VERBATIM, and ONLY on pages whose offer network is Amazon -
+#: never on a systeme.io / Awin / other page.
+AMAZON_ASSOCIATE_DISCLOSURE = "Als Amazon-Partner verdiene ich an qualifizierten Verkäufen."
+
+_AMAZON_NETWORKS = frozenset({NETWORK_AMAZON_ASSOCIATES})
+
+
+def _is_amazon(offer) -> bool:
+    return getattr(offer, "network", "") in _AMAZON_NETWORKS
+
+
+def _full_disclosure(offer) -> str:
+    """Prominent, clearly-labelled advertising disclosure for the page -
+    generic wording always, plus the required Amazon sentence when (and
+    only when) the linked offer is an Amazon program."""
+    text = f"<strong>Werbung / Affiliate-Link.</strong> {_esc(DISCLOSURE_TEXT)}"
+    if _is_amazon(offer):
+        text += f" {_esc(AMAZON_ASSOCIATE_DISCLOSURE)}"
+    return text
 
 #: minimum body word count before a page is even considered publishable -
 #: a hard floor against "thin/valueless mass pages" (spec section 9).
@@ -92,8 +119,12 @@ def render_comparison_page(*, draft: OpportunityDraft, match: AffiliateMatch,
     evidence_items = "".join(f"<li>{_esc(e)}</li>" for e in offer.evidence) or (
         "<li>Der Anbieter hat keine weiteren Angaben zur Verfügung gestellt.</li>")
 
+    disclosure_html = _full_disclosure(offer)
+    faq_answer = _esc(DISCLOSURE_TEXT)
+    if _is_amazon(offer):
+        faq_answer += " " + _esc(AMAZON_ASSOCIATE_DISCLOSURE)
     faq_items = (
-        f"<dt>Ist das gesponsert?</dt><dd>{_esc(DISCLOSURE_TEXT)}</dd>"
+        f"<dt>Ist das Werbung / gesponsert?</dt><dd>{faq_answer}</dd>"
         f"<dt>Welches Problem löst das?</dt><dd>{need_quote}</dd>"
     )
     problem_statement = (
@@ -184,7 +215,7 @@ beigetreten sind.</p>
     body_html = f"""<article>
 {breadcrumb_html}
 <h1>{headline}</h1>
-<p class="disclosure">{_esc(DISCLOSURE_TEXT)}</p>
+<p class="disclosure" role="note">{disclosure_html}</p>
 <section>
 <h2>Worum geht es?</h2>
 <p>{problem_statement}</p>
@@ -203,8 +234,8 @@ beigetreten sind.</p>
 <dl>{faq_items}</dl>
 </section>
 <p class="cta">
-<a class="button" href="{_esc(cta_url)}" rel="sponsored nofollow">Zum Händler &rarr;</a><br>
-<span class="disclosure">{_esc(DISCLOSURE_TEXT)}</span>
+<a class="button" href="{_esc(cta_url)}" rel="sponsored nofollow">Zum Anbieter &rarr; (Werbelink)</a><br>
+<span class="disclosure" role="note">{disclosure_html}</span>
 </p>
 {related_html}
 </article>"""

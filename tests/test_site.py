@@ -88,7 +88,8 @@ class HomepageTests(unittest.TestCase):
         self.assertIn("Bestes USB-Mikrofon für Streaming", html)
         self.assertIn("https://example.test/mikrofon-guide/", html)
         self.assertIn(f'/kategorie/{site.CATEGORY_MIKROFONE}/">'
-                      f'<span class="emoji">\U0001F399️</span>Mikrofone<span class="count">1 Ratgeber',
+                      f'<span class="emoji" aria-hidden="true">\U0001F399️</span>Mikrofone'
+                      f'<span class="count">1 Ratgeber',
                       html)
 
     def test_undeployed_asset_never_shown_on_homepage(self):
