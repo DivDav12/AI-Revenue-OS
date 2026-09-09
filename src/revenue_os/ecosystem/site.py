@@ -109,6 +109,7 @@ _OFFER_CATEGORY_MAP: tuple[tuple[str, str], ...] = (
     ("business-platform", CATEGORY_TECHNIK),
     ("hosting", CATEGORY_TECHNIK),
     ("software", CATEGORY_TECHNIK),
+    ("pdf", CATEGORY_TECHNIK),
 )
 
 
@@ -214,15 +215,47 @@ article section{background:var(--bg-elev);border:1px solid var(--border);border-
 article h2{font-size:1.15rem;margin-top:0}
 dl dt{font-weight:600;margin-top:10px}
 dl dd{margin:2px 0 0;color:var(--muted)}
+.product-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:18px;margin:22px 0}
+.product-card{display:flex;flex-direction:column;background:var(--bg-elev);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:var(--radius);overflow:hidden;color:var(--fg);transition:border-color .15s,transform .15s}
+.product-card:hover{border-color:var(--accent);transform:translateY(-2px);text-decoration:none}
+.product-card .shot{aspect-ratio:4/3;display:flex;align-items:center;justify-content:center;background:linear-gradient(140deg,#0d1428,#131b33);border-bottom:1px solid var(--border)}
+.product-card .shot img{width:100%;height:100%;object-fit:contain;padding:10px}
+.product-card .shot .ph{width:48px;height:48px;border-radius:12px;display:flex;align-items:center;justify-content:center;background:rgba(79,124,255,.14);color:var(--accent);font-size:1.4rem}
+.product-card .body{padding:16px 16px 18px;display:flex;flex-direction:column;gap:8px;flex:1}
+.product-card .pname{font-size:1rem;font-weight:700;line-height:1.35;margin:0}
+.product-card .price{font-size:1.05rem;font-weight:700;color:var(--fg)}
+.product-card .price .muted{font-size:.82rem;font-weight:400;color:var(--muted)}
+.tags{display:flex;flex-wrap:wrap;gap:6px}
+.tag{display:inline-block;background:rgba(155,107,255,.14);color:#c9b8ff;border:1px solid var(--border);border-radius:999px;padding:3px 10px;font-size:.74rem;letter-spacing:.01em}
+.product-card .ctx{color:var(--muted);font-size:.85rem;margin:0}
+.product-card .view{margin-top:auto;color:var(--accent);font-size:.88rem;font-weight:600}
+.product-detail{display:grid;grid-template-columns:minmax(0,420px) 1fr;gap:32px;margin:18px 0 8px}
+.product-detail .gallery{display:flex;flex-direction:column;gap:10px}
+.product-detail .gallery .main{aspect-ratio:1/1;display:flex;align-items:center;justify-content:center;background:linear-gradient(140deg,#0d1428,#131b33);border:1px solid var(--border);border-radius:var(--radius)}
+.product-detail .gallery .main img{width:100%;height:100%;object-fit:contain;padding:16px}
+.product-detail .gallery .main .ph{width:72px;height:72px;border-radius:16px;display:flex;align-items:center;justify-content:center;background:rgba(79,124,255,.14);color:var(--accent);font-size:2rem}
+.product-detail .thumbs{display:flex;gap:8px;flex-wrap:wrap}
+.product-detail .thumbs img{width:64px;height:64px;object-fit:contain;background:#0d1428;border:1px solid var(--border);border-radius:10px;padding:4px}
+.product-detail h1{margin:0 0 12px}
+.product-detail .price{font-size:1.5rem;font-weight:800;margin:6px 0}
+.product-detail .price .muted{display:block;font-size:.82rem;font-weight:400;color:var(--muted);margin-top:2px}
+.buy-cta{display:inline-flex;align-items:center;gap:8px;margin:18px 0 8px;padding:15px 30px;border-radius:999px;background:var(--accent-grad);color:#fff;font-weight:700;font-size:1.03rem}
+.buy-cta:hover{opacity:.92;text-decoration:none}
+.ctx-question{background:var(--bg-elev);border:1px solid var(--border);border-left:4px solid var(--accent-2);border-radius:12px;padding:16px 18px;margin:16px 0}
+.ctx-question h2{margin:0 0 6px;font-size:1.05rem}
+.ctx-question p{margin:0 0 8px;color:var(--muted)}
+.ctx-question a{color:var(--accent);font-weight:600}
+@media (max-width:760px){.product-detail{grid-template-columns:1fr;gap:20px}.product-detail .gallery{max-width:360px}}
 @media (max-width:640px){.hero{padding:48px 0 36px}.hero h1{font-size:1.9rem}nav.site{gap:12px}.searchbox{display:none}}
-@media (prefers-reduced-motion:reduce){.category-card,.guide-card,.skip-link{transition:none}}
+@media (prefers-reduced-motion:reduce){.category-card,.guide-card,.product-card,.skip-link{transition:none}}
 """
 
 
 def _nav_links(environ=None) -> str:
     base = _real_base_url(environ)
-    items = [("/", "Home")] + [(f"/kategorie/{key}/", _split_emoji_label(label)[1])
-                               for key, label in SITE_CATEGORIES[:4]]
+    items = [("/", "Home"), ("/product/", "Products")] + [
+        (f"/kategorie/{key}/", _split_emoji_label(label)[1])
+        for key, label in SITE_CATEGORIES[:3]]
     return "".join(f'<a href="{_esc(base + href)}">{_esc(label)}</a>' for href, label in items)
 
 
@@ -295,16 +328,310 @@ class GuideCard:
 
 
 def _real_guide_cards(data_dir) -> list[GuideCard]:
+    from .products import EXCLUDED_NETWORKS
+
     offers = {o.offer_id: o for o in AffiliateOfferStore.load(data_dir).all()}
     cards = []
     for asset in AffiliateAssetStore.load(data_dir).all():
         if not asset.live_url:
             continue
         offer = offers.get(asset.offer_id)
+        # a guide for a product the public site no longer recommends (e.g.
+        # the retired systeme.io strategy) is dropped from every public
+        # surface - homepage, category pages and the sitemap.
+        if offer is not None and offer.network in EXCLUDED_NETWORKS:
+            continue
         site_cat = classify_offer_category(offer.category if offer else "")
-        cards.append(GuideCard(title=asset.title or "Buying guide", live_url=asset.live_url,
-                               site_category=site_cat))
+        cards.append(GuideCard(title=asset.guide_title or asset.title or "Buying guide",
+                               live_url=asset.live_url, site_category=site_cat))
     return cards
+
+
+# ---------------------------------------------------------------------------
+# product-first catalog rendering (spec: "product discovery platform").
+# Every product/tag/price/image fact comes from ecosystem.products, which
+# reads only real persisted offer/asset/link data - nothing here invents a
+# product, a price, an image, or a product<->guide relationship.
+# ---------------------------------------------------------------------------
+
+_PRODUCT_ICON = "\U0001F4E6"   # 📦 - the neutral placeholder when no compliant image exists
+
+#: generic advertising label + (Amazon-only) the required participant
+#: identification statement - imported from affiliate_assets so the exact
+#: approved wording is defined in exactly one place.
+def _product_disclosure_html(is_amazon: bool) -> str:
+    from .affiliate_assets import AMAZON_ASSOCIATE_DISCLOSURE, DISCLOSURE_TEXT
+
+    text = f"<strong>Advertisement / affiliate link.</strong> {_esc(DISCLOSURE_TEXT)}"
+    if is_amazon:
+        text += f" {_esc(AMAZON_ASSOCIATE_DISCLOSURE)}"
+    return text
+
+
+def _product_url(base: str, slug: str) -> str:
+    return f"{base}/product/{slug}/"
+
+
+def _tags_html(tags) -> str:
+    if not tags:
+        return ""
+    return '<div class="tags">' + "".join(
+        f'<span class="tag">{_esc(t)}</span>' for t in tags) + "</div>"
+
+
+def _product_image_html(product, *, big: bool) -> str:
+    """A real product image (from a compliant source stored on the offer)
+    or a clean icon placeholder - never a fabricated image."""
+    alt = _esc(f"{product.name} product image")
+    if product.image_urls:
+        first = _esc(product.image_urls[0])
+        return (f'<img src="{first}" alt="{alt}" loading="lazy" decoding="async">')
+    return (f'<span class="ph" role="img" aria-label="{alt}">'
+            f'{_PRODUCT_ICON}</span>')
+
+
+def render_product_card(product, base: str) -> str:
+    href = _esc(_product_url(base, product.slug))
+    price = (f'{_esc(product.price_display)}'
+             if product.has_price else
+             f'<span class="muted">{_esc(product.price_display)}</span>')
+    ctx = f'<p class="ctx">{_esc(product.short_context)}</p>' if product.short_context else ""
+    return (
+        f'<a class="product-card" href="{href}">'
+        f'<span class="shot">{_product_image_html(product, big=False)}</span>'
+        f'<span class="body">'
+        f'<span class="pname">{_esc(product.name)}</span>'
+        f'<span class="price">{price}</span>'
+        f'{_tags_html(product.tags)}'
+        f'{ctx}'
+        f'<span class="view">View product &rarr;</span>'
+        f'</span></a>')
+
+
+def _product_grid_html(products, base: str, *, empty_msg: str) -> str:
+    if not products:
+        return f'<div class="empty-state">{_esc(empty_msg)}</div>'
+    return ('<div class="product-grid">'
+            + "".join(render_product_card(p, base) for p in products)
+            + "</div>")
+
+
+def render_products_index(data_dir, *, environ=None) -> str:
+    from . import products as products_mod
+
+    base = _real_base_url(environ)
+    all_products = products_mod.load_public_products(data_dir)
+    by_cat: dict[str, list] = {}
+    for p in all_products:
+        by_cat.setdefault(p.site_category, []).append(p)
+
+    breadcrumb = (f'<nav aria-label="Breadcrumb" class="breadcrumb">'
+                  f'<a href="{_esc(base + "/")}">Home</a> &rsaquo; Products</nav>')
+    if all_products:
+        sections = []
+        for key, label in SITE_CATEGORIES:
+            items = by_cat.get(key)
+            if not items:
+                continue
+            _emoji, name = _split_emoji_label(label)
+            sections.append(
+                f'<section class="block"><h2>{_esc(name)}</h2>'
+                f'{_product_grid_html(items, base, empty_msg="")}'
+                f'<p><a class="guide-link" href="{_esc(base + f"/kategorie/{key}/")}">'
+                f'Browse {_esc(name)} &rarr;</a></p></section>')
+        # anything under "Sonstiges" (unmapped category) still gets shown.
+        other = by_cat.get(CATEGORY_SONSTIGES)
+        if other:
+            sections.append(f'<section class="block"><h2>More</h2>'
+                            f'{_product_grid_html(other, base, empty_msg="")}</section>')
+        grid_html = "".join(sections)
+    else:
+        grid_html = ('<div class="empty-state">More products coming soon. In the '
+                     'meantime, browse our buying guides below.</div>')
+
+    body = f"""<section class="block wrap">
+{breadcrumb}
+<span class="badge-pill">\U0001F4E6 Product catalog</span>
+<h1><span class="grad">Browse products</span></h1>
+<p class="cat-intro">Real products from affiliate programs we have joined
+ourselves. Each product page shows the key facts and links straight to the
+correct product - no made-up tests, no fake reviews.</p>
+{grid_html}
+</section>"""
+    return page_shell(title="Products", description="Browse curated products by category",
+                      body_html=body, environ=environ)
+
+
+def _context_question(product) -> str:
+    """A real, grounded 'Looking for ...?' line built only from the
+    product's own category + tags - never an invented claim."""
+    cat_label = _split_emoji_label(_CATEGORY_LABELS.get(product.site_category, ""))[1]
+    noun = cat_label[:-1].lower() if cat_label.endswith("s") else cat_label.lower()
+    lead = product.tags[0].lower() if product.tags else ""
+    if lead and noun:
+        return f"Looking for a {lead} {noun}?"
+    if noun:
+        return f"Looking for a {noun}?"
+    return "Looking for a product like this?"
+
+
+def render_product_page(slug: str, data_dir, *, environ=None) -> str:
+    from . import products as products_mod
+
+    base = _real_base_url(environ)
+    all_products = products_mod.load_public_products(data_dir)
+    product = next((p for p in all_products if p.slug == slug), None)
+    if product is None:
+        raise KeyError(f"no public product with slug {slug!r}")
+
+    cat_label = _split_emoji_label(_CATEGORY_LABELS.get(product.site_category,
+                                                       product.site_category))[1]
+    cat_path = f"{base}/kategorie/{product.site_category}/"
+    breadcrumb = (
+        f'<nav aria-label="Breadcrumb" class="breadcrumb">'
+        f'<a href="{_esc(base + "/")}">Home</a> &rsaquo; '
+        f'<a href="{_esc(base + "/product/")}">Products</a> &rsaquo; '
+        f'<a href="{_esc(cat_path)}">{_esc(cat_label)}</a> &rsaquo; '
+        f'{_esc(product.name)}</nav>')
+
+    # gallery
+    if product.image_urls:
+        thumbs = ""
+        if len(product.image_urls) > 1:
+            thumbs = '<div class="thumbs">' + "".join(
+                f'<img src="{_esc(u)}" alt="{_esc(product.name)} view {i + 1}" '
+                f'loading="lazy" decoding="async">'
+                for i, u in enumerate(product.image_urls)) + "</div>"
+        gallery = (f'<div class="main"><img src="{_esc(product.image_urls[0])}" '
+                   f'alt="{_esc(product.name + " product image")}" decoding="async"></div>'
+                   f'{thumbs}')
+    else:
+        gallery = f'<div class="main">{_product_image_html(product, big=True)}</div>'
+
+    price_block = ""
+    if product.has_price:
+        est = " (estimate - not confirmed at the source)" if product.price_is_estimate else ""
+        checked = (f" Last checked {_esc(product.price_observed_at)}."
+                   if product.price_observed_at else "")
+        price_block = (
+            f'<p class="price">{_esc(product.price_display)}{_esc(est)}'
+            f'<span class="muted">Provider prices change - check the current price on '
+            f'{"Amazon" if product.is_amazon else "the provider page"} before you buy.'
+            f'{checked}</span></p>')
+    else:
+        price_block = (f'<p class="price">{_esc(product.price_display)}'
+                       f'<span class="muted">We do not show a price we cannot verify.</span></p>')
+
+    cta_label = "Find on Amazon" if product.is_amazon else "View the offer"
+    cta = (f'<a class="buy-cta" href="{_esc(product.outbound_url)}" '
+           f'rel="sponsored nofollow" target="_blank">{cta_label} &rarr;</a>')
+
+    desc_html = f'<p>{_esc(product.description)}</p>' if product.description else ""
+
+    # context + guide section - only real, already-deployed guides.
+    guide_html = ""
+    if product.related_guides:
+        q = _context_question(product)
+        first = product.related_guides[0]
+        links = "".join(
+            f'<li><a href="{_esc(g.url)}">{_esc(g.title)}</a></li>'
+            for g in product.related_guides)
+        guide_html = f"""<div class="ctx-question">
+<h2>{_esc(q)}</h2>
+<p>Before choosing, our buying guide explains the main things to check.</p>
+<a href="{_esc(first.url)}">Read the buying guide &rarr;</a>
+<ul>{links}</ul>
+</div>"""
+
+    # related products
+    rel = products_mod.related_products(product, all_products, limit=3)
+    related_html = ""
+    if rel:
+        related_html = (f'<section class="block"><h2>You may also like</h2>'
+                        f'{_product_grid_html(rel, base, empty_msg="")}</section>')
+
+    disclosure = _product_disclosure_html(product.is_amazon)
+
+    ld = _product_jsonld(product, base)
+
+    body = f"""<article>
+{breadcrumb}
+<div class="product-detail">
+<div class="gallery">{gallery}</div>
+<div class="info">
+<h1>{_esc(product.name)}</h1>
+<p class="disclosure" role="note">{disclosure}</p>
+{price_block}
+{_tags_html(product.tags)}
+{desc_html}
+{cta}
+<p class="note">Verification: {_esc(product.verification_status)}.</p>
+</div>
+</div>
+{guide_html}
+<section>
+<h2>About this product</h2>
+<p>These are the provider's own stated details, shown here without a test
+or a review of our own. We link to the correct product; the price and
+availability are always as shown by {"Amazon" if product.is_amazon else "the provider"}
+at the time you click.</p>
+</section>
+{related_html}
+<p class="cta">
+{cta}<br>
+<span class="disclosure" role="note">{disclosure}</span>
+</p>
+</article>
+{ld}"""
+
+    title = f"{product.name}"
+    description = (product.short_context or product.description
+                   or f"{product.name} - product details and where to buy.")
+    return page_shell(title=title, description=description[:200], body_html=body,
+                      environ=environ)
+
+
+def _product_jsonld(product, base: str) -> str:
+    """BreadcrumbList + a minimal Product node - only facts the project
+    actually knows (name, description, image, url). No reviews, ratings,
+    aggregate ratings, brand, sku or availability are ever emitted, and a
+    price is emitted only when it is source-confirmed (not an estimate)."""
+    import json
+
+    prod: dict = {"@context": "https://schema.org", "@type": "Product",
+                  "name": product.name, "url": _product_url(base, product.slug)}
+    if product.description:
+        prod["description"] = product.description
+    if product.image_urls:
+        prod["image"] = list(product.image_urls)
+    cat_label = _split_emoji_label(_CATEGORY_LABELS.get(product.site_category, ""))[1]
+    crumbs = {
+        "@context": "https://schema.org", "@type": "BreadcrumbList",
+        "itemListElement": [
+            {"@type": "ListItem", "position": 1, "name": "Home", "item": f"{base}/"},
+            {"@type": "ListItem", "position": 2, "name": "Products",
+             "item": f"{base}/product/"},
+            {"@type": "ListItem", "position": 3, "name": cat_label or "Category",
+             "item": f"{base}/kategorie/{product.site_category}/"},
+            {"@type": "ListItem", "position": 4, "name": product.name,
+             "item": _product_url(base, product.slug)},
+        ],
+    }
+    return (f'<script type="application/ld+json">{json.dumps(prod)}</script>'
+            f'<script type="application/ld+json">{json.dumps(crumbs)}</script>')
+
+
+def all_product_pages(data_dir, *, environ=None) -> dict[str, str]:
+    """{relative file path: html} - the products index plus one detail page
+    per eligible product. Empty of detail pages (index only) when no
+    product qualifies - never a thin fake page."""
+    from . import products as products_mod
+
+    pages = {"product/index.html": render_products_index(data_dir, environ=environ)}
+    for p in products_mod.load_public_products(data_dir):
+        pages[f"product/{p.slug}/index.html"] = render_product_page(
+            p.slug, data_dir, environ=environ)
+    return pages
 
 
 # ---------------------------------------------------------------------------
@@ -312,20 +639,37 @@ def _real_guide_cards(data_dir) -> list[GuideCard]:
 # ---------------------------------------------------------------------------
 
 def render_homepage(data_dir, *, environ=None) -> str:
+    from . import products as products_mod
+
     base = _real_base_url(environ)
     cards = _real_guide_cards(data_dir)
-    counts: dict[str, int] = {}
+    all_products = products_mod.load_public_products(data_dir)
+    prod_counts: dict[str, int] = {}
+    for p in all_products:
+        prod_counts[p.site_category] = prod_counts.get(p.site_category, 0) + 1
+    guide_counts: dict[str, int] = {}
     for c in cards:
-        counts[c.site_category] = counts.get(c.site_category, 0) + 1
+        guide_counts[c.site_category] = guide_counts.get(c.site_category, 0) + 1
 
     def _cat_card(key: str, label: str) -> str:
         emoji, text = _split_emoji_label(label)
-        n = counts.get(key, 0)
+        n = prod_counts.get(key, 0)
+        g = guide_counts.get(key, 0)
+        if n:
+            meta = f'{n} product{"" if n == 1 else "s"}'
+        elif g:
+            meta = f'{g} guide{"" if g == 1 else "s"}'
+        else:
+            meta = "coming soon"
         return (f'<a class="category-card" href="{_esc(base + f"/kategorie/{key}/")}">'
                 f'<span class="emoji" aria-hidden="true">{emoji}</span>{_esc(text)}'
-                f'<span class="count">{n} guide{"" if n == 1 else "s"}</span></a>')
+                f'<span class="count">{_esc(meta)}</span></a>')
 
     category_html = "".join(_cat_card(key, label) for key, label in SITE_CATEGORIES)
+    featured = all_products[:6]
+    products_html = _product_grid_html(
+        featured, base,
+        empty_msg="More products coming soon - browse our buying guides below.")
 
     if cards:
         guides_html = '<div class="guides">' + "".join(
@@ -338,25 +682,32 @@ def render_homepage(data_dir, *, environ=None) -> str:
                        'check back soon.</div>')
 
     body = f"""<section class="hero"><div class="wrap">
-<span class="badge-pill">🔗 Transparent affiliate links</span>
+<span class="badge-pill">\U0001F4E6 Curated product discovery</span>
 <h1><span class="grad">{_esc(SITE_TAGLINE)}</span></h1>
-<p class="tagline">Honest, transparently funded buying advice based on real offers - no made-up tests, no fake reviews. Some links are affiliate links (see <a href="{_esc(base + '/affiliate-erklaerung/')}">How we make money</a>).</p>
-<a class="hero-cta" href="#guides">Explore the guides &rarr;</a>
+<p class="tagline">Browse real products from affiliate programs we have joined ourselves - each with the key facts and a link straight to the right product. No made-up tests, no fake reviews. Some links are affiliate links (see <a href="{_esc(base + '/affiliate-erklaerung/')}">How we make money</a>).</p>
+<a class="hero-cta" href="{_esc(base + '/product/')}">Browse products &rarr;</a>
 <p class="hero-note">🛡️ Transparently funded &middot; No hidden cost</p>
 <div class="feature-row">
-<div><span class="icon">{_SEARCH_ICON_SVG}</span><strong>Real demand</strong><p>We watch what people are actually searching for - no made-up topics.</p></div>
+<div><span class="icon">\U0001F4E6</span><strong>Products first</strong><p>See the actual products for a category before any buying guide.</p></div>
 <div><span class="icon">🛡️</span><strong>Compared honestly</strong><p>The providers' own facts, without made-up tests, stars or customer quotes.</p></div>
 <div><span class="icon">🔗</span><strong>Transparent links</strong><p>Affiliate links clearly labelled, at no extra cost to you.</p></div>
 </div>
 </div></section>
 
+<section class="block wrap" id="products">
+<h2>Featured products</h2>
+{products_html}
+<p><a class="guide-link" href="{_esc(base + '/product/')}">See all products &rarr;</a></p>
+</section>
+
 <section class="block wrap">
-<h2>Categories</h2>
+<h2>Browse by category</h2>
 <div class="categories">{category_html}</div>
 </section>
 
 <section class="block wrap" id="guides">
-<h2>Latest buying guides</h2>
+<h2>Buying guides</h2>
+<p class="cat-intro">Background reading to help you choose - secondary to the product pages above.</p>
 {guides_html}
 </section>
 
@@ -391,22 +742,31 @@ def render_homepage(data_dir, *, environ=None) -> str:
 # ---------------------------------------------------------------------------
 
 def render_category_page(category_key: str, data_dir, *, environ=None) -> str:
+    from . import products as products_mod
+
     base = _real_base_url(environ)
     emoji, name = _split_emoji_label(_CATEGORY_LABELS.get(category_key, category_key))
+    products = products_mod.products_in_category(data_dir, category_key)
     cards = [c for c in _real_guide_cards(data_dir) if c.site_category == category_key]
 
     breadcrumb_html = (f'<nav aria-label="Breadcrumb" class="breadcrumb">'
-                       f'<a href="{_esc(base + "/")}">Home</a> &rsaquo; {_esc(name)}</nav>')
+                       f'<a href="{_esc(base + "/")}">Home</a> &rsaquo; '
+                       f'<a href="{_esc(base + "/product/")}">Products</a> &rsaquo; '
+                       f'{_esc(name)}</nav>')
+
+    products_html = _product_grid_html(
+        products, base, empty_msg="More products coming soon.")
 
     if cards:
-        body_list = '<div class="guides">' + "".join(
-            f'<a class="guide-card" href="{_esc(c.live_url)}">'
-            f'<span class="cat">{_esc(_split_emoji_label(_CATEGORY_LABELS.get(c.site_category, ""))[1])}</span>'
-            f'<h3>{_esc(c.title)}</h3><span class="guide-link">View guide &rarr;</span></a>'
-            for c in cards) + "</div>"
+        guides_html = ('<section class="block"><h2>Related buying guides</h2>'
+                       '<div class="guides">' + "".join(
+                           f'<a class="guide-card" href="{_esc(c.live_url)}">'
+                           f'<span class="cat">{_esc(name)}</span>'
+                           f'<h3>{_esc(c.title)}</h3>'
+                           f'<span class="guide-link">View guide &rarr;</span></a>'
+                           for c in cards) + "</div></section>")
     else:
-        body_list = ('<div class="empty-state">There are no buying guides in this category '
-                    'yet - coming soon.</div>')
+        guides_html = ""
 
     badge = (f'<span class="badge-pill"><span aria-hidden="true">{emoji}</span> Category</span>'
              if emoji else '<span class="badge-pill">Category</span>')
@@ -414,11 +774,13 @@ def render_category_page(category_key: str, data_dir, *, environ=None) -> str:
 {breadcrumb_html}
 {badge}
 <h1><span class="grad">{_esc(name)}</span></h1>
-<p class="cat-intro">Buying guides on {_esc(name)} - based on real offers from affiliate
-programs and real, publicly asked questions. No made-up tests, no fake reviews.</p>
-{body_list}
+<p class="cat-intro">{_esc(name)} from affiliate programs we have joined ourselves -
+each product links straight to the correct product. No made-up tests, no fake reviews.</p>
+{products_html}
+{guides_html}
 </section>"""
-    return page_shell(title=name, description=f"Buying guides: {name}", body_html=body, environ=environ)
+    return page_shell(title=name, description=f"{name} - products and buying guides",
+                      body_html=body, environ=environ)
 
 
 def all_category_pages(data_dir, *, environ=None) -> dict[str, str]:
@@ -552,10 +914,11 @@ rel="nofollow noopener" target="_blank">GitHub Privacy Statement</a>.
 [TO BE VERIFIED: confirm the current transfer mechanism and, where
 applicable, a data processing agreement with GitHub.]</p>
 
-<h2>4. Affiliate / partner links (Amazon, systeme.io)</h2>
+<h2>4. Affiliate / partner links (Amazon, Awin)</h2>
 <p>Some links on this website are partner/affiliate links. When you click
 such a link, you leave this website and are taken to the respective provider
-(e.g. amazon.de or systeme.io). Only the provider then processes your data
+(e.g. amazon.de) or to an affiliate network (Awin), which forwards you to the
+advertiser. Only the provider/network then processes your data
 under <em>its</em> privacy policy and, as a rule, sets a cookie or stores an
 identifier in order to attribute a later purchase to our partner
 identification (for Amazon, the partner tag <code>airevenue-21</code>). We
@@ -566,8 +929,8 @@ applicable, commissions. Placing the links is based on Art. 6(1)(f) GDPR
 <p>Providers' privacy notices:
 <a href="https://www.amazon.de/gp/help/customer/display.html?nodeId=201909010"
 rel="nofollow noopener" target="_blank">Amazon</a> &middot;
-<a href="https://systeme.io/privacy-policy" rel="nofollow noopener"
-target="_blank">systeme.io</a>.</p>
+<a href="https://www.awin.com/gb/privacy" rel="nofollow noopener"
+target="_blank">Awin</a>.</p>
 
 <h2>5. Contact by email</h2>
 <p>If you write to us by email, we process your email address and the content
@@ -626,9 +989,10 @@ affiliates; this does not imply any endorsement, review or support of this
 website by Amazon.</p>
 
 <h2>Other programs</h2>
-<p>We also use the <strong>systeme.io</strong> affiliate program. Other
-networks such as <strong>Awin</strong> and <strong>CJ Affiliate</strong> are
-prepared but currently not represented with active links on this website.</p>
+<p>We also take part in <strong>Awin</strong>, an affiliate network, and link
+to individual advertiser programs we have been approved for there. Other
+networks such as <strong>CJ Affiliate</strong> are prepared but are currently
+not represented with active links on this website.</p>
 {_LEGAL_REVIEW_NOTE}
 </section>"""
     return page_shell(title="How we make money",
@@ -671,8 +1035,11 @@ def render_robots_txt(environ=None) -> str:
 
 
 def _sitemap_paths(data_dir) -> list[str]:
-    paths = ["/", "/impressum/", "/datenschutz/", "/affiliate-erklaerung/"]
+    from . import products as products_mod
+
+    paths = ["/", "/product/", "/impressum/", "/datenschutz/", "/affiliate-erklaerung/"]
     paths += [f"/kategorie/{key}/" for key, _label in SITE_CATEGORIES]
+    paths += [f"/product/{p.slug}/" for p in products_mod.load_public_products(data_dir)]
     return paths
 
 
@@ -695,6 +1062,7 @@ def render_sitemap_xml(data_dir, *, environ=None) -> str | None:
 def build_site_artifact(data_dir) -> DeploymentArtifact:
     files: dict[str, str] = {"index.html": render_homepage(data_dir)}
     files.update(all_category_pages(data_dir))
+    files.update(all_product_pages(data_dir))
     files.update(render_legal_pages())
     # serve the HTML exactly as written - no Jekyll processing (build speed,
     # and no surprise transforms of files/dirs whose name starts with "_").

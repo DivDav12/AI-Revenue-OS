@@ -77,7 +77,10 @@ class HomepageTests(unittest.TestCase):
         self.assertIn("No buying guide published yet", html)
         for key, _label in site.SITE_CATEGORIES:
             self.assertIn(f"/kategorie/{key}/", html)
-            self.assertIn("0 guides", html)
+        # with no products and no guides every category card reads "coming soon"
+        self.assertIn("coming soon", html)
+        # the product-first homepage always links to the product catalog
+        self.assertIn("/product/", html)
 
     def test_real_deployed_guide_appears_with_correct_category_count(self):
         d = _tmp()
@@ -202,7 +205,8 @@ class LegalPageTests(unittest.TestCase):
     def test_affiliate_erklaerung_is_transparent_and_names_real_networks_only(self):
         html = site.render_affiliate_erklaerung()
         self.assertIn("commission", html)
-        self.assertIn("systeme.io", html)
+        # the retired systeme.io product strategy is no longer named here
+        self.assertNotIn("systeme.io", html)
         # only real, documented networks in this codebase - never a
         # network invented for this page.
         for name in ("Awin", "CJ Affiliate", "Amazon PartnerNet"):

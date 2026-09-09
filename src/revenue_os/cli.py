@@ -1797,12 +1797,84 @@ def _cmd_affiliate_deploy(args) -> int:
 
 
 def _cmd_deploy_site(args) -> int:
-    """Website: (re)deploy the homepage + category + legal pages."""
+    """Website: (re)deploy the homepage + product catalog + category + legal pages."""
     from .ecosystem.site import deploy_site
 
     out = deploy_site(_data_dir(args))
     print(json.dumps(out, indent=2))
     return 0 if out["deployed"] else 1
+
+
+def _cmd_render_site(args) -> int:
+    """Website: render the full static site to a local directory (no deploy)."""
+    from pathlib import Path
+
+    from .ecosystem.site import build_site_artifact
+
+    data_dir = _data_dir(args)
+    artifact = build_site_artifact(data_dir)
+    out_dir = Path(args.out_dir)
+    written = []
+
+    def _write(rel_path: str, content) -> None:
+        dest = out_dir / rel_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        data = content if isinstance(content, bytes) else str(content).encode("utf-8")
+        dest.write_bytes(data)
+        written.append(rel_path)
+
+    for rel_path, content in artifact.files.items():
+        _write(rel_path, content)
+
+    # re-render each already-deployed buying guide too, byte-for-byte the
+    # way `affiliate-deploy` would (same draft/match/cta_url inputs), so the
+    # committed guide HTML stays in sync with the shared site chrome.
+    guides = _render_all_guides_to_disk(data_dir, _write)
+
+    print(json.dumps({"rendered": sorted(written), "out_dir": str(out_dir),
+                      "count": len(written), "guides": guides}, indent=2))
+    return 0
+
+
+def _render_all_guides_to_disk(data_dir, write_fn) -> dict:
+    from .ecosystem import affiliate_assets, affiliate_matching
+    from .ecosystem.affiliate_model import AffiliateAssetStore, AffiliateOfferStore
+    from .ecosystem.pipeline import draft_from_record
+    from .ecosystem.affiliate_links import AffiliateLinkStore
+    from .ecosystem.products import EXCLUDED_NETWORKS
+    from .opportunity_store import load_opportunities
+
+    offers = AffiliateOfferStore.load(data_dir).all()
+    offers_by_id = {o.offer_id: o for o in offers}
+    recs = {r.get("id"): r for r in load_opportunities(data_dir).all()}
+    links = AffiliateLinkStore.load(data_dir).all()
+    rendered, skipped = [], []
+    for asset in AffiliateAssetStore.load(data_dir).all():
+        if not asset.live_url:
+            continue
+        _offer = offers_by_id.get(asset.offer_id)
+        if _offer is not None and _offer.network in EXCLUDED_NETWORKS:
+            skipped.append({"asset_id": asset.asset_id,
+                            "reason": "network removed from the public site"})
+            continue
+        rec = recs.get(asset.opportunity_id)
+        if rec is None:
+            skipped.append({"asset_id": asset.asset_id, "reason": "no opportunity record"})
+            continue
+        draft = draft_from_record(rec)
+        matches = affiliate_matching.match_offers(draft, offers)
+        match = next((m for m in matches if m.offer.offer_id == asset.offer_id), None)
+        if match is None:
+            skipped.append({"asset_id": asset.asset_id, "reason": "offer no longer matches"})
+            continue
+        cta = next((l.target_url for l in links
+                    if l.asset_id == asset.asset_id and l.offer_id == asset.offer_id), "")
+        page, _checks = affiliate_assets.render_comparison_page(
+            draft=draft, match=match, cta_url=cta, guide_title=asset.guide_title,
+            related_links=asset.related_links)
+        write_fn(f"{asset.slug}/index.html", page)
+        rendered.append(asset.slug)
+    return {"rendered": rendered, "skipped": skipped}
 
 
 def _cmd_affiliate_clicks(args) -> int:
@@ -3275,11 +3347,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     dsite = sub.add_parser(
         "deploy-site", parents=[common],
-        help="Website: (re)deploy the customer-facing homepage + category "
-             "+ legal pages (site.py) - built purely from real, already-"
-             "deployed guides; run after any guide is deployed/redeployed "
-             "so the homepage stays in sync")
+        help="Website: (re)deploy the customer-facing homepage + product "
+             "catalog + category + legal pages (site.py) - built purely from "
+             "real, already-persisted offer/guide data; run after any guide "
+             "or offer changes so the site stays in sync")
     dsite.set_defaults(func=_cmd_deploy_site)
+
+    rsite = sub.add_parser(
+        "render-site", parents=[common],
+        help="Website: render the full static site (homepage + product "
+             "catalog + categories + legal + sitemap) to a local directory "
+             "(default: repo root) without deploying - for inspection / "
+             "committing the generated HTML")
+    rsite.add_argument("--out-dir", default=".",
+                       help="target directory for the generated files (default: .)")
+    rsite.set_defaults(func=_cmd_render_site)
 
     afc = sub.add_parser(
         "affiliate-clicks", parents=[common],

@@ -77,14 +77,45 @@ article section{background:var(--bg-elev);border:1px solid var(--border);border-
 article h2{font-size:1.15rem;margin-top:0}
 dl dt{font-weight:600;margin-top:10px}
 dl dd{margin:2px 0 0;color:var(--muted)}
+.product-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:18px;margin:22px 0}
+.product-card{display:flex;flex-direction:column;background:var(--bg-elev);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:var(--radius);overflow:hidden;color:var(--fg);transition:border-color .15s,transform .15s}
+.product-card:hover{border-color:var(--accent);transform:translateY(-2px);text-decoration:none}
+.product-card .shot{aspect-ratio:4/3;display:flex;align-items:center;justify-content:center;background:linear-gradient(140deg,#0d1428,#131b33);border-bottom:1px solid var(--border)}
+.product-card .shot img{width:100%;height:100%;object-fit:contain;padding:10px}
+.product-card .shot .ph{width:48px;height:48px;border-radius:12px;display:flex;align-items:center;justify-content:center;background:rgba(79,124,255,.14);color:var(--accent);font-size:1.4rem}
+.product-card .body{padding:16px 16px 18px;display:flex;flex-direction:column;gap:8px;flex:1}
+.product-card .pname{font-size:1rem;font-weight:700;line-height:1.35;margin:0}
+.product-card .price{font-size:1.05rem;font-weight:700;color:var(--fg)}
+.product-card .price .muted{font-size:.82rem;font-weight:400;color:var(--muted)}
+.tags{display:flex;flex-wrap:wrap;gap:6px}
+.tag{display:inline-block;background:rgba(155,107,255,.14);color:#c9b8ff;border:1px solid var(--border);border-radius:999px;padding:3px 10px;font-size:.74rem;letter-spacing:.01em}
+.product-card .ctx{color:var(--muted);font-size:.85rem;margin:0}
+.product-card .view{margin-top:auto;color:var(--accent);font-size:.88rem;font-weight:600}
+.product-detail{display:grid;grid-template-columns:minmax(0,420px) 1fr;gap:32px;margin:18px 0 8px}
+.product-detail .gallery{display:flex;flex-direction:column;gap:10px}
+.product-detail .gallery .main{aspect-ratio:1/1;display:flex;align-items:center;justify-content:center;background:linear-gradient(140deg,#0d1428,#131b33);border:1px solid var(--border);border-radius:var(--radius)}
+.product-detail .gallery .main img{width:100%;height:100%;object-fit:contain;padding:16px}
+.product-detail .gallery .main .ph{width:72px;height:72px;border-radius:16px;display:flex;align-items:center;justify-content:center;background:rgba(79,124,255,.14);color:var(--accent);font-size:2rem}
+.product-detail .thumbs{display:flex;gap:8px;flex-wrap:wrap}
+.product-detail .thumbs img{width:64px;height:64px;object-fit:contain;background:#0d1428;border:1px solid var(--border);border-radius:10px;padding:4px}
+.product-detail h1{margin:0 0 12px}
+.product-detail .price{font-size:1.5rem;font-weight:800;margin:6px 0}
+.product-detail .price .muted{display:block;font-size:.82rem;font-weight:400;color:var(--muted);margin-top:2px}
+.buy-cta{display:inline-flex;align-items:center;gap:8px;margin:18px 0 8px;padding:15px 30px;border-radius:999px;background:var(--accent-grad);color:#fff;font-weight:700;font-size:1.03rem}
+.buy-cta:hover{opacity:.92;text-decoration:none}
+.ctx-question{background:var(--bg-elev);border:1px solid var(--border);border-left:4px solid var(--accent-2);border-radius:12px;padding:16px 18px;margin:16px 0}
+.ctx-question h2{margin:0 0 6px;font-size:1.05rem}
+.ctx-question p{margin:0 0 8px;color:var(--muted)}
+.ctx-question a{color:var(--accent);font-weight:600}
+@media (max-width:760px){.product-detail{grid-template-columns:1fr;gap:20px}.product-detail .gallery{max-width:360px}}
 @media (max-width:640px){.hero{padding:48px 0 36px}.hero h1{font-size:1.9rem}nav.site{gap:12px}.searchbox{display:none}}
-@media (prefers-reduced-motion:reduce){.category-card,.guide-card,.skip-link{transition:none}}
+@media (prefers-reduced-motion:reduce){.category-card,.guide-card,.product-card,.skip-link{transition:none}}
 </style>
 </head><body>
 <a class="skip-link" href="#content">Skip to content</a>
 <header class="site"><div class="wrap">
 <a class="brand" href="https://DivDav12.github.io/AI-Revenue-OS/"><span class="brand-mark" aria-hidden="true"><i></i><i></i></span>AI Revenue</a>
-<nav class="site" aria-label="Main navigation"><a href="https://DivDav12.github.io/AI-Revenue-OS/">Home</a><a href="https://DivDav12.github.io/AI-Revenue-OS/kategorie/kopfhoerer-earbuds/">Headphones &amp; Earbuds</a><a href="https://DivDav12.github.io/AI-Revenue-OS/kategorie/mikrofone/">Microphones</a><a href="https://DivDav12.github.io/AI-Revenue-OS/kategorie/tastaturen/">Keyboards</a><a href="https://DivDav12.github.io/AI-Revenue-OS/kategorie/maeuse/">Mice</a>
+<nav class="site" aria-label="Main navigation"><a href="https://DivDav12.github.io/AI-Revenue-OS/">Home</a><a href="https://DivDav12.github.io/AI-Revenue-OS/product/">Products</a><a href="https://DivDav12.github.io/AI-Revenue-OS/kategorie/kopfhoerer-earbuds/">Headphones &amp; Earbuds</a><a href="https://DivDav12.github.io/AI-Revenue-OS/kategorie/mikrofone/">Microphones</a><a href="https://DivDav12.github.io/AI-Revenue-OS/kategorie/tastaturen/">Keyboards</a>
 <form class="searchbox" id="site-search" onsubmit="return false;" role="search">
 <label class="sr-only" for="site-search-input">Search buying guides</label>
 <button type="submit" aria-label="Search"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></button>
@@ -100,7 +131,7 @@ dl dd{margin:2px 0 0;color:var(--muted)}
 <p>Controller within the meaning of the General Data Protection Regulation (GDPR):<br>
 <strong>[TO BE COMPLETED: name / company name]</strong><br>
 <strong>[TO BE COMPLETED: address that can be served with legal process]</strong><br>
-<strong>[TO BE COMPLETED: contact email]</strong></p>
+Email: <a href="mailto:divdav12support@gmail.com">divdav12support@gmail.com</a></p>
 
 <h2>2. About this website</h2>
 <p>This website is a static site. We ourselves set <strong>no cookies</strong>,
@@ -129,10 +160,11 @@ rel="nofollow noopener" target="_blank">GitHub Privacy Statement</a>.
 [TO BE VERIFIED: confirm the current transfer mechanism and, where
 applicable, a data processing agreement with GitHub.]</p>
 
-<h2>4. Affiliate / partner links (Amazon, systeme.io)</h2>
+<h2>4. Affiliate / partner links (Amazon, Awin)</h2>
 <p>Some links on this website are partner/affiliate links. When you click
 such a link, you leave this website and are taken to the respective provider
-(e.g. amazon.de or systeme.io). Only the provider then processes your data
+(e.g. amazon.de) or to an affiliate network (Awin), which forwards you to the
+advertiser. Only the provider/network then processes your data
 under <em>its</em> privacy policy and, as a rule, sets a cookie or stores an
 identifier in order to attribute a later purchase to our partner
 identification (for Amazon, the partner tag <code>airevenue-21</code>). We
@@ -143,8 +175,8 @@ applicable, commissions. Placing the links is based on Art. 6(1)(f) GDPR
 <p>Providers' privacy notices:
 <a href="https://www.amazon.de/gp/help/customer/display.html?nodeId=201909010"
 rel="nofollow noopener" target="_blank">Amazon</a> &middot;
-<a href="https://systeme.io/privacy-policy" rel="nofollow noopener"
-target="_blank">systeme.io</a>.</p>
+<a href="https://www.awin.com/gb/privacy" rel="nofollow noopener"
+target="_blank">Awin</a>.</p>
 
 <h2>5. Contact by email</h2>
 <p>If you write to us by email, we process your email address and the content

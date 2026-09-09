@@ -281,6 +281,23 @@ class AffiliateOffer:
     #: outbound URL the visitor lands on stays byte-for-byte untouched.
     #: Defaults to False - every existing offer's behaviour is unchanged.
     preserve_exact_url: bool = False
+    #: compliant product image URLs for the public product page (spec:
+    #: product-first catalog). ONLY ever populated by a human from an
+    #: Amazon-permitted source (SiteStripe image / PA-API / Creators API) -
+    #: nothing in the fleet fabricates, scrapes or mirrors an image. Empty
+    #: (the default) -> the product card/page renders a clean icon
+    #: placeholder, never a fake image.
+    image_urls: tuple = ()
+    #: a short, honest one-line context string shown on the product card
+    #: (e.g. "Budget USB condenser mic for podcasting and streaming").
+    #: Empty -> the card falls back to the first sentence of `evidence`.
+    short_context: str = ""
+    #: product-identity verification record (spec: "ASIN/product identity
+    #: must be sufficiently verified"). Free-text status + ISO timestamp.
+    #: "" -> the human-supplied `evidence` on file is the verification of
+    #: record (every offer here was added by a human with evidence).
+    verification_status: str = ""
+    verified_at: str = ""
     added_at: str = ""
     added_by: str = "human"
     active: bool = True
@@ -300,6 +317,9 @@ class AffiliateOffer:
             "evidence": list(self.evidence), "status": self.status,
             "tracking_param": self.tracking_param, "tracking_value": self.tracking_value,
             "preserve_exact_url": bool(self.preserve_exact_url),
+            "image_urls": list(self.image_urls), "short_context": self.short_context,
+            "verification_status": self.verification_status,
+            "verified_at": self.verified_at,
             "added_at": self.added_at,
             "added_by": self.added_by, "active": bool(self.active),
         }
@@ -310,6 +330,7 @@ class AffiliateOffer:
         d["commission"] = CommissionModel.from_dict(d.get("commission") or {})
         d["keywords"] = tuple(d.get("keywords") or ())
         d["evidence"] = tuple(d.get("evidence") or ())
+        d["image_urls"] = tuple(d.get("image_urls") or ())
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
     @property

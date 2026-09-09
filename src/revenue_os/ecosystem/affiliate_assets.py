@@ -158,6 +158,19 @@ def render_comparison_page(*, draft: OpportunityDraft, match: AffiliateMatch,
     # both for the breadcrumb and as the in-body category label.
     cat_label, cat_path = category_breadcrumb(offer.category, environ)
 
+    # product-first: a real internal link to this product's own detail page
+    # (Guide -> Product -> Amazon), so a visitor sees the product context
+    # before leaving the site. Only for a product the public catalog
+    # actually publishes (never the retired systeme.io strategy).
+    from . import products as _products_mod
+
+    product_page_html = ""
+    if getattr(offer, "network", "") not in _products_mod.EXCLUDED_NETWORKS:
+        _pslug = _products_mod.product_slug(offer)
+        _purl = f"{_real_base_url(environ)}/product/{_pslug}/"
+        product_page_html = (f'<p><a href="{_esc(_purl)}">See the full '
+                             f'{product} product page &rarr;</a></p>')
+
     criteria_html = pros_html = who_html = budget_html = reco_html = ""
     if offer.evidence:
         category_label = _esc(cat_label) or "this category"
@@ -225,6 +238,7 @@ affiliate program we have actually joined.</p>
 <section>
 <h2>Our pick: {product} ({program})</h2>
 <p>{price_line}</p>
+{product_page_html}
 </section>
 {pros_html}
 {who_html}
