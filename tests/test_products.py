@@ -213,7 +213,9 @@ class CardAndPageRenderTests(unittest.TestCase):
         self.assertIn("As an Amazon Associate I earn from qualifying purchases.", page)
         self.assertIn("Advertisement / affiliate link.", page)
 
-    def test_non_amazon_product_page_has_no_amazon_statement(self):
+    def test_standalone_non_amazon_program_is_not_a_public_product(self):
+        # the public catalogue is an Amazon-affiliate product catalogue - a
+        # standalone Awin advertiser never gets a public product page.
         d = _tmp()
         off = AffiliateOffer(
             offer_id="aff-awin", network="awin", program_name="Awin advertiser",
@@ -221,12 +223,9 @@ class CardAndPageRenderTests(unittest.TestCase):
             product_url="https://www.awin1.com/cread.php?awinmid=1&awinaffid=2&ued=https%3A%2F%2Fx",
             preserve_exact_url=True, status=POLICY_OK, category="pdf-editor",
             keywords=("pdf editor",), evidence=("Wondershare page: edit PDF like Word.",))
-        _seed(d, offers=[off])
-        p = products.load_public_products(d)[0]
-        page = site.render_product_page(p.slug, d, environ=_REAL_ENV)
-        self.assertNotIn("As an Amazon Associate", page)
-        self.assertIn("Advertisement / affiliate link.", page)
-        self.assertIn("View the offer", page)
+        _seed(d, offers=[off, _amazon_offer()])
+        ps = products.load_public_products(d)
+        self.assertEqual([p.product_id for p in ps], ["aff-amz-1"])
 
 
 class NavigationTests(unittest.TestCase):

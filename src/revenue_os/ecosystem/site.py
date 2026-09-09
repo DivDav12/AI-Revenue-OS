@@ -914,11 +914,10 @@ rel="nofollow noopener" target="_blank">GitHub Privacy Statement</a>.
 [TO BE VERIFIED: confirm the current transfer mechanism and, where
 applicable, a data processing agreement with GitHub.]</p>
 
-<h2>4. Affiliate / partner links (Amazon, Awin)</h2>
+<h2>4. Affiliate / partner links (Amazon)</h2>
 <p>Some links on this website are partner/affiliate links. When you click
 such a link, you leave this website and are taken to the respective provider
-(e.g. amazon.de) or to an affiliate network (Awin), which forwards you to the
-advertiser. Only the provider/network then processes your data
+(currently amazon.de). Only the provider then processes your data
 under <em>its</em> privacy policy and, as a rule, sets a cookie or stores an
 identifier in order to attribute a later purchase to our partner
 identification (for Amazon, the partner tag <code>airevenue-21</code>). We
@@ -926,11 +925,9 @@ have no influence over this. We receive no personal data about you from the
 provider, only aggregated, anonymous statistics on clicks and, where
 applicable, commissions. Placing the links is based on Art. 6(1)(f) GDPR
 (legitimate interest in funding the service).</p>
-<p>Providers' privacy notices:
+<p>Provider privacy notice:
 <a href="https://www.amazon.de/gp/help/customer/display.html?nodeId=201909010"
-rel="nofollow noopener" target="_blank">Amazon</a> &middot;
-<a href="https://www.awin.com/gb/privacy" rel="nofollow noopener"
-target="_blank">Awin</a>.</p>
+rel="nofollow noopener" target="_blank">Amazon</a>.</p>
 
 <h2>5. Contact by email</h2>
 <p>If you write to us by email, we process your email address and the content
@@ -989,10 +986,9 @@ affiliates; this does not imply any endorsement, review or support of this
 website by Amazon.</p>
 
 <h2>Other programs</h2>
-<p>We also take part in <strong>Awin</strong>, an affiliate network, and link
-to individual advertiser programs we have been approved for there. Other
-networks such as <strong>CJ Affiliate</strong> are prepared but are currently
-not represented with active links on this website.</p>
+<p>We are also set up with the affiliate networks <strong>Awin</strong> and
+<strong>CJ Affiliate</strong>, but neither is currently represented with
+active links on this website.</p>
 {_LEGAL_REVIEW_NOTE}
 </section>"""
     return page_shell(title="How we make money",

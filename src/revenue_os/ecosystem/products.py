@@ -6,11 +6,14 @@ already-persisted, real `AffiliateOfferStore` / `AffiliateAssetStore`
 data; never invents a product, an ASIN, a price, an image, or a
 product<->guide relationship.
 
-A public product == a *usable* (POLICY_OK, active) `AffiliateOffer` whose
-network is not on `EXCLUDED_NETWORKS`. Amazon offers additionally must
-carry a verified product-specific destination (a real `/dp/<ASIN>` URL
-whose ASIN matches the offer) - a homepage / search / category / mismatched
-URL is rejected, never published.
+A public product == a *usable* (POLICY_OK, active) **Amazon Associates**
+`AffiliateOffer` that carries a verified product-specific destination (a
+real `/dp/<ASIN>` URL whose ASIN matches the offer) - a homepage / search
+/ category / mismatched URL is rejected, never published. This is an
+Amazon-affiliate product catalog: standalone non-Amazon programs (e.g. an
+Awin advertiser) stay usable internally and for buying guides but are
+never surfaced as public products here. `EXCLUDED_NETWORKS` additionally
+hard-blocks the retired systeme.io strategy.
 
 The outbound URL is taken from the EXISTING affiliate-link architecture
 (`AffiliateLinkStore` - the same verified `target_url` the buying guides
@@ -269,14 +272,19 @@ def load_public_products(data_dir) -> list[PublicProduct]:
     for offer in offers:
         if not offer.usable or offer.network in EXCLUDED_NETWORKS:
             continue
-        if _is_amazon(offer):
-            dest = verified_amazon_destination(offer)
-            if not dest:
-                continue                       # unverified/mismatched -> never published
-            if offer.product_asin and offer.product_asin.upper() in seen_asin:
-                continue                       # ASIN dedupe -> one canonical page
-            if offer.product_asin:
-                seen_asin.add(offer.product_asin.upper())
+        # the public catalog is an Amazon-affiliate product catalog: a
+        # standalone non-Amazon program (e.g. an Awin advertiser) is not
+        # part of it and never gets a public product page. Other networks
+        # stay usable internally / for buying guides - they are just not
+        # surfaced as products here.
+        if not _is_amazon(offer):
+            continue
+        if not verified_amazon_destination(offer):
+            continue                           # unverified/mismatched -> never published
+        if offer.product_asin and offer.product_asin.upper() in seen_asin:
+            continue                           # ASIN dedupe -> one canonical page
+        if offer.product_asin:
+            seen_asin.add(offer.product_asin.upper())
         outbound, tracking_id = _outbound_for(offer, links_by_offer)
         if not outbound:
             continue
