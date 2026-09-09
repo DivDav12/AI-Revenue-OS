@@ -116,7 +116,8 @@ class HomepageTests(unittest.TestCase):
 
     def test_has_search_box_and_hero_and_branding(self):
         html = site.render_homepage(_tmp())
-        self.assertIn("What are you looking to buy?", html)
+        self.assertIn('id="site-search-input"', html)
+        self.assertIn("Search products and guides", html)
         self.assertIn(site.SITE_TAGLINE, html)
         self.assertIn(">AI Revenue<", html)
 

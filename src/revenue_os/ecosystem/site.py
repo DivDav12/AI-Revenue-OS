@@ -164,11 +164,17 @@ header.site .wrap{display:flex;align-items:center;justify-content:space-between;
 nav.site{display:flex;align-items:center;gap:22px;flex-wrap:wrap}
 nav.site a{color:var(--muted);font-size:.92rem}
 nav.site a:hover{color:var(--fg);text-decoration:none}
-.searchbox{display:flex;align-items:center;gap:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:999px;padding:9px 16px 9px 14px}
+.searchbox{position:relative;display:flex;align-items:center;gap:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:999px;padding:9px 16px 9px 14px}
 .searchbox svg{flex:none;color:var(--muted)}
 .searchbox input{flex:1;min-width:120px;background:transparent;border:0;color:var(--fg);font-size:.88rem;outline:0}
 .searchbox input::placeholder{color:var(--muted)}
 .searchbox button{border:0;background:transparent;color:var(--muted);cursor:pointer;padding:0;display:flex}
+.search-results{position:absolute;top:calc(100% + 8px);right:0;left:0;min-width:300px;background:var(--bg-elev);border:1px solid var(--border);border-radius:12px;padding:6px;z-index:120;max-height:min(70vh,440px);overflow-y:auto;box-shadow:0 16px 44px rgba(0,0,0,.55)}
+.search-results a{display:block;padding:9px 12px;border-radius:8px;color:var(--fg)}
+.search-results a:hover,.search-results a[aria-selected="true"]{background:rgba(79,124,255,.16);text-decoration:none}
+.search-results .k{display:inline-block;font-size:.66rem;text-transform:uppercase;letter-spacing:.04em;color:var(--accent);border:1px solid var(--border);border-radius:999px;padding:1px 7px;margin-right:8px;vertical-align:1px}
+.search-results .st{display:block;color:var(--muted);font-size:.8rem;margin-top:2px}
+.search-results .empty{padding:12px;color:var(--muted);font-size:.85rem}
 .badge-pill{display:inline-flex;align-items:center;gap:7px;background:var(--bg-elev);border:1px solid var(--border);border-radius:999px;padding:7px 16px;font-size:.82rem;color:var(--muted)}
 .hero{padding:72px 0 56px;text-align:center;background:radial-gradient(120% 100% at 50% 0%,#101a3a 0%,var(--bg) 60%)}
 .hero h1{font-size:2.6rem;margin:22px 0 16px;line-height:1.22;font-weight:800}
@@ -275,9 +281,12 @@ def render_header(environ=None) -> str:
 <a class="brand" href="{_esc(base + '/')}"><span class="brand-mark" aria-hidden="true"><i></i><i></i></span>{_esc(SITE_BRAND)}</a>
 <nav class="site" aria-label="Main navigation">{_nav_links(environ)}
 <form class="searchbox" id="site-search" onsubmit="return false;" role="search">
-<label class="sr-only" for="site-search-input">Search buying guides</label>
+<label class="sr-only" for="site-search-input">Search products and buying guides</label>
 <button type="submit" aria-label="Search">{_SEARCH_ICON_SVG}</button>
-<input type="search" id="site-search-input" placeholder="What are you looking to buy?" aria-label="Search buying guides">
+<input type="search" id="site-search-input" placeholder="Search products and guides" autocomplete="off"
+ role="combobox" aria-expanded="false" aria-controls="site-search-results" aria-autocomplete="list"
+ aria-label="Search products and buying guides">
+<div class="search-results" id="site-search-results" role="listbox" aria-label="Search results" hidden></div>
 </form>
 </nav>
 </div></header>"""
@@ -296,20 +305,112 @@ def render_footer(environ=None) -> str:
 </div></footer>"""
 
 
+#: the shared, site-wide search behaviour - present on EVERY page (via
+#: page_shell). It lazily fetches the static `search-index.json`
+#: (products + guides + categories + legal pages, real data only) the
+#: first time the box is used, then filters it into an accessible
+#: results dropdown (arrow-key + Enter navigation, click-outside to
+#: close). No backend, no external call - just one same-origin GET of a
+#: file this site generates itself. Fails silent if the index can't be
+#: loaded (e.g. a file:// preview).
+_SEARCH_JS = r"""<script>
+(function(){
+  var box=document.getElementById('site-search'),
+      input=document.getElementById('site-search-input'),
+      panel=document.getElementById('site-search-results');
+  if(!box||!input||!panel)return;
+  var base=window.__SITE_BASE__||'',idx=null,loading=false,items=[],sel=-1,t;
+  function load(cb){
+    if(idx){cb();return;}
+    if(loading)return; loading=true;
+    fetch(base+'/search-index.json',{credentials:'omit'})
+      .then(function(r){return r.ok?r.json():[];})
+      .then(function(d){idx=Array.isArray(d)?d:[];loading=false;cb();})
+      .catch(function(){idx=[];loading=false;cb();});
+  }
+  function score(it,words){
+    var hay=(it.t+' '+(it.s||'')+' '+it.k).toLowerCase(),title=it.t.toLowerCase(),s=0;
+    for(var i=0;i<words.length;i++){
+      var w=words[i];
+      if(hay.indexOf(w)===-1)return -1;
+      s+=title.indexOf(w)===0?3:title.indexOf(w)!==-1?2:1;
+    }
+    if(it.k==='Product')s+=1;
+    return s;
+  }
+  function clear(){while(panel.firstChild)panel.removeChild(panel.firstChild);}
+  function close(){panel.hidden=true;clear();sel=-1;
+    input.setAttribute('aria-expanded','false');input.removeAttribute('aria-activedescendant');}
+  function render(){
+    var words=input.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if(!words.length){close();return;}
+    items=(idx||[]).map(function(it){return{it:it,s:score(it,words)};})
+      .filter(function(x){return x.s>=0;})
+      .sort(function(a,b){return b.s-a.s;}).slice(0,8).map(function(x){return x.it;});
+    sel=-1; clear();
+    if(!items.length){
+      var e=document.createElement('div'); e.className='empty';
+      e.textContent='No matches for “'+input.value.trim()+'”';
+      panel.appendChild(e);
+    }else{
+      items.forEach(function(it,i){
+        var a=document.createElement('a');
+        a.setAttribute('role','option'); a.id='ssr-'+i;
+        a.setAttribute('href', it.u);
+        var k=document.createElement('span'); k.className='k'; k.textContent=it.k;
+        a.appendChild(k); a.appendChild(document.createTextNode(it.t));
+        if(it.s){var st=document.createElement('span'); st.className='st';
+          st.textContent=it.s; a.appendChild(st);}
+        panel.appendChild(a);
+      });
+    }
+    panel.hidden=false;input.setAttribute('aria-expanded','true');
+  }
+  function move(d){
+    if(panel.hidden||!items.length)return;
+    sel=(sel+d+items.length)%items.length;
+    var as=panel.querySelectorAll('a');
+    for(var i=0;i<as.length;i++)as[i].removeAttribute('aria-selected');
+    if(as[sel]){as[sel].setAttribute('aria-selected','true');
+      as[sel].scrollIntoView({block:'nearest'});
+      input.setAttribute('aria-activedescendant','ssr-'+sel);}
+  }
+  function go(){var a=panel.querySelectorAll('a')[sel>=0?sel:0];
+    if(a){window.location.href=a.getAttribute('href');}}
+  input.addEventListener('input',function(){clearTimeout(t);
+    t=setTimeout(function(){load(render);},120);});
+  input.addEventListener('focus',function(){if(input.value.trim())load(render);});
+  input.addEventListener('keydown',function(e){
+    if(e.key==='ArrowDown'){e.preventDefault();move(1);}
+    else if(e.key==='ArrowUp'){e.preventDefault();move(-1);}
+    else if(e.key==='Enter'){if(!panel.hidden){e.preventDefault();go();}}
+    else if(e.key==='Escape'){close();}
+  });
+  box.addEventListener('submit',function(e){e.preventDefault();if(!panel.hidden)go();});
+  document.addEventListener('click',function(e){if(!box.contains(e.target))close();});
+})();
+</script>"""
+
+
 def page_shell(*, title: str, description: str, body_html: str, environ=None) -> str:
     """Wrap `body_html` (already-rendered, escaped-as-needed content) with
     the shared header/footer/CSS/branding - the ONE place every page on
     the site gets its look from. `environ=` (default None -> the real
     process environment) lets header/footer navigation links resolve the
     real GitHub Pages PROJECT base path (see `_real_base_url()`) - never a
-    second, independently-guessed base."""
+    second, independently-guessed base. Every page also gets the shared,
+    site-wide search (see `_SEARCH_JS` / `search-index.json`)."""
+    import json
+
     full_title = SITE_BRAND if title == SITE_BRAND else f"{title} – {SITE_BRAND}"
+    base_js = json.dumps(_real_base_url(environ))
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{_esc(full_title)}</title>
 <meta name="description" content="{_esc(description)}">
 <style>{_BASE_CSS}</style>
+<script>window.__SITE_BASE__={base_js};</script>
 </head><body>
 <a class="skip-link" href="#content">Skip to content</a>
 {render_header(environ)}
@@ -317,6 +418,7 @@ def page_shell(*, title: str, description: str, body_html: str, environ=None) ->
 {body_html}
 </main>
 {render_footer(environ)}
+{_SEARCH_JS}
 </body></html>"""
 
 
@@ -660,6 +762,76 @@ def all_product_pages(data_dir, *, environ=None) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# site-wide search index (spec: the header search must actually return
+# results). A flat, static list the client-side search (`_SEARCH_JS`)
+# fetches once. Every entry is real, already-persisted data - a product,
+# a deployed buying guide, a real site category, or a real page. Nothing
+# fabricated.
+# ---------------------------------------------------------------------------
+
+def search_index(data_dir, *, environ=None) -> list[dict]:
+    """[{t: title, u: url, k: kind, s: subtitle}] for every product,
+    deployed guide, category and standing page on the site."""
+    from . import products as products_mod
+
+    base = _real_base_url(environ)
+    entries: list[dict] = []
+
+    prods = products_mod.load_public_products(data_dir)
+    prod_counts: dict[str, int] = {}
+    for p in prods:
+        prod_counts[p.site_category] = prod_counts.get(p.site_category, 0) + 1
+        price = p.price_display if p.has_price else (
+            "See price on Amazon" if p.is_amazon else "See current price")
+        subtitle = " · ".join(x for x in (price, ", ".join(p.tags)) if x)
+        entries.append({"t": p.name, "u": f"{base}/product/{p.slug}/",
+                        "k": "Product", "s": subtitle})
+
+    guide_cards = _real_guide_cards(data_dir)
+    guide_counts: dict[str, int] = {}
+    for c in guide_cards:
+        guide_counts[c.site_category] = guide_counts.get(c.site_category, 0) + 1
+
+    for key, label in SITE_CATEGORIES:
+        name = _split_emoji_label(label)[1]
+        n, g = prod_counts.get(key, 0), guide_counts.get(key, 0)
+        bits = []
+        if n:
+            bits.append(f"{n} product{'' if n == 1 else 's'}")
+        if g:
+            bits.append(f"{g} guide{'' if g == 1 else 's'}")
+        entries.append({"t": name, "u": f"{base}/kategorie/{key}/",
+                        "k": "Category", "s": ", ".join(bits) or "coming soon"})
+
+    # the same buying question often has two deployed guide pages (one per
+    # matched product) - the search shows it once, pointing at the first.
+    seen_guides: set[str] = set()
+    for c in guide_cards:
+        key = c.title.strip().lower()
+        if key in seen_guides:
+            continue
+        seen_guides.add(key)
+        cat = _split_emoji_label(_CATEGORY_LABELS.get(c.site_category, ""))[1]
+        entries.append({"t": c.title, "u": c.live_url, "k": "Guide", "s": cat})
+
+    entries.append({"t": "All products", "u": f"{base}/product/",
+                    "k": "Page", "s": "Browse the full catalogue"})
+    entries.append({"t": "Imprint", "u": f"{base}/impressum/", "k": "Page", "s": ""})
+    entries.append({"t": "Privacy Policy", "u": f"{base}/datenschutz/",
+                    "k": "Page", "s": ""})
+    entries.append({"t": "How we make money", "u": f"{base}/affiliate-erklaerung/",
+                    "k": "Page", "s": "Affiliate disclosure"})
+    return entries
+
+
+def render_search_index_json(data_dir, *, environ=None) -> str:
+    import json
+
+    return json.dumps(search_index(data_dir, environ=environ),
+                      ensure_ascii=False, separators=(",", ":"))
+
+
+# ---------------------------------------------------------------------------
 # homepage
 # ---------------------------------------------------------------------------
 
@@ -745,20 +917,7 @@ def render_homepage(data_dir, *, environ=None) -> str:
 <div><strong>4. Link transparently</strong><p>If you buy through our link we may earn a commission - at no extra cost to you. See <a href="{_esc(base + '/affiliate-erklaerung/')}">How we make money</a>.</p></div>
 </div>
 </section>
-<script>
-(function(){{
-  var input = document.getElementById('site-search-input');
-  var cards = document.querySelectorAll('#guides .guide-card');
-  if (!input || !cards.length) return;
-  input.addEventListener('input', function(){{
-    var q = input.value.trim().toLowerCase();
-    cards.forEach(function(card){{
-      var match = !q || card.textContent.toLowerCase().indexOf(q) !== -1;
-      card.style.display = match ? '' : 'none';
-    }});
-  }});
-}})();
-</script>"""
+"""
     return page_shell(title=SITE_BRAND, description=SITE_TAGLINE, body_html=body, environ=environ)
 
 
@@ -1089,6 +1248,7 @@ def build_site_artifact(data_dir) -> DeploymentArtifact:
     # and no surprise transforms of files/dirs whose name starts with "_").
     files[".nojekyll"] = ""
     files["robots.txt"] = render_robots_txt()
+    files["search-index.json"] = render_search_index_json(data_dir)
     sitemap = render_sitemap_xml(data_dir)
     if sitemap:
         files["sitemap.xml"] = sitemap
