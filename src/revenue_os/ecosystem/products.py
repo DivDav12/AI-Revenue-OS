@@ -101,6 +101,81 @@ def _is_amazon(offer: AffiliateOffer) -> bool:
     return offer.network == NETWORK_AMAZON_ASSOCIATES
 
 
+# ---------------------------------------------------------------------------
+# product images (spec: "Use real Amazon product imagery ... in a way that
+# complies with Amazon Associates / Amazon content rules")
+#
+# The ONLY officially sanctioned source of Amazon product image URLs is the
+# Product Advertising API (PA-API 5.0) / its Creators API successor - which
+# returns image URLs on Amazon's own media CDN. Nothing in this project
+# fetches, scrapes, screenshots or guesses an image. `AffiliateOffer.image_urls`
+# is populated only by a human from a permitted source (or a future,
+# credentialed PA-API/Creators-API connector). This gate is the safety net
+# on that entry point: a URL that is not on an Amazon media CDN over HTTPS
+# is rejected, so a Google / imgur / random-host / placeholder URL can never
+# reach a product page even if it is entered by mistake.
+# ---------------------------------------------------------------------------
+
+#: exact hosts PA-API / the Creators API return image URLs on, plus the
+#: domain suffixes Amazon uses for the same CDN across regions.
+_AMAZON_IMAGE_HOSTS = frozenset({
+    "m.media-amazon.com",
+    "images-na.ssl-images-amazon.com",
+    "images-eu.ssl-images-amazon.com",
+    "images-fe.ssl-images-amazon.com",
+    "images-cn.ssl-images-amazon.com",
+    "ecx.images-amazon.com",
+    "g-ecx.images-amazon.com",
+})
+_AMAZON_IMAGE_HOST_SUFFIXES = (
+    ".media-amazon.com", ".ssl-images-amazon.com", ".images-amazon.com",
+)
+_IMAGE_EXT_RE = re.compile(r"\.(?:jpe?g|png|webp|gif)$", re.IGNORECASE)
+
+
+def compliant_amazon_image_url(url: str) -> bool:
+    """True iff `url` is an HTTPS image URL on an Amazon media CDN - i.e. a
+    URL of the shape PA-API / the Creators API returns. Everything else
+    (Google Images, imgur, a bare domain, a placeholder, a data: URI, a
+    non-image path, plain http) is rejected. Pure string check, no network."""
+    u = (url or "").strip()
+    if not u:
+        return False
+    parts = urlparse(u)
+    if parts.scheme != "https":
+        return False
+    host = (parts.hostname or "").lower()
+    if not host:
+        return False
+    on_amazon_cdn = (host in _AMAZON_IMAGE_HOSTS
+                     or any(host.endswith(sfx) for sfx in _AMAZON_IMAGE_HOST_SUFFIXES))
+    if not on_amazon_cdn:
+        return False
+    # the path's real extension - Amazon inserts size/crop tokens like
+    # "._AC_SL1500_" *before* the extension, so strip those first.
+    path = parts.path
+    stripped = re.sub(r"\._[A-Za-z0-9,_]+_(?=\.\w+$)", "", path)
+    return bool(_IMAGE_EXT_RE.search(stripped))
+
+
+def compliant_images_for(offer: AffiliateOffer) -> tuple[str, ...]:
+    """The subset of `offer.image_urls` that is safe to display on a public
+    product page. Non-Amazon offers never carry images here (the public
+    catalogue is Amazon-only anyway). Order is preserved - the first entry
+    is the primary image. Non-compliant entries are dropped, never
+    substituted, so the page falls back to the accessible icon placeholder."""
+    if not _is_amazon(offer):
+        return ()
+    seen: set[str] = set()
+    out: list[str] = []
+    for u in offer.image_urls:
+        u = (u or "").strip()
+        if u and u not in seen and compliant_amazon_image_url(u):
+            seen.add(u)
+            out.append(u)
+    return tuple(out)
+
+
 _ASIN_URL_RE = re.compile(r"/(?:dp|gp/product|gp/aw/d)/([A-Z0-9]{10})(?:[/?]|$)")
 
 
@@ -146,7 +221,7 @@ class PublicProduct:
     tags: tuple[str, ...]
     description: str
     short_context: str
-    image_urls: tuple[str, ...]
+    image_urls: tuple[str, ...]     # compliant Amazon-CDN image URLs only (may be empty)
     site_category: str
     outbound_url: str               # verified affiliate destination (tag baked in)
     tracking_id: str                # our own click-tracking id, if a link row exists
@@ -298,7 +373,7 @@ def load_public_products(data_dir) -> list[PublicProduct]:
             price_source_note=offer.price_source_note,
             tags=tags, description=_description_for(offer),
             short_context=_short_context_for(offer, tags),
-            image_urls=tuple(offer.image_urls),
+            image_urls=compliant_images_for(offer),
             site_category=classify_offer_category(offer.category),
             outbound_url=outbound, tracking_id=tracking_id,
             verification_status=(offer.verification_status

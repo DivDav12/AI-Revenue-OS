@@ -58,3 +58,40 @@ revenue_os pipeline-cycle --data-dir data
 
 See `OPERATIONS.md` for what happens next and how to run this on a
 schedule.
+
+## 6. Product images (currently blocked — needs an Amazon API)
+
+Public product pages show a neutral icon placeholder instead of a real
+photo. This is **not a bug** — it is the fail-safe: nothing in this
+project fetches, scrapes, screenshots or guesses a product image.
+
+The **only** Amazon-sanctioned source of product image URLs is the
+Product Advertising API (PA-API 5.0) / its **Creators API** successor,
+which returns image URLs on Amazon's own media CDN
+(`m.media-amazon.com`, `*.ssl-images-amazon.com`). As of 2026:
+
+* PA-API 5.0 is deprecated in favour of the Creators API.
+* Creators API access requires **10 qualifying affiliate sales in the
+  trailing 30 days** — this account currently has 0.
+* SiteStripe's image / "Text+Image" link types were retired by Amazon in
+  2024, so a logged-in Associate can no longer generate image links
+  there either.
+
+**What you need to provide once available:** Creators API (or PA-API)
+credentials for the `airevenue-21` account, then a small credentialed
+connector can populate `AffiliateOffer.image_urls` for each ASIN.
+
+**Manual population in the meantime:** if you obtain a compliant Amazon
+image URL through a permitted mechanism, attach it yourself:
+
+```bash
+revenue_os affiliate-set-image <offer_id> "https://m.media-amazon.com/images/I/....jpg" --data-dir data
+```
+
+The command **rejects** any URL that is not an HTTPS image on an Amazon
+media CDN (Google Images, third-party hosts, placeholders, screenshots
+are all refused). Everything downstream — product cards, the `/product/`
+index, product detail pages (with a small accessible gallery if you
+supply more than one image), related-product cards and the `Product`
+JSON-LD — renders the real image automatically once `image_urls` is
+populated. Nothing else needs to change.

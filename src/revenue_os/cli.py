@@ -1746,6 +1746,50 @@ def _cmd_affiliate_ingest_offer(args) -> int:
     return 0
 
 
+def _cmd_affiliate_set_image(args) -> int:
+    """Affiliate Revenue Pipeline: attach compliant Amazon product image
+    URL(s) to one offer (spec: "keep the image_urls architecture ready for
+    later population"). Each URL MUST be an HTTPS image on an Amazon media
+    CDN - i.e. what PA-API / the Creators API returns. A Google / third-
+    party / placeholder / non-image URL is rejected, never stored. Nothing
+    here fetches, scrapes or guesses an image - a human supplies the URL
+    from a permitted Amazon source."""
+    from .ecosystem.affiliate_model import AffiliateOfferStore
+    from .ecosystem.products import compliant_amazon_image_url
+
+    data_dir = _data_dir(args)
+    store = AffiliateOfferStore.load(data_dir)
+    offer = store.get(args.offer_id)
+    if offer is None:
+        print(f"error: unknown offer {args.offer_id!r}", file=sys.stderr)
+        return 1
+
+    if args.clear:
+        offer.image_urls = ()
+        store.upsert(offer)
+        store.save()
+        print(json.dumps({"offer_id": offer.offer_id, "image_urls": []}, indent=2))
+        return 0
+
+    rejected = [u for u in args.url if not compliant_amazon_image_url(u)]
+    if rejected:
+        print("error: not a compliant Amazon-CDN image URL (must be HTTPS on "
+              "m.media-amazon.com / *.ssl-images-amazon.com and end in an image "
+              "extension - the shape PA-API / the Creators API returns):",
+              file=sys.stderr)
+        for u in rejected:
+            print(f"  rejected: {u}", file=sys.stderr)
+        return 1
+
+    merged = list(dict.fromkeys([*(offer.image_urls if args.add else ()), *args.url]))
+    offer.image_urls = tuple(merged)
+    store.upsert(offer)
+    store.save()
+    print(json.dumps({"offer_id": offer.offer_id, "product_name": offer.product_name,
+                      "asin": offer.product_asin, "image_urls": merged}, indent=2))
+    return 0
+
+
 def _cmd_affiliate_match(args) -> int:
     """Affiliate Revenue Pipeline: preview which offers match one demand
     opportunity, without planning/deploying anything."""
@@ -3335,6 +3379,21 @@ def build_parser() -> argparse.ArgumentParser:
              "one discovered demand opportunity")
     afm.add_argument("opportunity_id", metavar="OPPORTUNITY_ID")
     afm.set_defaults(func=_cmd_affiliate_match)
+
+    asi = sub.add_parser(
+        "affiliate-set-image", parents=[common],
+        help="Attach compliant Amazon-CDN product image URL(s) to an offer "
+             "(must be the shape PA-API / the Creators API returns; Google / "
+             "third-party / placeholder URLs are rejected). Nothing is "
+             "fetched or scraped - a human supplies the URL.")
+    asi.add_argument("offer_id", metavar="OFFER_ID")
+    asi.add_argument("url", nargs="*", metavar="IMAGE_URL",
+                     help="one or more https://m.media-amazon.com/... image URLs")
+    asi.add_argument("--add", action="store_true",
+                     help="append to the existing images instead of replacing them")
+    asi.add_argument("--clear", action="store_true",
+                     help="remove all images from the offer")
+    asi.set_defaults(func=_cmd_affiliate_set_image)
 
     afd = sub.add_parser(
         "affiliate-deploy", parents=[common, actor_only],

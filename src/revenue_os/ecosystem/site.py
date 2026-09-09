@@ -235,7 +235,11 @@ dl dd{margin:2px 0 0;color:var(--muted)}
 .product-detail .gallery .main img{width:100%;height:100%;object-fit:contain;padding:16px}
 .product-detail .gallery .main .ph{width:72px;height:72px;border-radius:16px;display:flex;align-items:center;justify-content:center;background:rgba(79,124,255,.14);color:var(--accent);font-size:2rem}
 .product-detail .thumbs{display:flex;gap:8px;flex-wrap:wrap}
-.product-detail .thumbs img{width:64px;height:64px;object-fit:contain;background:#0d1428;border:1px solid var(--border);border-radius:10px;padding:4px}
+.product-detail .thumbs .thumb{padding:0;margin:0;border:1px solid var(--border);background:#0d1428;border-radius:10px;cursor:pointer;line-height:0;transition:border-color .15s}
+.product-detail .thumbs .thumb:hover{border-color:var(--accent)}
+.product-detail .thumbs .thumb[aria-pressed="true"]{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.product-detail .thumbs .thumb img{width:64px;height:64px;object-fit:contain;padding:4px;display:block}
+@media (prefers-reduced-motion:reduce){.product-detail .thumbs .thumb{transition:none}}
 .product-detail h1{margin:0 0 12px}
 .product-detail .price{font-size:1.5rem;font-weight:800;margin:6px 0}
 .product-detail .price .muted{display:block;font-size:.82rem;font-weight:400;color:var(--muted);margin-top:2px}
@@ -494,17 +498,38 @@ def render_product_page(slug: str, data_dir, *, environ=None) -> str:
         f'<a href="{_esc(cat_path)}">{_esc(cat_label)}</a> &rsaquo; '
         f'{_esc(product.name)}</nav>')
 
-    # gallery
+    # gallery - a real Amazon-CDN image (first = primary) or the accessible
+    # icon placeholder. When more than one compliant image exists the
+    # thumbnails are real <button>s that swap the main image (keyboard
+    # operable, labelled); with JS off every image stays reachable.
+    gallery_js = ""
     if product.image_urls:
+        main_alt = _esc(product.name + " product image")
+        main_img = (f'<img id="pd-main-img" src="{_esc(product.image_urls[0])}" '
+                    f'alt="{main_alt}" decoding="async">')
         thumbs = ""
         if len(product.image_urls) > 1:
-            thumbs = '<div class="thumbs">' + "".join(
-                f'<img src="{_esc(u)}" alt="{_esc(product.name)} view {i + 1}" '
-                f'loading="lazy" decoding="async">'
-                for i, u in enumerate(product.image_urls)) + "</div>"
-        gallery = (f'<div class="main"><img src="{_esc(product.image_urls[0])}" '
-                   f'alt="{_esc(product.name + " product image")}" decoding="async"></div>'
-                   f'{thumbs}')
+            btns = "".join(
+                f'<button type="button" class="thumb" data-src="{_esc(u)}" '
+                f'aria-label="{_esc(f"Show image {i + 1} of {len(product.image_urls)}")}"'
+                f'{" aria-pressed=\"true\"" if i == 0 else ""}>'
+                f'<img src="{_esc(u)}" alt="{_esc(f"{product.name} view {i + 1}")}" '
+                f'loading="lazy" decoding="async"></button>'
+                for i, u in enumerate(product.image_urls))
+            thumbs = f'<div class="thumbs" role="group" aria-label="Product images">{btns}</div>'
+            gallery_js = """<script>
+(function(){
+  var main=document.getElementById('pd-main-img');
+  var btns=document.querySelectorAll('.thumbs .thumb');
+  if(!main||!btns.length)return;
+  btns.forEach(function(b){b.addEventListener('click',function(){
+    main.src=b.getAttribute('data-src');
+    btns.forEach(function(x){x.removeAttribute('aria-pressed')});
+    b.setAttribute('aria-pressed','true');
+  });});
+})();
+</script>"""
+        gallery = f'<div class="main">{main_img}</div>{thumbs}'
     else:
         gallery = f'<div class="main">{_product_image_html(product, big=True)}</div>'
 
@@ -582,7 +607,7 @@ at the time you click.</p>
 <span class="disclosure" role="note">{disclosure}</span>
 </p>
 </article>
-{ld}"""
+{ld}{(chr(10) + gallery_js) if gallery_js else ""}"""
 
     title = f"{product.name}"
     description = (product.short_context or product.description
