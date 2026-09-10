@@ -28,7 +28,21 @@ from .affiliate_model import AffiliateOfferStore
 from .model import OpportunityDraft
 
 
-def run_affiliate_tick(data_dir, *, limit: int = 20, now_iso: str = "") -> dict:
+#: safe default: at most this many NEW autonomous affiliate actions (a
+#: real MATCH -> ... -> DEPLOY chain that completes SAFE_AUTONOMOUS) per
+#: run. A recurring night run therefore adds at most one new affiliate
+#: asset per cycle - a human reviews it before the next one is created.
+MAX_AUTONOMOUS_AFFILIATE_ACTIONS_PER_RUN = 1
+
+#: the keyless, read-only public demand sources the night loop reads by
+#: default - exactly the ones ecosystem.demand_sources already supports
+#: (no new source, no credentials, no posting/commenting/account).
+_NIGHT_DEMAND_SOURCES: tuple[str, ...] = (
+    "demand-hn", "demand-stackexchange-recs", "demand-lemmy-buying")
+
+
+def run_affiliate_tick(data_dir, *, limit: int = 20, now_iso: str = "",
+                       max_actions: int = MAX_AUTONOMOUS_AFFILIATE_ACTIONS_PER_RUN) -> dict:
     """The autonomous-loop entry point (spec section 19): for every
     PLANNABLE opportunity not yet attempted for AFFILIATE, evaluate ->
     select -> (if AFFILIATE wins) plan, reusing the exact same
@@ -40,6 +54,11 @@ def run_affiliate_tick(data_dir, *, limit: int = 20, now_iso: str = "") -> dict:
     attempted - re-attempting a HUMAN_REQUIRED one is cheap and harmless,
     but never re-does completed work).
 
+    `max_actions` (default `MAX_AUTONOMOUS_AFFILIATE_ACTIONS_PER_RUN`) caps
+    how many NEW SAFE_AUTONOMOUS affiliate chains may complete in one run.
+    Once the cap is hit, further AFFILIATE-selected opportunities are left
+    for the next run and listed under `capped` - never silently dropped.
+
     One bad opportunity never kills the tick: any exception raised while
     processing a single opportunity is caught, recorded, and the loop
     continues (spec: "Fehler einzelner Quellen dürfen den gesamten Loop
@@ -48,8 +67,9 @@ def run_affiliate_tick(data_dir, *, limit: int = 20, now_iso: str = "") -> dict:
     from . import pipeline as eco_pipeline
     from .model import PLANNABLE
 
+    cap = max(0, int(max_actions))
     store = load_opportunities(data_dir)
-    attempted, planned, human_required, errors = [], [], [], []
+    attempted, planned, human_required, capped, errors = [], [], [], [], []
     n = 0
     for rec in store.all():
         if n >= limit:
@@ -68,6 +88,9 @@ def run_affiliate_tick(data_dir, *, limit: int = 20, now_iso: str = "") -> dict:
             sel = eco_pipeline.select(data_dir, oid)
             if sel.get("recommended") != "AFFILIATE":
                 continue
+            if len(planned) >= cap:
+                capped.append(oid)   # deferred to the next run - not dropped
+                continue
             out = eco_pipeline.plan(data_dir, oid, actor="ecosystem_autonomy")
             if out.get("next_step_class") == "SAFE_AUTONOMOUS":
                 planned.append(oid)
@@ -78,8 +101,8 @@ def run_affiliate_tick(data_dir, *, limit: int = 20, now_iso: str = "") -> dict:
             errors.append({"opportunity_id": oid, "error": str(exc)})
 
     return {"attempted": attempted, "planned": planned,
-           "human_required": human_required, "errors": errors,
-           "ran_at": now_iso}
+           "human_required": human_required, "capped": capped,
+           "max_actions": cap, "errors": errors, "ran_at": now_iso}
 
 
 def run_affiliate_chain(data_dir, *, opportunity_id: str, draft: OpportunityDraft,
@@ -172,3 +195,107 @@ def run_affiliate_chain(data_dir, *, opportunity_id: str, draft: OpportunityDraf
         "next_step_class": "SAFE_AUTONOMOUS",
         "planned_at": now_iso,
     }
+
+
+def run_affiliate_night(data_dir, *, sources=None, source_names=None,
+                        discover_limit: int = 15, tick_limit: int = 20,
+                        max_actions: int = MAX_AUTONOMOUS_AFFILIATE_ACTIONS_PER_RUN,
+                        discover_offers: bool = True, offer_networks=None,
+                        environ=None, now_iso: str = "") -> dict:
+    """ONE bounded, recurring-safe affiliate cycle over a SINGLE entry
+    point - no new orchestrator, no new state:
+
+        DiscoveryEngine(public demand sources, read-only)
+          -> dedupe + verify + persist          (discovery.py, unchanged)
+        discover_offer_candidates                (affiliate_discovery.py -
+          -> search every AUTHORIZED offer         additive; stages real
+             source for each PLANNABLE demand's     product search results
+             ProductIntent, stage for human         for human completion.
+             completion                             Creates NO usable offer,
+                                                    joins NO program, calls
+                                                    NO unauthorized network.)
+        run_affiliate_tick
+          -> evaluate -> select (ProductIntent + validated-offer match +
+             profitability -> qualified TYPE_AFFILIATE)   (pipeline.py)
+          -> plan -> run_affiliate_chain          (asset -> link -> deploy
+             -> distribute, all existing, fail-closed per step)
+
+    Safe by construction:
+      * demand sources are keyless public GET APIs - no post, no comment,
+        no account, no ad spend, no self-purchase, no fake activity.
+      * per-source discovery errors are isolated (DiscoveryEngine) and
+        per-opportunity tick errors are isolated (run_affiliate_tick) -
+        one failure never stops the run.
+      * `max_actions` (default MAX_AUTONOMOUS_AFFILIATE_ACTIONS_PER_RUN = 1)
+        caps NEW autonomous affiliate actions per run.
+      * no good chance -> `planned == []` -> action == "NO_ACTION".
+      * the whole cycle runs inside `autonomous_context()`, so every
+        money / PayPal / e-mail / paid-LLM call site hard-refuses.
+      * offer discovery (`discover_offers=True`, default) only READS
+        authorized product-search APIs and stages candidates for a human
+        - it creates no usable offer, joins no program, and calls no
+        unauthorized/unconfigured network. Set `discover_offers=False` to
+        skip it entirely.
+
+    `sources=` (a list of real `sources.OpportunitySource` objects)
+    overrides `source_names=` - used by tests, mirrors
+    `DiscoveryEngine(data_dir, sources=...)`. Recurrence is the caller's
+    job (cron / Task Scheduler / `/loop`) - this runs exactly one cycle.
+    """
+    from ..action_class import autonomous_context
+    from .discovery import DiscoveryEngine
+
+    result: dict = {"ran_at": now_iso, "discovery": None, "offer_discovery": None,
+                    "tick": None, "errors": [], "new_affiliate_actions": 0,
+                    "action": "NO_ACTION"}
+
+    with autonomous_context():
+        srcs: list = []
+        if sources is not None:
+            srcs = list(sources)
+            result["sources"] = [getattr(getattr(s, "meta", None), "source", "?") for s in srcs]
+        else:
+            from .sources import build_source
+
+            names = tuple(source_names) if source_names else _NIGHT_DEMAND_SOURCES
+            result["sources"] = list(names)
+            for n in names:
+                try:
+                    srcs.append(build_source(n))
+                except Exception as exc:                 # noqa: BLE001 - isolate a bad source
+                    result["errors"].append(f"build_source({n!r}): {exc!r}")
+
+        if srcs:
+            try:
+                rep = DiscoveryEngine(data_dir, sources=srcs).run(
+                    limit_per_source=max(1, int(discover_limit)))
+                result["discovery"] = rep.to_dict()
+                result["errors"].extend(rep.errors)
+            except Exception as exc:                     # noqa: BLE001
+                result["errors"].append(f"discovery: {exc!r}")
+
+        if discover_offers:
+            try:
+                from .affiliate_discovery import discover_offer_candidates
+
+                od = discover_offer_candidates(
+                    data_dir, networks=offer_networks,
+                    limit=max(1, int(discover_limit)), now_iso=now_iso,
+                    environ=environ)
+                result["offer_discovery"] = od
+                result["errors"].extend(od.get("errors") or [])
+            except Exception as exc:                 # noqa: BLE001 - never stop the cycle
+                result["errors"].append(f"offer_discovery: {exc!r}")
+
+        try:
+            tick = run_affiliate_tick(data_dir, limit=max(1, int(tick_limit)),
+                                      now_iso=now_iso, max_actions=max_actions)
+            result["tick"] = tick
+            result["errors"].extend(str(e) for e in (tick.get("errors") or []))
+            result["new_affiliate_actions"] = len(tick.get("planned") or [])
+        except Exception as exc:                         # noqa: BLE001
+            result["errors"].append(f"tick: {exc!r}")
+
+    result["action"] = ("AFFILIATE_ACTION" if result["new_affiliate_actions"]
+                        else "NO_ACTION")
+    return result

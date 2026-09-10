@@ -2062,6 +2062,206 @@ def _cmd_affiliate_tick(args) -> int:
     return 0
 
 
+def _cmd_affiliate_night(args) -> int:
+    """One bounded, recurring-safe affiliate cycle (discovery + tick) over
+    the single `run_affiliate_night` entry point. Default: run exactly one
+    cycle and print the result. `--loop` runs up to `--max-ticks` cycles,
+    sleeping `--interval` seconds between them, stopping early on
+    `--max-runtime` seconds; it never waits for human input and always
+    honours the existing global fleet pause."""
+    import time
+
+    from . import agent_control
+    from .ecosystem import affiliate_pipeline
+    from .store import now_iso
+
+    data_dir = _data_dir(args)
+
+    def _paused() -> tuple[bool, str]:
+        ctrl = agent_control.load_agent_control(data_dir)
+        return ctrl.is_paused(), (ctrl.paused_reason or "operator hit the global pause")
+
+    if not args.loop:
+        is_paused, why = _paused()
+        if is_paused:
+            print(f"fleet paused - skipped ({why})")
+            return 0
+        out = affiliate_pipeline.run_affiliate_night(data_dir, now_iso=now_iso())
+        print(json.dumps(out, indent=2))
+        return 0
+
+    max_ticks = max(1, int(args.max_ticks))
+    interval = max(0, int(args.interval))
+    started = time.time()
+    ran = 0
+    for i in range(1, max_ticks + 1):
+        if args.max_runtime and (time.time() - started) >= float(args.max_runtime):
+            print(f"stopped: max-runtime ({args.max_runtime}s)")
+            return 0
+        ran = i
+        is_paused, why = _paused()
+        if is_paused:
+            print(f"tick {i}: fleet paused - skipped ({why})")
+        else:
+            out = affiliate_pipeline.run_affiliate_night(data_dir, now_iso=now_iso())
+            print(f"tick {i}: {out.get('action', '?')} "
+                  f"(+{out.get('new_affiliate_actions', 0)} affiliate action(s), "
+                  f"{len(out.get('errors') or [])} error(s))")
+        time.sleep(interval)
+    print(f"stopped: max-ticks ({ran} tick(s))")
+    return 0
+
+
+_CANDIDATE_MISSING_HUMAN_INPUT = [
+    "program_name - the affiliate program you have ALREADY joined",
+    "commission_kind - fixed | percent | recurring_percent",
+    "commission_rate (0<r<=1) OR commission_fixed_amount (>0) - from the "
+    "program's own dashboard/terms, never guessed",
+    "commission_evidence - >=1 verbatim quote from the program terms/dashboard",
+    "--confirm-joined - only if a human has been accepted into this program "
+    "(the fleet never joins one itself)",
+]
+
+
+def _cmd_affiliate_offer_candidates(args) -> int:
+    """List discovered affiliate-offer candidates and show exactly what
+    human information each still needs to become a usable offer. A
+    candidate is a real product-search result from an authorized offer
+    source - it carries no commission terms and no join confirmation, so
+    it is never matched/planned/deployed against until a human completes
+    it with `affiliate-complete-offer`. `--discover` runs one offer-
+    discovery pass first (only authorized/configured networks are ever
+    contacted)."""
+    from .ecosystem.affiliate_model import CANDIDATE_COMPLETED, AffiliateOfferCandidateStore
+
+    data_dir = _data_dir(args)
+
+    discovery_report = None
+    if args.discover:
+        from .ecosystem.affiliate_discovery import discover_offer_candidates
+
+        discovery_report = discover_offer_candidates(
+            data_dir, networks=(args.network or None), limit=max(1, int(args.limit)))
+
+    rows = AffiliateOfferCandidateStore.load(data_dir).all()
+    items = []
+    for c in rows:
+        item = {
+            "candidate_id": c.candidate_id, "network": c.network,
+            "product_name": c.product_name, "product_url": c.product_url,
+            "product_id": c.product_id, "price": c.price, "currency": c.currency,
+            "category_phrase": c.category_phrase, "opportunity_id": c.opportunity_id,
+            "provenance": c.provenance, "status": c.status,
+        }
+        if c.status == CANDIDATE_COMPLETED:
+            item["completed_offer_id"] = c.completed_offer_id
+        else:
+            item["missing_human_input"] = list(_CANDIDATE_MISSING_HUMAN_INPUT)
+            item["complete_with"] = (
+                f"revenue_os affiliate-complete-offer {c.candidate_id} "
+                f"--program-name '<name>' --commission-kind <kind> "
+                f"[--commission-rate <0-1> | --commission-fixed <amount>] "
+                f"--commission-evidence '<verbatim quote>' --confirm-joined")
+        items.append(item)
+
+    out = {"candidates": items, "count": len(items)}
+    if discovery_report is not None:
+        out["discovery"] = discovery_report
+    print(json.dumps(out, indent=2))
+    return 0
+
+
+def _cmd_affiliate_complete_offer(args) -> int:
+    """Turn one discovered candidate into a real, usable affiliate offer -
+    ONLY with human-supplied commission evidence and an explicit
+    confirmation that a human has already joined the program. Goes through
+    the existing, unmodified `ingest_affiliate_offer` schema gate: nothing
+    here fabricates a commission, a link, or a join, and nothing weakens
+    that gate."""
+    from .ecosystem.affiliate_model import (
+        CANDIDATE_COMPLETED,
+        AffiliateOfferCandidateStore,
+    )
+    from .ecosystem.affiliate_sources import (
+        IngestionError,
+        ingest_affiliate_offer,
+        offer_candidate_to_payload,
+    )
+    from .ecosystem.offer_sources import OfferCandidate
+
+    data_dir = _data_dir(args)
+    store = AffiliateOfferCandidateStore.load(data_dir)
+    cand = store.get(args.candidate_id)
+    if cand is None:
+        print(f"error: unknown candidate {args.candidate_id!r}", file=sys.stderr)
+        return 1
+    if cand.status == CANDIDATE_COMPLETED:
+        print(f"error: candidate {cand.candidate_id!r} is already completed "
+              f"(offer {cand.completed_offer_id!r})", file=sys.stderr)
+        return 1
+    if not args.confirm_joined:
+        print("error: refusing to create a usable offer without --confirm-joined "
+              "- set it ONLY if a human has ALREADY been accepted into this "
+              "affiliate program (the fleet never joins a program itself)",
+              file=sys.stderr)
+        return 1
+    evidence = [e.strip() for e in (args.commission_evidence or []) if e and e.strip()]
+    if not evidence:
+        print("error: --commission-evidence is required (>=1 verbatim quote from "
+              "the program's own terms or dashboard - no commission may be "
+              "recorded without a stated source)", file=sys.stderr)
+        return 1
+
+    # reuse the existing, deliberately-partial candidate->payload bridge,
+    # then add ONLY the human-supplied fields it (correctly) refuses to
+    # infer from a search result.
+    payload = dict(offer_candidate_to_payload(OfferCandidate(
+        network=cand.network, title=cand.product_name, url=cand.product_url,
+        product_id=cand.product_id, price=float(cand.price or 0.0),
+        currency=cand.currency, availability=cand.availability,
+        observed_at=cand.observed_at, provenance=cand.provenance,
+        confidence=float(cand.confidence or 0.0))))
+    payload["program_name"] = args.program_name
+    payload["commission_kind"] = args.commission_kind
+    if args.commission_rate is not None:
+        payload["commission_rate"] = args.commission_rate
+    if args.commission_fixed is not None:
+        payload["commission_fixed_amount"] = args.commission_fixed
+    payload["commission_evidence"] = evidence
+    payload["human_confirmed_joined"] = True
+    if args.cookie_days is not None:
+        payload["cookie_duration_days"] = args.cookie_days
+    if args.product_price is not None:
+        payload["product_price"] = args.product_price
+        payload["price_is_estimate"] = False
+    payload["category"] = (args.category or "").strip() or (
+        "-".join(cand.category_phrase.split()) or "other")
+    if args.keywords:
+        kws = [k.strip() for k in args.keywords.split(",") if k.strip()]
+    else:
+        # transparent default: the demand's own extracted category phrase
+        # plus its individual tokens - the human can override with real
+        # program keywords via --keywords.
+        kws = list(dict.fromkeys(
+            ([cand.category_phrase] if cand.category_phrase else [])
+            + cand.category_phrase.split()))
+    if kws:
+        payload["keywords"] = kws
+
+    try:
+        out = ingest_affiliate_offer(data_dir, payload, actor=args.actor)
+    except IngestionError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    cand.status = CANDIDATE_COMPLETED
+    cand.completed_offer_id = out["offer_id"]
+    store.upsert(cand)
+    store.save()
+    print(json.dumps({"candidate_id": cand.candidate_id, "offer": out}, indent=2))
+    return 0
+
+
 def _cmd_release_task(args) -> int:
     """Phase 11-real P1-10: thin CLI wrapper around the existing, already-
     tested `acceptance.release_task()` - the exact same function JARVIS's
@@ -3519,6 +3719,70 @@ def build_parser() -> argparse.ArgumentParser:
              "the rest)")
     aft.add_argument("--limit", type=int, default=20)
     aft.set_defaults(func=_cmd_affiliate_tick)
+
+    afn = sub.add_parser(
+        "affiliate-night", parents=[common],
+        help="One bounded, recurring-safe affiliate cycle (public-demand "
+             "discovery + affiliate tick) over the single run_affiliate_night "
+             "entry point. --loop runs it repeatedly, never waiting for human "
+             "input, honouring the global fleet pause")
+    afn.add_argument("--loop", action="store_true",
+                     help="run repeatedly instead of one cycle")
+    afn.add_argument("--max-ticks", type=int, default=1,
+                     help="stop after this many cycles (--loop only)")
+    afn.add_argument("--interval", type=int, default=3600,
+                     help="seconds to sleep between cycles (--loop only)")
+    afn.add_argument("--max-runtime", type=int, default=0,
+                     help="stop once this many seconds have elapsed (0 = no limit)")
+    afn.set_defaults(func=_cmd_affiliate_night)
+
+    aoc = sub.add_parser(
+        "affiliate-offer-candidates", parents=[common],
+        help="Offer Discovery: list discovered affiliate-offer candidates "
+             "(real product-search results from AUTHORIZED offer sources) and "
+             "show exactly what human information each still needs to become a "
+             "usable offer. --discover runs one discovery pass first")
+    aoc.add_argument("--discover", action="store_true",
+                     help="run one offer-discovery pass before listing "
+                          "(only authorized/configured networks are contacted)")
+    aoc.add_argument("--network", action="append", metavar="NAME",
+                     help="restrict --discover to this offer-source network "
+                          "(repeatable; default: all)")
+    aoc.add_argument("--limit", type=int, default=10,
+                     help="max product results per source per opportunity (--discover)")
+    aoc.set_defaults(func=_cmd_affiliate_offer_candidates)
+
+    aco = sub.add_parser(
+        "affiliate-complete-offer", parents=[common, actor_only],
+        help="Offer Discovery: turn one discovered candidate into a real, "
+             "usable affiliate offer - ONLY with human-supplied commission "
+             "evidence and --confirm-joined. Uses the existing, unmodified "
+             "ingest_affiliate_offer schema gate")
+    aco.add_argument("candidate_id", metavar="CANDIDATE_ID")
+    aco.add_argument("--program-name", required=True,
+                     help="the affiliate program name a human has ALREADY joined")
+    aco.add_argument("--commission-kind", required=True,
+                     choices=("fixed", "percent", "recurring_percent"))
+    grp = aco.add_mutually_exclusive_group()
+    grp.add_argument("--commission-rate", type=float, default=None,
+                     help="fraction in (0, 1] for a percent-based commission")
+    grp.add_argument("--commission-fixed", type=float, default=None,
+                     help="amount > 0 for a fixed per-sale commission")
+    aco.add_argument("--commission-evidence", action="append", metavar="QUOTE",
+                     help="verbatim quote from the program terms/dashboard "
+                          "(repeatable; at least one required)")
+    aco.add_argument("--confirm-joined", action="store_true",
+                     help="confirm a human has ALREADY been accepted into this program")
+    aco.add_argument("--category", default="",
+                     help="offer category slug (default: derived from the demand phrase)")
+    aco.add_argument("--keywords", default="",
+                     help="comma-separated program keywords (default: derived "
+                          "from the demand phrase)")
+    aco.add_argument("--cookie-days", type=float, default=None,
+                     help="attribution cookie window in days, if stated by the program")
+    aco.add_argument("--product-price", type=float, default=None,
+                     help="real, observed product price (marks price as a fact, not an estimate)")
+    aco.set_defaults(func=_cmd_affiliate_complete_offer)
 
     esim = sub.add_parser("simulate", parents=[common],
                           help="ecosystem: full-loop revenue simulation, no side effects")

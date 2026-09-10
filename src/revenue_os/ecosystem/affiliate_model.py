@@ -15,6 +15,7 @@ until a real settlement is recorded.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -345,6 +346,16 @@ def new_offer_id() -> str:
     return f"aff-{uuid.uuid4().hex[:12]}"
 
 
+def offer_candidate_id(network: str, ident: str) -> str:
+    """Deterministic, reconstructable id for a discovered offer candidate,
+    keyed ONLY on `(network, product_id-or-url)` - the dedup identity the
+    Offer Discovery layer promises. The same real search result always
+    maps to the same id, so a re-run never duplicates a candidate and the
+    id can be recomputed from the candidate's own fields alone."""
+    key = f"{(network or '').strip().lower()}\n{(ident or '').strip()}"
+    return f"cand-{hashlib.blake2s(key.encode('utf-8'), digest_size=8).hexdigest()}"
+
+
 # ---------------------------------------------------------------------------
 # small shared JSON-list persistence base (same atomic-write pattern as
 # learning.OutcomeStore / revenue.RevenueLedger) - factored once here so
@@ -403,6 +414,82 @@ class AffiliateOfferStore(_JsonListStore):
                 self._rows[i] = offer.to_dict()
                 return
         self._rows.append(offer.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# discovered-but-not-yet-usable affiliate offer candidates (Offer Discovery
+# layer). A candidate is a REAL product search result from an authorized
+# offer source - never an AffiliateOffer: it carries NO commission terms
+# and NO join confirmation (a search result cannot state either), so it is
+# never `usable` and is never matched/planned against. A human turns one
+# into a real offer via `affiliate_sources.ingest_affiliate_offer` after
+# supplying the commission evidence + join confirmation the schema demands.
+# ---------------------------------------------------------------------------
+
+CANDIDATE_NEEDS_COMPLETION = "needs_human_completion"
+CANDIDATE_COMPLETED = "completed"
+
+
+@dataclass
+class OfferCandidateRecord:
+    candidate_id: str
+    opportunity_id: str
+    network: str
+    product_name: str
+    category_phrase: str = ""          # the demand's extracted product category
+    product_url: str = ""
+    product_id: str = ""               # marketplace-specific id, if the source gave one
+    price: float = 0.0
+    currency: str = ""
+    availability: str = ""
+    provenance: str = ""               # which real source call produced this
+    confidence: float = 0.0            # the SOURCE's own relevance score, if any
+    observed_at: str = ""
+    first_seen_at: str = ""
+    last_seen_at: str = ""
+    status: str = CANDIDATE_NEEDS_COMPLETION
+    completed_offer_id: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "candidate_id": self.candidate_id, "opportunity_id": self.opportunity_id,
+            "network": self.network, "product_name": self.product_name,
+            "category_phrase": self.category_phrase, "product_url": self.product_url,
+            "product_id": self.product_id, "price": round(float(self.price), 2),
+            "currency": self.currency, "availability": self.availability,
+            "provenance": self.provenance, "confidence": round(float(self.confidence), 3),
+            "observed_at": self.observed_at, "first_seen_at": self.first_seen_at,
+            "last_seen_at": self.last_seen_at, "status": self.status,
+            "completed_offer_id": self.completed_offer_id,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "OfferCandidateRecord":
+        d = dict(d or {})
+        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+
+
+class AffiliateOfferCandidateStore(_JsonListStore):
+    _FILENAME = "affiliate_offer_candidates.json"
+
+    def all(self) -> list[OfferCandidateRecord]:
+        return [OfferCandidateRecord.from_dict(r) for r in self._rows]
+
+    def get(self, candidate_id: str) -> OfferCandidateRecord | None:
+        for r in self._rows:
+            if r.get("candidate_id") == candidate_id:
+                return OfferCandidateRecord.from_dict(r)
+        return None
+
+    def upsert(self, rec: OfferCandidateRecord) -> None:
+        for i, r in enumerate(self._rows):
+            if r.get("candidate_id") == rec.candidate_id:
+                self._rows[i] = rec.to_dict()
+                break
+        else:
+            self._rows.append(rec.to_dict())
+        # keep the file deterministic regardless of discovery order
+        self._rows.sort(key=lambda r: r.get("candidate_id", ""))
 
 
 # ---------------------------------------------------------------------------

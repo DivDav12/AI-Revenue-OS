@@ -117,27 +117,84 @@ def evaluate(data_dir, oid: str, *, weights: dict | None = None) -> dict:
     return payload
 
 
-def _prefer_affiliate_if_matched(data_dir, draft: OpportunityDraft, selection):
+#: the AUTONOMOUS affiliate route (a real demand signal that has NOT been
+#: typed TYPE_AFFILIATE yet) demands MORE than one incidental keyword hit
+#: in the EXISTING affiliate_matching score: >= 0.5 means at least two
+#: independent relevance signals (two keyword hits, or a category hit plus
+#: a keyword) - never a single coincidental token. The pre-existing
+#: TYPE_AFFILIATE path keeps its original 0.15 floor.
+_AFFILIATE_AUTONOMOUS_MIN_MATCH = 0.5
+#: networks whose own program rules require manual, reviewed link
+#: placement - never AUTO-selected (a human can still plan them
+#: explicitly). Amazon Associates' Operating Agreement is the concrete
+#: case; this also keeps the JBL PartnerNet offer out of the autonomous
+#: loop.
+_NO_AUTONOMOUS_AFFILIATE_NETWORKS = frozenset({"amazon_associates"})
+
+
+def _is_real_affiliate_purchase_demand(draft: OpportunityDraft, discovery: dict) -> bool:
+    """True only for a REAL demand signal (ecosystem.demand_sources) that
+    the EXISTING demand-quality layer (`demand_signal.classify_purchase_
+    intent`, via `_infer_opportunity_type`) already classified as EXPLICIT
+    purchase intent for a product, AND for which the EXISTING ProductIntent
+    extraction independently found a concrete product category.
+
+    Defines no new score. Never reads `demand_ranking`'s advisory
+    buyer_confidence / problem_confidence. Reads the demand-quality fields
+    off the persisted `discovery` namespace (draft_from_record does not
+    rebuild `draft.raw`)."""
+    from .demand_signal import INTENT_EXPLICIT
+    from .product_intent import INTENT_PURCHASE_RECOMMENDATION, INTENT_REPLACEMENT
+
+    meta = draft.source_meta
+    if meta is None or meta.source_type != "demand_signal":
+        return False
+    if draft.opportunity_type not in (model.TYPE_DIGITAL_PRODUCT, model.TYPE_CONTENT):
+        return False
+    if ((discovery.get("demand_evidence") or {}).get("intent_level") != INTENT_EXPLICIT):
+        return False
+    pin = discovery.get("product_intent") or {}
+    return bool(pin.get("category_phrase")) and pin.get("intent") in (
+        INTENT_PURCHASE_RECOMMENDATION, INTENT_REPLACEMENT)
+
+
+def _prefer_affiliate_if_matched(data_dir, draft: OpportunityDraft, selection,
+                                 *, discovery: dict | None = None):
     """spec section 2: the generic `strategy.py` heuristic has no
     visibility into real, human-joined affiliate offer economics - it
-    scores TYPE_AFFILIATE opportunities on the same capital/speed/
-    automation profile as everything else, which often makes PRODUCT win
-    even when a genuinely profitable affiliate match already exists. If a
-    real, USABLE offer matches this demand AND its dedicated affiliate
-    profitability projection (affiliate_profitability.py, not the generic
-    per-type table) is positive, that concrete path overrides the generic
-    pick - additive, and scoped strictly to TYPE_AFFILIATE drafts, so
-    every other opportunity type's selection is completely untouched."""
-    if draft.opportunity_type != model.TYPE_AFFILIATE or not selection.recommended:
+    scores opportunities on the same capital/speed/automation profile as
+    everything else, which often makes PRODUCT win even when a genuinely
+    profitable affiliate match already exists.
+
+    Fires when EITHER:
+      * the draft is already TYPE_AFFILIATE (unchanged, 0.15 match floor), OR
+      * it is a REAL, EXPLICIT-purchase-intent demand signal the existing
+        demand-quality + ProductIntent layers already vouch for
+        (`_is_real_affiliate_purchase_demand`), matched with a >= 0.5
+        score - a strong, multi-signal match, not one keyword.
+
+    In both cases a USABLE (human-confirmed, active) offer must match AND
+    its dedicated affiliate profitability projection
+    (affiliate_profitability.py) must be positive. Amazon Associates
+    offers are never auto-selected. Additive; every other opportunity
+    type's selection is untouched."""
+    disc = discovery or {}
+    if not selection.recommended or selection.recommended == model.STRAT_AFFILIATE:
         return selection
-    if selection.recommended == model.STRAT_AFFILIATE:
+    is_affiliate_type = draft.opportunity_type == model.TYPE_AFFILIATE
+    is_purchase_demand = (not is_affiliate_type
+                          and _is_real_affiliate_purchase_demand(draft, disc))
+    if not (is_affiliate_type or is_purchase_demand):
         return selection
+
     from .affiliate_matching import best_usable_match
     from .affiliate_model import AffiliateOfferStore
     from .affiliate_profitability import evaluate as eval_affiliate
 
-    offers = AffiliateOfferStore.load(data_dir).all()
-    match = best_usable_match(draft, offers)
+    offers = [o for o in AffiliateOfferStore.load(data_dir).all()
+              if o.network not in _NO_AUTONOMOUS_AFFILIATE_NETWORKS]
+    min_match = _AFFILIATE_AUTONOMOUS_MIN_MATCH if is_purchase_demand else 0.15
+    match = best_usable_match(draft, offers, min_score=min_match)
     if match is None:
         return selection
     aff_profit = estimate_value(eval_affiliate(match).expected_profit)
@@ -146,10 +203,11 @@ def _prefer_affiliate_if_matched(data_dir, draft: OpportunityDraft, selection):
     previous = selection.recommended
     selection.recommended = model.STRAT_AFFILIATE
     selection.reason = (
-        f"overridden: a real, already-joined affiliate offer "
-        f"({match.offer.program_name!r}) matches this demand with positive "
-        f"projected economics (EUR {aff_profit:.2f} expected profit) - "
-        f"preferred over the generic strategy heuristic's {previous!r} pick")
+        f"overridden: a real, validated affiliate offer "
+        f"({match.offer.program_name!r}) matches this demand "
+        f"(match {match.match_score:.2f}) with positive projected economics "
+        f"(EUR {aff_profit:.2f} expected profit) - preferred over the generic "
+        f"strategy heuristic's {previous!r} pick")
     return selection
 
 
@@ -160,7 +218,16 @@ def select(data_dir, oid: str, *, priority_weights: dict | None = None,
     draft = draft_from_record(rec)
     prof = _evaluate_profitability(draft, weights=weights)
     selection = select_strategy(draft, prof, priority_weights=priority_weights)
-    selection = _prefer_affiliate_if_matched(data_dir, draft, selection)
+    selection = _prefer_affiliate_if_matched(
+        data_dir, draft, selection, discovery=rec.get("discovery") or {})
+    # if a real purchase-demand signal was routed into the affiliate
+    # pipeline, reflect it in the opportunity's own type on the EXISTING
+    # discovery namespace (read-model + any later draft_from_record round
+    # trip). record_discovery() merges - the verification verdict is kept.
+    if (selection.recommended == model.STRAT_AFFILIATE
+            and draft.opportunity_type != model.TYPE_AFFILIATE):
+        store.record_discovery(oid, {"opportunity_type": model.TYPE_AFFILIATE})
+        draft.opportunity_type = model.TYPE_AFFILIATE
     payload = {**selection.to_dict(), "selected_at": now_iso()}
     store.record_strategy(oid, payload)
     # keep evaluation fresh alongside the selection it was based on

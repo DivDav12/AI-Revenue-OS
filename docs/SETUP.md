@@ -33,22 +33,56 @@ at real payout, and are never touched by this codebase.
 ```
 GITHUB_TOKEN=<your fine-grained PAT>
 GITHUB_PAGES_REPO=<owner>/<repo>
-# once approved by the network:
+# once approved by the network (see the "Affiliate offer discovery" block
+# in .env.example for CJ / Awin / Wondershare / systeme.io):
 AWIN_DATAFEED_API_KEY=<if using Awin>
 AWIN_ADVERTISER_IDS=<comma-separated, approved only>
 ```
 
-## 4. Ingest your first real affiliate offer
+## 4. Get your first real affiliate offer into the pipeline
 
-Once you've joined a program and have its real terms in hand:
+You have two routes. Both end at the same fail-closed schema gate
+(`ecosystem/affiliate_sources.ingest_affiliate_offer`) — never fabricate a
+commission rate, price, link, or approval; enter only what the program's
+own dashboard/terms state.
+
+### 4a. Assisted: offer discovery → complete a candidate
+
+Once **any one** offer-source network is configured in `.env` (see the
+"Affiliate offer discovery" block in `.env.example` — CJ Affiliate,
+Awin datafeed, Wondershare/Awin link, or systeme.io link), the pipeline
+searches that network's real product API for each discovered demand
+signal and stages the results as **candidates**:
+
+```bash
+revenue_os affiliate-offer-candidates --discover --data-dir data
+```
+
+Networks with no credentials are never contacted. A candidate is **not**
+a usable offer — a product search cannot state your commission or your
+membership. Review what each still needs, then complete one with your
+real, evidenced terms:
+
+```bash
+revenue_os affiliate-complete-offer <candidate_id> --data-dir data \
+    --program-name "<the program you joined>" \
+    --commission-kind <fixed|percent|recurring_percent> \
+    --commission-rate <the rate stated on your dashboard, e.g. 0.30> \
+    --commission-evidence "<paste the exact wording from your affiliate dashboard/terms>" \
+    --confirm-joined
+```
+
+`--confirm-joined` is mandatory and means *a human has already been
+accepted into this program*. The fleet never joins a program itself.
+
+### 4b. Manual: ingest a full offer JSON
 
 ```bash
 revenue_os affiliate-ingest-offer path/to/offer.json --data-dir data
 ```
 
 (See `ecosystem/affiliate_sources.ingest_affiliate_offer` / existing
-tests for the exact JSON shape — never fabricate a commission rate or
-price; only enter what the program's own dashboard states.)
+tests for the exact JSON shape.)
 
 ## 5. Run the pipeline
 
