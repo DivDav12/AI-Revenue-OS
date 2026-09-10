@@ -77,6 +77,52 @@ _TAG_LABELS: dict[str, str] = {
     "ocr": "OCR",
     "e-sign": "E-sign",
     "acrobat alternative": "Acrobat alternative",
+    # headphones / earbuds
+    "headphone": "Headphones",
+    "earbuds": "Earbuds",
+    "in-ear": "In-ear",
+    "over-ear": "Over-ear",
+    "wireless": "Wireless",
+    "bluetooth": "Bluetooth",
+    "noise cancelling": "Noise cancelling",
+    "anc": "ANC",
+    # keyboards / mice
+    "keyboard": "Keyboard",
+    "mechanical": "Mechanical",
+    "compact": "Compact",
+    "mouse": "Mouse",
+    "ergonomic": "Ergonomic",
+    "vertical": "Vertical",
+    "lightweight": "Lightweight",
+    "budget": "Budget",
+    # monitors
+    "monitor": "Monitor",
+    "qhd": "QHD",
+    "144hz": "144 Hz",
+    "165hz": "165 Hz",
+    "curved": "Curved",
+    "ips": "IPS",
+    "27 inch": "27\"",
+    "24 inch": "24\"",
+    "productivity": "Productivity",
+    # gaming
+    "controller": "Controller",
+    "headset": "Headset",
+    "capture card": "Capture card",
+    "stream deck": "Stream Deck",
+    # tech
+    "power bank": "Power bank",
+    "usb hub": "USB hub",
+    "docking station": "Docking station",
+    "portable ssd": "Portable SSD",
+    "charger": "Charger",
+    "usb-c": "USB-C",
+    "fast charging": "Fast charging",
+    "webcam": "Webcam",
+    "1080p": "1080p",
+    "4k": "4K",
+    "smart home": "Smart home",
+    "security camera": "Security cam",
 }
 
 #: order preferred on the card when several apply.
@@ -305,7 +351,34 @@ def _outbound_for(offer: AffiliateOffer, links_by_offer: dict) -> tuple[str, str
     return offer.product_url, ""
 
 
-def _related_guides_for(offer_id: str, assets) -> tuple[RelatedGuide, ...]:
+def _guides_by_category(assets, offers_by_id) -> dict[str, tuple[RelatedGuide, ...]]:
+    """{site_category: (RelatedGuide, ...)} - every real, already-deployed
+    buying guide, grouped by the site category of the product it is about,
+    deduped by guide title (the same buying question often has one deployed
+    page per matched product; the catalogue links it once)."""
+    out: dict[str, list[RelatedGuide]] = {}
+    seen: dict[str, set[str]] = {}
+    for a in assets:
+        if not a.live_url:
+            continue
+        offer = offers_by_id.get(a.offer_id)
+        if offer is not None and offer.network in EXCLUDED_NETWORKS:
+            continue
+        cat = classify_offer_category(offer.category if offer else "")
+        title = (a.guide_title or a.title or "Buying guide")
+        key = title.strip().lower()
+        if key in seen.setdefault(cat, set()):
+            continue
+        seen[cat].add(key)
+        out.setdefault(cat, []).append(RelatedGuide(title=title, url=a.live_url))
+    return {k: tuple(v) for k, v in out.items()}
+
+
+def _related_guides_for(offer_id: str, assets, *, category_guides=None,
+                        site_category: str = "", limit: int = 4) -> tuple[RelatedGuide, ...]:
+    """Guides for exactly this product's offer, if any; otherwise the real,
+    already-deployed guides for the same site category (still real pages,
+    never fabricated). Deduped by live_url."""
     out: list[RelatedGuide] = []
     seen: set[str] = set()
     for a in assets:
@@ -314,7 +387,11 @@ def _related_guides_for(offer_id: str, assets) -> tuple[RelatedGuide, ...]:
         seen.add(a.live_url)
         out.append(RelatedGuide(title=(a.guide_title or a.title or "Buying guide"),
                                 url=a.live_url))
-    return tuple(out)
+    if out:
+        return tuple(out)
+    if category_guides and site_category:
+        return tuple(category_guides.get(site_category, ())[:limit])
+    return ()
 
 
 def _dedupe_slugs(products: list[PublicProduct]) -> list[PublicProduct]:
@@ -341,6 +418,8 @@ def load_public_products(data_dir) -> list[PublicProduct]:
     links_by_offer: dict[str, list] = {}
     for l in links:
         links_by_offer.setdefault(l.offer_id, []).append(l)
+    offers_by_id = {o.offer_id: o for o in offers}
+    category_guides = _guides_by_category(assets, offers_by_id)
 
     products: list[PublicProduct] = []
     seen_asin: set[str] = set()
@@ -378,7 +457,9 @@ def load_public_products(data_dir) -> list[PublicProduct]:
             outbound_url=outbound, tracking_id=tracking_id,
             verification_status=(offer.verification_status
                                  or "human-added, provider evidence on file"),
-            related_guides=_related_guides_for(offer.offer_id, assets)))
+            related_guides=_related_guides_for(
+                offer.offer_id, assets, category_guides=category_guides,
+                site_category=classify_offer_category(offer.category))))
 
     products.sort(key=lambda p: (0 if p.is_amazon else 1, p.name.lower()))
     return _dedupe_slugs(products)

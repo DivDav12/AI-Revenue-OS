@@ -110,6 +110,10 @@ _OFFER_CATEGORY_MAP: tuple[tuple[str, str], ...] = (
     ("hosting", CATEGORY_TECHNIK),
     ("software", CATEGORY_TECHNIK),
     ("pdf", CATEGORY_TECHNIK),
+    # generic tech / PC accessories (power banks, USB-C hubs, chargers,
+    # portable SSDs, webcams, streaming sticks, smart-home gear ...) - the
+    # real offer category for these is prefixed "tech-" on ingest.
+    ("tech", CATEGORY_TECHNIK),
 )
 
 
