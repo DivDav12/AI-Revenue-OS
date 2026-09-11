@@ -146,9 +146,9 @@ def category_breadcrumb(offer_category: str, environ=None) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 _BASE_CSS = """
-:root{--fg:#1a1a1a;--muted:#666460;--bg:#ffffff;--bg-alt:#f7f5f0;--bg-elev:#ffffff;--border:#ddd6c4;--accent:#2c3e50;--accent-2:#8b2e2e;--radius:4px;--serif:"Playfair Display",Georgia,"Times New Roman",serif}
+:root{--fg:#1a1a1a;--muted:#666460;--bg:#ffffff;--bg-page:#efe4cc;--bg-alt:#f7f5f0;--bg-elev:#ffffff;--border:#ddd6c4;--accent:#2c3e50;--accent-2:#8b2e2e;--radius:4px;--serif:"Playfair Display",Georgia,"Times New Roman",serif}
 *{box-sizing:border-box}
-body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--fg);background:var(--bg);line-height:1.65}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--fg);background:var(--bg-page);line-height:1.65}
 h1,h2,h3,.brand{font-family:var(--serif)}
 a{color:var(--accent);text-decoration:none}
 a:hover{text-decoration:underline}
