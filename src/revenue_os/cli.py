@@ -27,6 +27,10 @@ Read commands:
   pinterest-draft ASSET_ID   draft a Pinterest pin for a deployed affiliate asset ($0, never posts)
   pinterest-pending          pin drafts still waiting on a human to post or skip
   pinterest-mark-posted ID posted|skipped   record what YOU did with a drafted pin
+  pinterest-render-images   render real photo+price PNGs for pending pins ($0, never posts)
+  tiktok-draft     draft a TikTok slideshow from real offers + real sound research ($0, never posts)
+  tiktok-pending   TikTok content drafts still waiting to be posted
+  tiktok-mark-posted ID posted|skipped   record what YOU did with a drafted TikTok
   digest [-q]      one-line summary of what needs the human
   agent-run        operator agent: one loop to a fixed point (also the cron primitive)
   agent-loop       operator agent: tick / sleep / repeat, bounded and resumable
@@ -97,6 +101,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -715,6 +720,162 @@ def _cmd_pinterest_mark_posted(args) -> int:
         print(json.dumps(pin.to_dict(), indent=2))
         return 0
     print(f"pin {pin.pin_id} -> {pin.status}")
+    return 0
+
+
+_PIN_ASIN_RE = re.compile(r"/dp/([A-Z0-9]{10})")
+
+
+def _offer_for_pin(offers, pin) -> object | None:
+    """Match a pin draft back to the real, verified affiliate offer it
+    points at, by the ASIN in its own dest_url - never by guessing."""
+    m = _PIN_ASIN_RE.search(pin.dest_url or "")
+    if not m:
+        return None
+    asin = m.group(1)
+    return next((o for o in offers if o.product_asin == asin), None)
+
+
+def _cmd_pinterest_render_images(args) -> int:
+    from .ecosystem.affiliate_model import AffiliateOfferStore
+    from .ecosystem.pin_images import PinImageError, render_cover_slide, render_product_pin
+    from .ecosystem.pinterest_pins import pending_pins
+
+    data_dir = _data_dir(args)
+    offers = AffiliateOfferStore.load(data_dir).all()
+    pins = pending_pins(data_dir)
+    if args.pin_id:
+        wanted = set(args.pin_id)
+        pins = [p for p in pins if p.pin_id in wanted]
+
+    out_dir = Path(args.out_dir)
+    rendered: list[tuple[str, Path]] = []
+    matched_offers = []
+    for pin in pins:
+        offer = _offer_for_pin(offers, pin)
+        if offer is None:
+            print(f"SKIP {pin.pin_id}: no matching verified offer for {pin.dest_url!r}",
+                  file=sys.stderr)
+            continue
+        try:
+            path = render_product_pin(offer, out_path=out_dir / f"{pin.pin_id}.png")
+        except PinImageError as exc:
+            print(f"SKIP {pin.pin_id}: {exc}", file=sys.stderr)
+            continue
+        rendered.append((pin.pin_id, path))
+        matched_offers.append(offer)
+
+    for pin_id, path in rendered:
+        print(f"{pin_id} -> {path}")
+    if not rendered:
+        print("no pin images rendered", file=sys.stderr)
+
+    if args.cover_headline:
+        cover_path = render_cover_slide(
+            matched_offers, headline=args.cover_headline,
+            subhead=args.cover_subhead or "", out_path=Path(args.cover_out))
+        print(f"COVER SLIDE (not a Pinterest pin - TikTok slide 1 only) -> {cover_path}")
+
+    print("These are local image files for YOU to upload yourself - Pinterest "
+          "and TikTok posting stay human actions.")
+    return 0 if (rendered or args.cover_headline) else 1
+
+
+def _cmd_tiktok_draft(args) -> int:
+    from datetime import datetime, timezone
+
+    from .ecosystem import products
+    from .ecosystem.affiliate_model import AffiliateOfferStore
+    from .ecosystem.pin_images import PinImageError, render_cover_slide, render_outro_slide, render_product_pin
+    from .ecosystem.tiktok_content import TikTokDraftError, attach_slides, draft_content
+
+    data_dir = _data_dir(args)
+    offers = [o for o in AffiliateOfferStore.load(data_dir).all() if o.active and o.status == "OK"]
+    asin_to_category = {p.asin: p.site_category for p in products.load_public_products(data_dir) if p.asin}
+    category_by_offer = {o.offer_id: asin_to_category.get(o.product_asin, "")
+                         for o in offers if asin_to_category.get(o.product_asin)}
+    now_iso = datetime.now(timezone.utc).isoformat()
+    try:
+        draft = draft_content(
+            data_dir, offers=offers, category=args.category or "",
+            num_products=args.num_products, now_iso=now_iso,
+            sound_name=args.sound_name, sound_source=args.sound_source,
+            sound_rationale=args.sound_rationale, sound_researched_at=now_iso,
+            category_by_offer=category_by_offer,
+        )
+    except TikTokDraftError as exc:
+        print(f"BLOCKED: {exc}", file=sys.stderr)
+        return 1
+
+    chosen = [o for o in offers if o.offer_id in draft.offer_ids]
+    out_dir = Path(args.out_dir) / draft.draft_id
+    slide_paths: list[str] = []
+    try:
+        cover = render_cover_slide(chosen, headline=draft.hook, subhead=draft.category,
+                                   out_path=out_dir / "0_cover.png")
+        slide_paths.append(str(cover))
+        for i, offer in enumerate(chosen, 1):
+            path = render_product_pin(offer, out_path=out_dir / f"{i}_product.png")
+            slide_paths.append(str(path))
+        outro = render_outro_slide(headline=draft.cta, link_text="@smartfinds001",
+                                   out_path=out_dir / f"{len(chosen) + 1}_outro.png")
+        slide_paths.append(str(outro))
+    except PinImageError as exc:
+        print(f"draft {draft.draft_id} created, but slide rendering failed: {exc}", file=sys.stderr)
+        slide_paths = []
+    if slide_paths:
+        draft = attach_slides(data_dir, draft.draft_id, slide_paths)
+
+    if args.json:
+        print(json.dumps(draft.to_dict(), indent=2))
+        return 0
+    print(f"TIKTOK CONTENT DRAFT  ({draft.draft_id}, category {draft.category})")
+    print(f"  hook:    {draft.hook}")
+    print(f"  cta:     {draft.cta}")
+    print(f"  caption: {draft.caption}")
+    print(f"  hashtags: {' '.join(draft.hashtags)}")
+    print(f"  sound:   {draft.sound_name} (source: {draft.sound_source})")
+    print(f"           {draft.sound_rationale}")
+    for p in draft.slide_paths:
+        print(f"  slide: {p}")
+    print("This is a draft only - review it and post it yourself (or ask the "
+          "live session to post it) to the real TikTok account. Then run "
+          f"`revenue_os tiktok-mark-posted {draft.draft_id} posted`.")
+    return 0
+
+
+def _cmd_tiktok_pending(args) -> int:
+    from .ecosystem.tiktok_content import pending_drafts
+
+    drafts = pending_drafts(_data_dir(args))
+    if args.json:
+        print(json.dumps([d.to_dict() for d in drafts], indent=2))
+        return 0
+    if not drafts:
+        print("TIKTOK QUEUE: empty - no content draft is waiting.")
+        return 0
+    print(f"TIKTOK QUEUE - {len(drafts)} draft(s) need posting\n")
+    for i, d in enumerate(drafts, 1):
+        print(f"{i}. [{d.category}] {d.hook}")
+        print(f"   caption: {d.caption}")
+        print(f"   sound:   {d.sound_name}")
+        print(f"   id: {d.draft_id}")
+        print()
+    return 0
+
+
+def _cmd_tiktok_mark_posted(args) -> int:
+    from datetime import datetime, timezone
+
+    from .ecosystem.tiktok_content import mark_posted
+
+    draft = mark_posted(_data_dir(args), args.draft_id, status=args.status,
+                        now_iso=datetime.now(timezone.utc).isoformat(),
+                        note=(getattr(args, "reason", "") or "").strip())
+    if args.json:
+        print(json.dumps(draft.to_dict(), indent=2))
+        return 0
+    print(f"draft {draft.draft_id} -> {draft.status}")
     return 0
 
 
@@ -3118,6 +3279,57 @@ def build_parser() -> argparse.ArgumentParser:
     ppost.add_argument("--reason", default="", help="optional human note")
     ppost.add_argument("--json", action="store_true")
     ppost.set_defaults(func=_cmd_pinterest_mark_posted)
+
+    pimg = sub.add_parser(
+        "pinterest-render-images", parents=[common],
+        help="render real product-photo+price PNGs for pending pin drafts "
+             "(Pinterest pin image / TikTok slideshow slide; never posts)",
+    )
+    pimg.add_argument("--pin-id", action="append", default=[],
+                      help="render only this pin id (repeatable); default: every pending pin")
+    pimg.add_argument("--out-dir", default="data/pin_images",
+                      help="directory to write <pin_id>.png into (default: data/pin_images)")
+    pimg.add_argument("--cover-headline", default="",
+                      help="also render a text cover slide (e.g. for a TikTok slideshow's "
+                           "first slide) - NOT one of the rendered pins, never posted to Pinterest")
+    pimg.add_argument("--cover-subhead", default="")
+    pimg.add_argument("--cover-out", default="data/pin_images/cover.png")
+    pimg.set_defaults(func=_cmd_pinterest_render_images)
+
+    tdraft = sub.add_parser(
+        "tiktok-draft", parents=[common],
+        help="draft a TikTok slideshow (hook/products/caption/hashtags/sound) "
+             "from real verified offers + real sound research; never posts",
+    )
+    tdraft.add_argument("--category", default="",
+                        help="force a category (e.g. gaming, maeuse); default: rotate automatically")
+    tdraft.add_argument("--num-products", type=int, default=3)
+    tdraft.add_argument("--sound-name", required=True,
+                        help="the current trending sound's name, from real research this week")
+    tdraft.add_argument("--sound-source", required=True,
+                        help="where this sound's current trend status was checked")
+    tdraft.add_argument("--sound-rationale", required=True,
+                        help="why this sound is currently trending/relevant (not just once viral)")
+    tdraft.add_argument("--out-dir", default="data/tiktok_slides")
+    tdraft.add_argument("--json", action="store_true")
+    tdraft.set_defaults(func=_cmd_tiktok_draft)
+
+    tpending = sub.add_parser(
+        "tiktok-pending", parents=[common],
+        help="content drafts still waiting to be posted (the system never posts)",
+    )
+    tpending.add_argument("--json", action="store_true")
+    tpending.set_defaults(func=_cmd_tiktok_pending)
+
+    tpost = sub.add_parser(
+        "tiktok-mark-posted", parents=[common],
+        help="record what YOU (or a live browser session) did with a drafted TikTok",
+    )
+    tpost.add_argument("draft_id")
+    tpost.add_argument("status", choices=["posted", "skipped"])
+    tpost.add_argument("--reason", default="")
+    tpost.add_argument("--json", action="store_true")
+    tpost.set_defaults(func=_cmd_tiktok_mark_posted)
 
     aq = sub.add_parser(
         "acquisition-queue", parents=[common],

@@ -820,3 +820,82 @@ class PinterestPinStore(_JsonListStore):
                 self._rows[i] = pin.to_dict()
                 return
         self._rows.append(pin.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# TikTok content drafts - same "the fleet drafts, a human/live session
+# posts" invariant as Pinterest above. A draft here is a slideshow script
+# (hook, real offers, caption, hashtags, sound choice) plus the rendered
+# slide image paths once built - never a video file and never posted by
+# this module. `action_class.posting_permitted("tiktok")` stays False.
+# ---------------------------------------------------------------------------
+
+TT_DRAFT = "draft"
+TT_POSTED = "posted"
+TT_SKIPPED = "skipped"
+TT_STATUSES = (TT_DRAFT, TT_POSTED, TT_SKIPPED)
+
+
+@dataclass
+class TikTokContentDraft:
+    draft_id: str
+    category: str
+    offer_ids: tuple = ()
+    hook: str = ""
+    cta: str = ""
+    caption: str = ""
+    hashtags: tuple = ()
+    sound_name: str = ""
+    sound_source: str = ""
+    sound_rationale: str = ""
+    sound_researched_at: str = ""
+    slide_paths: tuple = ()
+    status: str = TT_DRAFT
+    created_at: str = ""
+    posted_at: str = ""
+    note: str = ""
+
+    def to_dict(self) -> dict:
+        return {"draft_id": self.draft_id, "category": self.category,
+                "offer_ids": list(self.offer_ids), "hook": self.hook, "cta": self.cta,
+                "caption": self.caption, "hashtags": list(self.hashtags),
+                "sound_name": self.sound_name, "sound_source": self.sound_source,
+                "sound_rationale": self.sound_rationale,
+                "sound_researched_at": self.sound_researched_at,
+                "slide_paths": list(self.slide_paths),
+                "status": self.status, "created_at": self.created_at,
+                "posted_at": self.posted_at, "note": self.note}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "TikTokContentDraft":
+        d = dict(d or {})
+        if "offer_ids" in d:
+            d["offer_ids"] = tuple(d["offer_ids"] or ())
+        if "hashtags" in d:
+            d["hashtags"] = tuple(d["hashtags"] or ())
+        if "slide_paths" in d:
+            d["slide_paths"] = tuple(d["slide_paths"] or ())
+        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+
+
+class TikTokContentStore(_JsonListStore):
+    _FILENAME = "tiktok_content.json"
+
+    def all(self) -> list[TikTokContentDraft]:
+        return [TikTokContentDraft.from_dict(r) for r in self._rows]
+
+    def get(self, draft_id: str) -> TikTokContentDraft | None:
+        for r in self._rows:
+            if r.get("draft_id") == draft_id:
+                return TikTokContentDraft.from_dict(r)
+        return None
+
+    def pending(self) -> list[TikTokContentDraft]:
+        return [d for d in self.all() if d.status == TT_DRAFT]
+
+    def upsert(self, draft: TikTokContentDraft) -> None:
+        for i, r in enumerate(self._rows):
+            if r.get("draft_id") == draft.draft_id:
+                self._rows[i] = draft.to_dict()
+                return
+        self._rows.append(draft.to_dict())
